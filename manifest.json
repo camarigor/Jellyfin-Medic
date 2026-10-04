@@ -1,0 +1,66 @@
+[
+  {
+    "guid": "8d1f5c2e-6b4a-4f7e-9c3d-2a7b5e1f0c94",
+    "name": "Jellyfin Medic",
+    "description": "Health checks, performance tests and usage-aware task scheduling for your Jellyfin server.",
+    "overview": "Keeps a busy Jellyfin server healthy: checks, tests and smart scheduling.",
+    "owner": "P1zzm1ssile",
+    "category": "General",
+    "imageUrl": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png",
+    "thumbImage": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png",
+    "versions": [
+      {
+        "version": "1.0.6.0",
+        "changelog": "Medic 1.0.6 and Medic Picks 1.0.1",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.6/JellyfinMedic-v1.0.6.zip",
+        "checksum": "fcf607eee1ed5617b34dae71b39ff99f",
+        "timestamp": "2026-10-04T18:22:28Z"
+      },
+      {
+        "version": "1.0.5.0",
+        "changelog": "Medic 1.0.5 and Medic Picks 1.0.0",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.5/JellyfinMedic-v1.0.5.zip",
+        "checksum": "0a160170eaa72817253c5e88350b80ae",
+        "timestamp": "2026-10-04T13:57:44Z"
+      },
+      {
+        "version": "1.0.4.0",
+        "changelog": "v1.0.4: track cleanup, load guard, suggest mode, plugin directory, what's-new popup",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.4/JellyfinMedic-v1.0.4.zip",
+        "checksum": "203d8f6c95239631b865415f802797e9",
+        "timestamp": "2026-10-03T19:34:27Z"
+      },
+      {
+        "version": "1.0.3.0",
+        "changelog": "Add load guard, suggest mode, plugin directory and what's-new popup",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.3/JellyfinMedic-v1.0.3.zip",
+        "checksum": "bf9150fbd26fe019050cf93801bba1c1",
+        "timestamp": "2026-10-03T12:21:57Z"
+      }
+    ]
+  },
+  {
+    "guid": "b34ec5d1-b70f-435f-b77d-9b76979b03c7",
+    "name": "Medic Picks",
+    "description": "Personal picks for every user, from what they watch.",
+    "overview": "A private playlist of picks in every Jellyfin app, plus a My picks page with titles that aren't on the server yet and optional Jellyseerr requests.",
+    "owner": "P1zzm1ssile",
+    "category": "General",
+    "imageUrl": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPicks/thumb.png",
+    "thumbImage": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPicks/thumb.png",
+    "versions": [
+      {
+        "version": "1.0.0.0",
+        "changelog": "Medic 1.0.5 and Medic Picks 1.0.0",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.0.0/MedicPicks-v1.0.0.zip",
+        "checksum": "d9c7a82e94ed066db7d4249515364fb0",
+        "timestamp": "2026-10-04T13:57:55Z"
+      }
+    ]
+  }
+]
