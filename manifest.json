@@ -134,6 +134,14 @@
     "thumbImage": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPicks/thumb.png",
     "versions": [
       {
+        "version": "1.2.3.0",
+        "changelog": "Merge pull request #17 from p1zzm1ssile/claude/trusting-galileo-wdjf3a\n\nAdd a Contact tab to each plugin, switch the contact email, and bump versions",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.2.3/MedicPicks-v1.2.3.zip",
+        "checksum": "41a7babd489dcf019dae20dd9327b834",
+        "timestamp": "2026-10-11T19:03:19Z"
+      },
+      {
         "version": "1.2.2.0",
         "changelog": "Merge pull request #13 from p1zzm1ssile/claude/awesome-brown-i2l9ej\n\nClaude/awesome brown i2l9ej",
         "targetAbi": "12.0.0.0",
