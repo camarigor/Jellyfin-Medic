@@ -11,7 +11,7 @@
     "versions": [
       {
         "version": "1.0.17.0",
-        "changelog": "Merge pull request #17 from p1zzm1ssile/claude/trusting-galileo-wdjf3a",
+        "changelog": "Add a Contact tab to each plugin, switch the contact email, and bump versions",
         "targetAbi": "12.1.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.17/JellyfinMedic-v1.0.17.zip",
         "checksum": "1ed46fe90cefc0f723de4faaf5dd8e37",
@@ -19,7 +19,7 @@
       },
       {
         "version": "1.0.16.0",
-        "changelog": "Merge pull request #14 from p1zzm1ssile/claude/awesome-brown-i2l9ej",
+        "changelog": "Medic 1.0.16 and Medic Picks 1.2.2",
         "targetAbi": "12.1.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.16/JellyfinMedic-v1.0.16.zip",
         "checksum": "3bdec3051eb42e5242c274a3edb5ac5b",
@@ -27,7 +27,7 @@
       },
       {
         "version": "1.0.15.0",
-        "changelog": "Merge pull request #11 from p1zzm1ssile/claude/laughing-volta-8uxi4n",
+        "changelog": "Medic 1.0.14: no false database banners, one-time banners and What's new, release fixes",
         "targetAbi": "12.1.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.15/JellyfinMedic-v1.0.15.zip",
         "checksum": "d86b96f56c76c46051fd1284a8308d1e",
@@ -43,7 +43,7 @@
       },
       {
         "version": "1.0.13.0",
-        "changelog": "Merge pull request #10 from p1zzm1ssile/claude/laughing-volta-8uxi4n",
+        "changelog": "Medic 1.0.13, Medic Picks 1.2.1, Medic Profiles 1.1.0, and end-to-end tests",
         "targetAbi": "12.1.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.13/JellyfinMedic-v1.0.13.zip",
         "checksum": "f1564c2abf1e2c984dbd32a38cf51eb3",
@@ -51,7 +51,7 @@
       },
       {
         "version": "1.0.12.0",
-        "changelog": "Merge pull request #3 from p1zzm1ssile/claude/elegant-bohr-jildlj",
+        "changelog": "Medic 1.0.12 and Medic Picks 1.0.4",
         "targetAbi": "12.1.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.12/JellyfinMedic-v1.0.12.zip",
         "checksum": "dced478429b98790f7feaa765306faa3",
@@ -59,7 +59,7 @@
       },
       {
         "version": "1.0.11.0",
-        "changelog": "Merge pull request #1 from p1zzm1ssile/claude/elegant-bohr-jildlj",
+        "changelog": "Improve file safety and language code handling",
         "targetAbi": "12.1.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/v1.0.11/JellyfinMedic-v1.0.11.zip",
         "checksum": "a659ebc9f5f081d43d5c0770c6e2118a",
@@ -135,7 +135,7 @@
     "versions": [
       {
         "version": "1.2.3.0",
-        "changelog": "Merge pull request #17 from p1zzm1ssile/claude/trusting-galileo-wdjf3a\n\nAdd a Contact tab to each plugin, switch the contact email, and bump versions",
+        "changelog": "Add a Contact tab to each plugin, switch the contact email, and bump versions",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.2.3/MedicPicks-v1.2.3.zip",
         "checksum": "41a7babd489dcf019dae20dd9327b834",
@@ -143,7 +143,7 @@
       },
       {
         "version": "1.2.2.0",
-        "changelog": "Merge pull request #13 from p1zzm1ssile/claude/awesome-brown-i2l9ej\n\nClaude/awesome brown i2l9ej",
+        "changelog": "Medic 1.0.16 and Medic Picks 1.2.2",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.2.2/MedicPicks-v1.2.2.zip",
         "checksum": "1186946de3cadee0e2f991abba14a5dd",
@@ -151,7 +151,7 @@
       },
       {
         "version": "1.2.1.0",
-        "changelog": "Merge pull request #10 from p1zzm1ssile/claude/laughing-volta-8uxi4n\n\nMedic 1.0.13, Medic Picks 1.2.1, Medic Profiles 1.1.0, and end-to-end tests",
+        "changelog": "Medic 1.0.13, Medic Picks 1.2.1, Medic Profiles 1.1.0, and end-to-end tests",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.2.1/MedicPicks-v1.2.1.zip",
         "checksum": "7ffccd4d7124e2c20749cb8cb787c3f0",
@@ -159,7 +159,7 @@
       },
       {
         "version": "1.2.0.0",
-        "changelog": "Merge pull request #6 from p1zzm1ssile/claude/oth-plugins-features-doc-rsjkag\n\nMedic Picks 1.2.0: My requests with progress and ETA, and approvals for admins",
+        "changelog": "Medic Picks 1.2.0: My requests with progress and ETA, and approvals for admins",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.2.0/MedicPicks-v1.2.0.zip",
         "checksum": "5477d4f6e196cc6d68f6d7f4caab9d5f",
@@ -167,7 +167,7 @@
       },
       {
         "version": "1.1.1.0",
-        "changelog": "Merge pull request #5 from p1zzm1ssile/claude/oth-plugins-features-doc-rsjkag\n\nRelease Medic Picks v1.1.1 with build verification and cache fix",
+        "changelog": "Release Medic Picks v1.1.1 with build verification and cache fix",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.1.1/MedicPicks-v1.1.1.zip",
         "checksum": "9e798ffd399dc6e9b83ec40f7ce40b63",
@@ -183,7 +183,7 @@
       },
       {
         "version": "1.0.4.0",
-        "changelog": "Merge pull request #3 from p1zzm1ssile/claude/elegant-bohr-jildlj\n\nMedic 1.0.12 and Medic Picks 1.0.4",
+        "changelog": "Medic 1.0.12 and Medic Picks 1.0.4",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.0.4/MedicPicks-v1.0.4.zip",
         "checksum": "8f3b29434c7016792fc42fbfd7cc4624",
@@ -191,7 +191,7 @@
       },
       {
         "version": "1.0.3.0",
-        "changelog": "Merge pull request #1 from p1zzm1ssile/claude/elegant-bohr-jildlj\n\nImprove file safety and language code handling",
+        "changelog": "Improve file safety and language code handling",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/picks-v1.0.3/MedicPicks-v1.0.3.zip",
         "checksum": "0c89c7b20997f51c61533a8c82fcda57",
@@ -235,7 +235,7 @@
     "versions": [
       {
         "version": "1.1.1.0",
-        "changelog": "Merge pull request #17 from p1zzm1ssile/claude/trusting-galileo-wdjf3a\n\nAdd a Contact tab to each plugin, switch the contact email, and bump versions",
+        "changelog": "Add a Contact tab to each plugin, switch the contact email, and bump versions",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/profiles-v1.1.1/MedicProfiles-v1.1.1.zip",
         "checksum": "3c01ea4a38a861ecef03437a6610ea89",
@@ -243,7 +243,7 @@
       },
       {
         "version": "1.1.0.0",
-        "changelog": "Merge pull request #10 from p1zzm1ssile/claude/laughing-volta-8uxi4n\n\nMedic 1.0.13, Medic Picks 1.2.1, Medic Profiles 1.1.0, and end-to-end tests",
+        "changelog": "Medic 1.0.13, Medic Picks 1.2.1, Medic Profiles 1.1.0, and end-to-end tests",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/profiles-v1.1.0/MedicProfiles-v1.1.0.zip",
         "checksum": "a5f0a5e6cde28a735c6bc966e977f354",
@@ -251,7 +251,7 @@
       },
       {
         "version": "1.0.1.0",
-        "changelog": "Merge pull request #9 from p1zzm1ssile/claude/x265-scoring-disk-space-l6585r\n\nMedic Profiles 1.0.1",
+        "changelog": "Medic Profiles 1.0.1",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/profiles-v1.0.1/MedicProfiles-v1.0.1.zip",
         "checksum": "87c1a7273c455cf190f4c5096a68c18b",
@@ -259,7 +259,7 @@
       },
       {
         "version": "1.0.0.0",
-        "changelog": "Merge pull request #7 from p1zzm1ssile/claude/oth-plugins-features-doc-rsjkag\n\nMedic Profiles 1.0.0: Sonarr and Radarr from the Jellyfin dashboard",
+        "changelog": "Medic Profiles 1.0.0: Sonarr and Radarr from the Jellyfin dashboard",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/p1zzm1ssile/Jellyfin-Medic/releases/download/profiles-v1.0.0/MedicProfiles-v1.0.0.zip",
         "checksum": "9974eb712e3a2c0d13bc1d9b99539aee",

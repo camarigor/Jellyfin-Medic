@@ -76,7 +76,14 @@ jobs:
         run: |
           zip -j "${{ steps.meta.outputs.zip }}" "out/$DLL"
           echo "md5=$(md5sum "${{ steps.meta.outputs.zip }}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          NOTES="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed '/-----BEGIN/,$d')"
+          # An annotated tag's message, else the commit's title (the PR's title for a merge commit)
+          NOTES=""
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" = tag ]; then
+            NOTES="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed '/-----BEGIN/,$d')"
+          else
+            NOTES="$(git log -1 --format=%s)"
+            case "$NOTES" in "Merge pull request"*) NOTES="$(git log -1 --format=%b | head -n1)";; esac
+          fi
           [ -z "$NOTES" ] && NOTES="$NAME ${{ steps.meta.outputs.version }}"
           printf '%s\n' "$NOTES" > notes.txt
 
