@@ -38,7 +38,10 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME is on a commit whose code is version $IN_CODE. Merge the release first, then tag the merged commit (delete this tag with: git push origin :refs/tags/$GITHUB_REF_NAME)."; exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "changelog=$(git log -1 --format=%s)" >> "$GITHUB_OUTPUT"
+          # The commit's title, or the PR's title for a merge commit
+          TITLE="$(git log -1 --format=%s)"
+          case "$TITLE" in "Merge pull request"*) TITLE="$(git log -1 --format=%b | head -n1)";; esac
+          echo "changelog=$TITLE" >> "$GITHUB_OUTPUT"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
