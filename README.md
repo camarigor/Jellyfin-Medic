@@ -4,7 +4,7 @@
 
 Health checks, performance tests and usage-aware task scheduling for your Jellyfin server.
 
-[![Build and Release](https://github.com/P1zzm1ssile/Jellyfin-Medic/actions/workflows/release.yml/badge.svg)](https://github.com/P1zzm1ssile/Jellyfin-Medic/actions/workflows/release.yml) [![Licence: GPL v3](https://img.shields.io/badge/licence-GPLv3-blue.svg)](LICENSE) ![Jellyfin 12.1+](https://img.shields.io/badge/Jellyfin-12.1%2B-00a4dc.svg)
+[![Build and Release](https://github.com/P1zzm1ssile/Jellyfin-Medic/actions/workflows/release.yml/badge.svg)](https://github.com/P1zzm1ssile/Jellyfin-Medic/actions/workflows/release.yml) [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE) ![Jellyfin 12.1+](https://img.shields.io/badge/Jellyfin-12.1%2B-00a4dc.svg)
 
 This repository has three plugins: **Jellyfin Medic**, for the person who runs the server; **[Medic Picks](#medic-picks)**, personal viewing suggestions for everyone who uses it; and **[Medic Profiles](#medic-profiles)**, Sonarr and Radarr from your Jellyfin dashboard.
 
@@ -179,15 +179,19 @@ Releases are automatic: push a tag like `v1.0.6` for Jellyfin Medic, `picks-v1.0
 
 ---
 
+## Free forever
+
+Every feature in Jellyfin Medic is free and always will be. There are no paid tiers, no Pro account, no subscriptions and no telemetry, and new features will be free too. Services Jellyfin Medic works with, like TMDB, Cloudflare and the plugin repositories it checks, have their own terms.
+
 ## About this project
 
-I'm an ISO Lead Auditor, so inspecting logs, finding bottlenecks and reviewing where processes fail is what I do every day. I'm not a professional software developer.
+I'm an ISO 27001 Lead Auditor, so inspecting logs, finding bottlenecks and reviewing where processes fail is what I do every day. I'm not a professional software developer.
 
 I run a busy Jellyfin server at home: a large library, IPTV, and dozens of community plugins. Keeping it healthy meant constant digging, heavy maintenance tasks colliding overnight and causing buffering, runaway plugins pinning the CPU, settings that quietly held the server back, and no easy way to see any of it. Stock Jellyfin gives you very little visibility into how long tasks take or what's dragging things down.
 
 So I built the tools I wanted: first Task Advisor to schedule tasks sensibly, then Setup Optimiser to check the server's health, and finally I merged them into Jellyfin Medic. It brings the same mindset I use in auditing, find the problem, explain it plainly, point at the fix, to a Jellyfin server.
 
-Medic was built with AI assistance for the development, directed and tested by me against my own server and its real problems. I'm sharing it for anyone running something similar.
+I have combined-type ADHD, dyslexia and dyscalculia. I can read code and follow its logic and security well, but writing it out myself isn't possible. So I design what Medic does and how it works, and use AI as an assistive tool to write the code from that design. I test every change against my own server and its real problems before it's released. I'm sharing it for anyone running something similar.
 
 [Issues](https://github.com/P1zzm1ssile/Jellyfin-Medic/issues), suggestions and pull requests are welcome. Translations especially: Medic keeps all its wording in one place so other languages can be added, and I'd rather have them checked by people who speak the language than machine-translated.
 
@@ -207,4 +211,4 @@ Thank you to all of them.
 
 ## Licence
 
-GNU General Public License v3.0. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
