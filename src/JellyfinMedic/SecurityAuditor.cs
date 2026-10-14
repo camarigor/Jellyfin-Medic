@@ -18,14 +18,31 @@ public static class SecurityAuditor
     public static List<Finding> Audit(object? activityManager, IUserManager userManager, List<object> users)
     {
         var findings = new List<Finding>();
-        Guard(() => LoginAttempts(activityManager, findings));
+        Guard(() => LoginAttempts(activityManager, UserNames(users), findings));
         Guard(() => LibraryAccess(userManager, users, findings));
         return findings;
     }
 
     // ---------- Failed logins and unusual places ----------
 
-    private static void LoginAttempts(object? activityManager, List<Finding> findings)
+    /// <summary>Each account's name by its id, written both with and without dashes as the activity log may use either.</summary>
+    private static Dictionary<string, string> UserNames(List<object> users)
+    {
+        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var user in users)
+        {
+            string? name = SettingsReader.Text(user, "Username") ?? SettingsReader.Text(user, "Name");
+            if (name is not null && Guid.TryParse(SettingsReader.Text(user, "Id"), out var id))
+            {
+                names[id.ToString("N")] = name;
+                names[id.ToString("D")] = name;
+            }
+        }
+
+        return names;
+    }
+
+    private static void LoginAttempts(object? activityManager, Dictionary<string, string> userNames, List<Finding> findings)
     {
         var entries = ActivityEntries(activityManager, DateTime.UtcNow.AddDays(-7));
         if (entries.Count == 0)
@@ -54,8 +71,11 @@ public static class SecurityAuditor
             }
             else if (loggedIn && ip.Length > 0)
             {
-                string key = NameOrUser(name, user);
-                (success.TryGetValue(key, out var set) ? set : success[key] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(ip);
+                // By account: the entry's text includes the device and is translated, and long ones used to all
+                // become "a user", adding up different people's addresses. Phones on IPv6 change address often,
+                // so an IPv6 address counts by its /64 network.
+                string key = user.Length > 0 ? (userNames.TryGetValue(user, out var known) ? known : "an account (" + user[..Math.Min(8, user.Length)] + ")") : NameOrUser(name, user);
+                (success.TryGetValue(key, out var set) ? set : success[key] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(Network(ip));
             }
         }
 
@@ -66,15 +86,22 @@ public static class SecurityAuditor
             string detail = worst is not null
                 ? $"{failures.Count} failed sign-ins in the last 7 days; most from {worst.Key} ({worst.Count()})"
                 : $"{failures.Count} failed sign-ins in the last 7 days";
+
+            // Most failures from a private address usually means a reverse proxy Jellyfin doesn't know about,
+            // so every failure looks like it came from the proxy and the real address is lost.
+            bool fromProxy = worst is not null && IPAddress.TryParse(worst.Key, out var source) && IsPrivate(source);
             findings.Add(new Finding
             {
                 Area = Area,
                 Severity = failures.Count >= 50 ? Sev.Problem : Sev.Improve,
                 Title = "A lot of failed sign-ins",
                 Current = detail,
-                Recommended = "If your server is reachable from the internet, put it behind a reverse proxy with fail2ban, or only allow access over a VPN",
+                Recommended = (fromProxy
+                        ? $"If {worst!.Key} is your reverse proxy, add it under Known proxies so Jellyfin sees the real addresses. "
+                        : string.Empty)
+                    + "If your server is reachable from the internet, put it behind a reverse proxy with fail2ban, or only allow access over a VPN. Jellyfin can also lock an account after a few wrong passwords (each user's \"Maximum failed login attempts\")",
                 Why = "Many failed sign-ins usually mean someone is guessing passwords. A lockout after a few tries, or not exposing Jellyfin directly, stops this.",
-                Where = "Dashboard → Networking, and your reverse proxy"
+                Where = fromProxy ? "Dashboard → Networking → Known proxies, and Dashboard → Users" : "Dashboard → Networking, and your reverse proxy"
             });
         }
 
@@ -228,6 +255,33 @@ public static class SecurityAuditor
         }
 
         return null;
+    }
+
+    // An IPv6 address counts by its /64 network (one home or phone connection); IPv4 as it is.
+    private static string Network(string ip)
+    {
+        if (!IPAddress.TryParse(ip, out var address) || address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6 || address.IsIPv4MappedToIPv6)
+        {
+            return ip;
+        }
+
+        var bytes = address.GetAddressBytes();
+        Array.Clear(bytes, 8, 8);
+        return new IPAddress(bytes) + "/64";
+    }
+
+    // Addresses only seen inside a home or a Docker network: 10/8, 172.16/12, 192.168/16, IPv6 unique local and link-local.
+    private static bool IsPrivate(IPAddress ip)
+    {
+        if (ip.IsIPv4MappedToIPv6)
+        {
+            ip = ip.MapToIPv4();
+        }
+
+        var b = ip.GetAddressBytes();
+        return ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+            ? b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168)
+            : (b[0] & 0xfe) == 0xfc || ip.IsIPv6LinkLocal;
     }
 
     private static string NameOrUser(string name, string userId) =>

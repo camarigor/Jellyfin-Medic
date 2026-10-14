@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **"Signs in from several places" counts per account.** Sign-ins were grouped by the activity entry's text, which is translated, names the device, and above 40 characters was replaced by "a user", so different people with long names were added up into one "account" with many addresses. They're now grouped by account, and an IPv6 address counts by its /64 network, as phones change IPv6 address often. When most failed sign-ins come from a private address, the advice now says it's probably your reverse proxy and to add it under Known proxies, and mentions Jellyfin's own limit on failed sign-ins per user.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
