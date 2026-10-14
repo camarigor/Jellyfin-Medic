@@ -113,6 +113,27 @@ for (const path of medicGets) {
     await check(`GET ${path}`, async () => { await ok(path); });
 }
 
+await check('Medic Picks keeps both keys when they are saved at the same time', async () => {
+    // The settings page saves the TMDb and Seerr keys together; neither may be lost.
+    try {
+        for (let i = 0; i < 20; i++) {
+            await api('POST', '/MedicPicks/Admin/TmdbKey', { Key: '' });
+            await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+            const saved = await Promise.all([
+                api('POST', '/MedicPicks/Admin/TmdbKey', { Key: 'e2e-tmdb-key' }),
+                api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' })
+            ]);
+            expect(saved.every((r) => r.status === 204), 'save: ' + saved.map((r) => r.status).join(', '));
+            const status = await ok('/MedicPicks/Admin/Status');
+            expect(status.tmdbKeySet && status.seerrKeySet, `round ${i + 1}: ` + JSON.stringify(status));
+        }
+        return '20 rounds, both keys kept';
+    } finally {
+        await api('POST', '/MedicPicks/Admin/TmdbKey', { Key: '' });
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+    }
+});
+
 await check('storage: library drives and growing folders are listed', async () => {
     let specs = (await ok('/JellyfinMedic/Report')).Specs || [];
     const drive = specs.find((x) => /^Drive for .*Movies/.test(x.Label));
