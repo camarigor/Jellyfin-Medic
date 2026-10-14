@@ -168,6 +168,16 @@ await check('support export hides secrets in name/value pairs, tokens and dashle
     }
 });
 
+await check('Dashboards polling at the same moment don\'t queue behind each other', async () => {
+    // Several Dashboards (or tabs) ask for "now" within the same second; none should wait for another's CPU reading.
+    await ok('/JellyfinMedic/Now');
+    const started = Date.now();
+    await Promise.all([1, 2, 3, 4].map(() => ok('/JellyfinMedic/Now')));
+    const seconds = (Date.now() - started) / 1000;
+    expect(seconds < 1.5, `4 readings at once took ${seconds.toFixed(1)} s`);
+    return `4 at once in ${seconds.toFixed(2)} s`;
+});
+
 await check('storage: library drives and growing folders are listed', async () => {
     let specs = (await ok('/JellyfinMedic/Report')).Specs || [];
     const drive = specs.find((x) => /^Drive for .*Movies/.test(x.Label));
