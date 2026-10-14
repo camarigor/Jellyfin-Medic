@@ -134,6 +134,40 @@ await check('Medic Picks keeps both keys when they are saved at the same time', 
     }
 });
 
+await check('support export hides secrets in name/value pairs, tokens and dashless keys', async () => {
+    // A plugin's settings with fake secrets in shapes that used to get through. Written from inside the
+    // container: the folder belongs to Jellyfin's user, not the one running the tests.
+    const { execFileSync } = await import('node:child_process');
+    const file = '/config/plugins/configurations/E2E.SecretShapes.xml';
+    const secrets = ['FAKEeyJhbGciOiJIUzI1NiJ9', '0123456789abcdef0123456789abcdef', 'fedcba9876543210fedcba9876543210', 'FAKE-COOKIE-VALUE', 'FAKEbasicDXNlcjpwYXNz', 'fakeattrcookie'];
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<PluginConfiguration>
+  <Headers>
+    <HeaderItem><Key>Authorization</Key><Value>Bearer FAKEeyJhbGciOiJIUzI1NiJ9.FAKEpayload.FAKEsig</Value></HeaderItem>
+    <HeaderItem><Key>X-Api-Key</Key><Value>0123456789abcdef0123456789abcdef</Value></HeaderItem>
+    <HeaderItem><Key>Accept</Key><Value>application/json</Value></HeaderItem>
+    <Header name="Cookie" value="sid=fakeattrcookie" />
+  </Headers>
+  <ServerKey>fedcba9876543210fedcba9876543210</ServerKey>
+  <AuthCookie>session=FAKE-COOKIE-VALUE; Path=/</AuthCookie>
+  <ProxyAuth>Basic FAKEbasicDXNlcjpwYXNz</ProxyAuth>
+  <LibraryId>3f2504e0-4f89-11d3-9a0c-0305e82c3301</LibraryId>
+</PluginConfiguration>`;
+    execFileSync('docker', ['exec', '-i', 'medic-e2e', 'sh', '-c', 'cat > "$1"', 'sh', file], { input: xml });
+    try {
+        const r = await api('GET', '/JellyfinMedic/Export');
+        expect(r.status === 200, 'export ' + r.status);
+        const part = r.text.slice(r.text.indexOf('E2E.SecretShapes.xml'));
+        const leaked = secrets.filter((s) => part.includes(s));
+        expect(leaked.length === 0, 'leaked: ' + leaked.join(', ') + '\n' + part.slice(0, 1200));
+        expect(part.includes('<Key>Authorization</Key>') && part.includes('<Value>application/json</Value>') && part.includes('name="Cookie"'), 'header names or harmless values were hidden:\n' + part.slice(0, 1200));
+        expect(part.includes('3f2504e0-4f89-11d3-9a0c-0305e82c3301'), 'a dashed id was hidden');
+        return 'no secret left, labels and ids kept';
+    } finally {
+        execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-f', file]);
+    }
+});
+
 await check('storage: library drives and growing folders are listed', async () => {
     let specs = (await ok('/JellyfinMedic/Report')).Specs || [];
     const drive = specs.find((x) => /^Drive for .*Movies/.test(x.Label));
