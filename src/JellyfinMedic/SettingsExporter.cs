@@ -16,7 +16,17 @@ public static class SettingsExporter
     private static readonly Regex TelegramToken = new(@"\d{6,}:[A-Za-z0-9_-]{30,}", RegexOptions.Compiled);
     private static readonly Regex JsonSecret = new(@"(?i)(""?[A-Za-z_]*?(?:api_?key|apitoken|token|password|passwd|secret|username|user_?name|login)""?\s*[:=]\s*)""[^""]*""", RegexOptions.Compiled);
     private static readonly Regex LongToken = new(@"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_\-]{24,}$", RegexOptions.Compiled);
-    private static readonly Regex GuidLike = new(@"^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$", RegexOptions.Compiled);
+
+    // Ids written as dashed GUIDs are kept. 32 hex characters without dashes is also how Jellyfin, Sonarr and
+    // Radarr API keys look, so those go, even though some plugins store harmless ids that way too.
+    private static readonly Regex GuidLike = new(@"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", RegexOptions.Compiled);
+
+    // Words in a name/value pair's label that mean its value is a secret (header names such as Authorization,
+    // X-Api-Key or Cookie). Labels are names, not values, so matching parts of words is fine here.
+    private static readonly string[] SecretLabelWords =
+    {
+        "auth", "token", "key", "cookie", "secret", "pass", "session", "signature", "credential", "bearer"
+    };
 
     public static string Build(IPluginManager plugins, IApplicationPaths paths, string jellyfinVersion, IReadOnlyList<string>? systemSummary = null)
     {
@@ -60,14 +70,27 @@ public static class SettingsExporter
             try
             {
                 var doc = XDocument.Load(file);
-                foreach (var element in doc.Descendants().Where(e => !e.HasElements))
+
+                // Decide on the original text first: a pair's value is judged by its label, so labels mustn't change before.
+                var leaves = doc.Descendants().Where(e => !e.HasElements).ToList();
+                var secretValues = leaves.Where(IsSecretPairValue).ToHashSet();
+                var labels = leaves.Where(IsPairLabel).ToHashSet();
+                foreach (var element in leaves)
                 {
-                    element.Value = Mask(element.Name.LocalName, element.Value);
+                    element.Value = secretValues.Contains(element) ? "****"
+                        : labels.Contains(element) ? MaskValue(element.Value)
+                        : Mask(element.Name.LocalName, element.Value);
                 }
 
-                foreach (var attribute in doc.Descendants().SelectMany(e => e.Attributes()))
+                // The same pairs written as attributes: <Header name="Cookie" value="sid=..." />.
+                var attributes = doc.Descendants().SelectMany(e => e.Attributes()).ToList();
+                var secretAttributes = attributes.Where(IsSecretPairAttribute).ToHashSet();
+                var labelAttributes = attributes.Where(IsPairLabelAttribute).ToHashSet();
+                foreach (var attribute in attributes)
                 {
-                    attribute.Value = Mask(attribute.Name.LocalName, attribute.Value);
+                    attribute.Value = secretAttributes.Contains(attribute) ? "****"
+                        : labelAttributes.Contains(attribute) ? MaskValue(attribute.Value)
+                        : Mask(attribute.Name.LocalName, attribute.Value);
                 }
 
                 text.AppendLine(doc.ToString());
@@ -88,9 +111,15 @@ public static class SettingsExporter
             return value;
         }
 
-        if (SettingsReader.IsSecretName(name))
+        return SettingsReader.IsSecretName(name) ? "****" : MaskValue(value);
+    }
+
+    /// <summary>Masks what looks like a credential inside a value, whatever the setting is called.</summary>
+    private static string MaskValue(string value)
+    {
+        if (string.IsNullOrEmpty(value))
         {
-            return "****";
+            return value;
         }
 
         string masked = SettingsReader.MaskSecrets(value);
@@ -103,4 +132,33 @@ public static class SettingsExporter
 
         return masked;
     }
+
+    /// <summary>
+    /// The Value of a name/value pair (custom HTTP headers, extra fields) whose label looks secret. There the
+    /// secret sits under a harmless element name: &lt;Key&gt;Authorization&lt;/Key&gt;&lt;Value&gt;Bearer ...&lt;/Value&gt;.
+    /// </summary>
+    private static bool IsSecretPairValue(XElement element) =>
+        IsNamed(element.Name, "Value")
+        && element.Parent?.Elements().Any(e => IsLabelElement(e) && LooksSecretLabel(e.Value)) == true;
+
+    /// <summary>The Key or Name beside a Value in such a pair: a label, shown as it is unless the text itself looks like a credential.</summary>
+    private static bool IsPairLabel(XElement element) =>
+        IsLabelElement(element) && element.Parent?.Elements().Any(e => !e.HasElements && IsNamed(e.Name, "Value")) == true;
+
+    private static bool IsSecretPairAttribute(XAttribute attribute) =>
+        IsNamed(attribute.Name, "Value")
+        && attribute.Parent?.Attributes().Any(a => IsLabelName(a.Name) && LooksSecretLabel(a.Value)) == true;
+
+    private static bool IsPairLabelAttribute(XAttribute attribute) =>
+        IsLabelName(attribute.Name) && attribute.Parent?.Attributes().Any(a => IsNamed(a.Name, "Value")) == true;
+
+    private static bool IsLabelElement(XElement element) => !element.HasElements && IsLabelName(element.Name);
+
+    private static bool IsLabelName(XName name) => IsNamed(name, "Key") || IsNamed(name, "Name");
+
+    private static bool LooksSecretLabel(string label) =>
+        SecretLabelWords.Any(word => label.Contains(word, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsNamed(XName name, string expected) =>
+        string.Equals(name.LocalName, expected, StringComparison.OrdinalIgnoreCase);
 }
