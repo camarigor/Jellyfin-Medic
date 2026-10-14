@@ -40,6 +40,10 @@ public class Finding
     // The Jellyfin setting this is about, as "Section|Name" matching the settings list (empty if none).
     public string Setting { get; set; } = string.Empty;
 
+    // A stable name for a finding whose title includes counts or other changing values, such as
+    // "tasks.flat-out". Used instead of the title for its key, so ignoring it keeps working.
+    public string Id { get; set; } = string.Empty;
+
     // Identifies the finding so the admin can choose to ignore it.
     public string Key { get; set; } = string.Empty;
 
@@ -208,14 +212,9 @@ public class UsageSummary
 
     public string? QuietWindow { get; set; }
 
-    public int QuietStartHour { get; set; } = 1;
-
     public double? TranscodeShare { get; set; }
 
     public int MaxStreams { get; set; }
 
     public int MaxTranscodes { get; set; }
-
-    // Average streams between 01:00 and 06:00, when Medic runs heavy tasks.
-    public double NightAverage { get; set; }
 }

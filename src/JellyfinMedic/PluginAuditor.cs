@@ -72,6 +72,7 @@ public static class PluginAuditor
                         Area = Area,
                         Severity = Sev.Tip,
                         Title = orphans.Count == 1 ? "A settings file doesn't belong to any installed plugin" : $"{orphans.Count} settings files don't belong to any installed plugin",
+                        Id = "plugins.orphan-settings",
                         Current = string.Join(", ", orphans),
                         Recommended = "Delete them if you've uninstalled those plugins",
                         Why = "They're usually left behind by removed plugins. Harmless, but if you reinstall a plugin it picks up its old settings.",

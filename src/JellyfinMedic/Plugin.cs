@@ -98,6 +98,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     public static Plugin? Instance { get; private set; }
 
+    /// <summary>Medic's own version as people see it, such as "1.0.18".</summary>
+    public static string VersionText => typeof(Plugin).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+
     public IEnumerable<PluginPageInfo> GetPages()
     {
         return new[]

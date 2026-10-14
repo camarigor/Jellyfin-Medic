@@ -58,8 +58,12 @@ public static class IgnoreStore
         }
     }
 
-    /// <summary>A finding is identified by its area and title, so the same issue keeps the same key between checks.</summary>
-    public static string KeyFor(Finding finding) => finding.Area + "|" + finding.Title;
+    /// <summary>
+    /// A finding is identified by its area and its stable <see cref="Finding.Id"/>, or its title when it has none,
+    /// so the same issue keeps the same key between checks even when a count in its title changes.
+    /// </summary>
+    public static string KeyFor(Finding finding) =>
+        finding.Area + "|" + (string.IsNullOrEmpty(finding.Id) ? finding.Title : "#" + finding.Id);
 
     public static void Apply(IEnumerable<Finding> findings, HashSet<string> ignored)
     {

@@ -277,8 +277,7 @@ public sealed class DiagnosticsEngine
 
     private void AddSpecs(HardwareInfo hw, object? encoding, List<LibraryFacts> libraries, int pluginCount)
     {
-        string version = SettingsReader.Text(_host, "ApplicationVersionString")
-                         ?? SettingsReader.Text(_host, "ApplicationVersion") ?? "unknown";
+        string version = SettingsReader.ServerVersion(_host);
         Spec("Server", "Jellyfin version", version);
         Spec("Server", "Running on", HostPlatform.Label);
         Spec("Server", "Server name", string.IsNullOrWhiteSpace(_config.Configuration.ServerName) ? "(not set)" : _config.Configuration.ServerName);
@@ -640,7 +639,8 @@ public sealed class DiagnosticsEngine
                 Add(AreaStorage, days < 7 ? Sev.Problem : Sev.Improve, $"The drive for {d.Holds} will be full in {Weeks(days)}",
                     $"{SystemProbe.Gb(d.FreeGb)} free, using about {SystemProbe.Gb(d.GbPerDay!.Value)} a day",
                     "Free some space, add a drive, or find what's filling it (for example trickplay images or old downloads)",
-                    "At this rate the drive runs out soon, and Jellyfin, downloads and track cleanup all need room to write.", d.ExamplePath);
+                    "At this rate the drive runs out soon, and Jellyfin, downloads and track cleanup all need room to write.", d.ExamplePath,
+                    id: "storage.filling-up:" + d.Holds);
             }
         }
 
@@ -814,7 +814,7 @@ public sealed class DiagnosticsEngine
             string.Join(", ", kinds) + ". Most often running: " + string.Join("; ", top),
             "Move the tasks named here to quieter times (Schedule), or let the GPU take the transcodes",
             "Each time, Jellyfin and its FFmpeg processes used nearly all of a resource for at least 45 seconds, which is when playback buffers and pages load slowly. Medic → Dashboard lists each one and what was running.",
-            "Medic → Dashboard");
+            "Medic → Dashboard", id: "server.flat-out");
     }
 
     // ---------- General performance ----------
@@ -1198,7 +1198,7 @@ public sealed class DiagnosticsEngine
         }
 
         var failed = workers
-            .Where(t => IsVisibleTask(t) && t.LastExecutionResult?.Status == TaskCompletionStatus.Failed)
+            .Where(t => ScheduleStorage.IsVisible(t) && t.LastExecutionResult?.Status == TaskCompletionStatus.Failed)
             .Take(10)
             .ToList();
         foreach (var task in failed)
@@ -1252,7 +1252,7 @@ public sealed class DiagnosticsEngine
         }
 
         var clashes = new List<string>();
-        foreach (var worker in workers.Where(IsVisibleTask))
+        foreach (var worker in workers.Where(ScheduleStorage.IsVisible))
         {
             foreach (var trigger in worker.Triggers ?? Array.Empty<TaskTriggerInfo>())
             {
@@ -1300,7 +1300,7 @@ public sealed class DiagnosticsEngine
         try
         {
             var busy = BusyProfile.Create(usage, Plugin.Instance?.Configuration);
-            plan = SchedulePlanner.Build(_tasks.ScheduledTasks.Where(IsVisibleTask).ToList(),
+            plan = SchedulePlanner.Build(_tasks.ScheduledTasks.Where(ScheduleStorage.IsVisible).ToList(),
                 ScheduleStorage.LoadProfile(_paths), ScheduleStorage.LoadManaged(_paths), busy, ScheduleStorage.LoadChoices(_paths));
         }
         catch (Exception ex)
@@ -1361,7 +1361,7 @@ public sealed class DiagnosticsEngine
                 hwOn ? "Check app quality settings and the remote bitrate limit" : "Turn on hardware acceleration (see Hardware & transcoding)",
                 hwOn ? "Lots of transcoding usually comes from apps set to a lower quality, subtitles that need burning in, or a low bitrate cap."
                      : $"Transcoding this much on {hw.CpuThreads} CPU threads is the most likely cause of buffering at busy times.",
-                WhereTranscoding);
+                WhereTranscoding, id: "usage.transcode-share");
         }
     }
 
@@ -1441,11 +1441,7 @@ public sealed class DiagnosticsEngine
         }
     }
 
-    private string TranscodePath(object? enc)
-    {
-        string? path = SettingsReader.Text(enc, "TranscodingTempPath");
-        return string.IsNullOrWhiteSpace(path) ? Path.Combine(_paths.CachePath, "transcodes") : path;
-    }
+    private string TranscodePath(object? enc) => SettingsReader.TranscodePath(enc, _paths.CachePath);
 
     private string? LogLevel()
     {
@@ -1533,7 +1529,7 @@ public sealed class DiagnosticsEngine
         };
 
         var daytime = new List<string>();
-        foreach (var worker in workers.Where(IsVisibleTask))
+        foreach (var worker in workers.Where(ScheduleStorage.IsVisible))
         {
             if (!heavyKeys.Contains(worker.ScheduledTask.Key) && !heavy.Any(h => worker.Name.Contains(h, StringComparison.OrdinalIgnoreCase)))
             {
@@ -1561,7 +1557,7 @@ public sealed class DiagnosticsEngine
             Add(AreaTasks, Sev.Tip, daytime.Count == 1 ? "A heavy task runs during the day" : $"{daytime.Count} heavy tasks run during the day",
                 string.Join(", ", daytime), "Fine if nobody watches then. Medic will check against your real viewing pattern",
                 "These tasks work through the whole library or database. Medic is still learning when people watch; after a few days it checks these times against your real viewing instead.",
-                "Medic → Schedule");
+                "Medic → Schedule", id: "tasks.heavy-daytime");
         }
     }
 
@@ -1606,10 +1602,6 @@ public sealed class DiagnosticsEngine
     }
 
 
-    private static bool IsVisibleTask(IScheduledTaskWorker worker) =>
-        worker.ScheduledTask is not IConfigurableScheduledTask configurable ||
-        (!configurable.IsHidden && configurable.IsEnabled);
-
     private static bool SameDrive(string a, string b) =>
         SystemProbe.Mount(a)?.MountPoint == SystemProbe.Mount(b)?.MountPoint;
 
@@ -1644,12 +1636,14 @@ public sealed class DiagnosticsEngine
     private void Spec(string group, string label, string value) =>
         _report.Specs.Add(new SpecItem { Group = group, Label = label, Value = value });
 
-    private void Add(string area, string severity, string title, string current, string recommended, string why, string where) =>
+    // id: a stable name for findings whose title changes between checks (counts, times, percentages); see Finding.Id.
+    private void Add(string area, string severity, string title, string current, string recommended, string why, string where, string id = "") =>
         _report.Findings.Add(new Finding
         {
             Area = area,
             Severity = severity,
             Title = title,
+            Id = id,
             Current = current,
             Recommended = recommended,
             Why = why,
