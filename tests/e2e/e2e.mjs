@@ -258,38 +258,59 @@ await check('track cleanup leaves excluded films alone', async () => {
     await api('POST', '/JellyfinMedic/MedicSettings', { ...s, TracksExclude: '' });
 });
 
+// ---------- Track cleanup on real files ----------
+
+const { execFileSync } = await import('node:child_process');
+const fs = await import('node:fs');
+const movies = `${process.env.WORK}/media/movies`;
+
+// A short film with an audio track per language, in that order.
+function makeFilm(file, languages, seconds) {
+    const inputs = languages.flatMap((_, i) => ['-f', 'lavfi', '-i', `sine=frequency=${300 + i * 200}:duration=${seconds}`]);
+    const maps = languages.flatMap((_, i) => ['-map', String(i + 1)]);
+    const tags = languages.flatMap((l, i) => [`-metadata:s:a:${i}`, `language=${l}`]);
+    execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `testsrc=size=320x180:rate=10:duration=${seconds}`,
+        ...inputs, '-map', '0', ...maps, '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', ...tags, file]);
+}
+
+const audioLanguages = (file) => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream_tags=language', '-of', 'json', file]).toString())
+    .streams.map((x) => x.tags?.language).join(',');
+
+async function runTracks() {
+    const started = await api('POST', '/JellyfinMedic/Tracks/Run?dryRun=false');
+    expect(started.status === 200, 'track run ' + started.status + ' ' + started.text);
+    let p = null;
+    for (let i = 0; i < 60 && (!p || p.Running); i++) {
+        await sleep(1000);
+        p = await ok('/JellyfinMedic/Tracks/Progress');
+    }
+    return p;
+}
+
+// Runs fn with track cleanup settings changed, and puts them back after.
+async function withTrackSettings(changes, fn) {
+    const s = await ok('/JellyfinMedic/MedicSettings');
+    await api('POST', '/JellyfinMedic/MedicSettings', { ...s, ...changes });
+    try {
+        return await fn();
+    } finally {
+        await api('POST', '/JellyfinMedic/MedicSettings', s);
+    }
+}
+
 await check('track cleanup checks the file itself before changing it', async () => {
     // Replace a film the way Sonarr would, with the French track first. Jellyfin (real time monitor off)
     // still lists English first, so a plan from its list alone would keep French and drop English.
-    const { execFileSync } = await import('node:child_process');
-    const fs = await import('node:fs');
-    const file = `${process.env.WORK}/media/movies/Two Tracks (2015)/Two Tracks (2015).mkv`;
+    const file = `${movies}/Two Tracks (2015)/Two Tracks (2015).mkv`;
     const replacement = `${process.env.WORK}/reordered.mkv`;
-    execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=10:duration=4',
-        '-f', 'lavfi', '-i', 'sine=frequency=500:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=4',
-        '-map', '0', '-map', '1', '-map', '2', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac',
-        '-metadata:s:a:0', 'language=fre', '-metadata:s:a:1', 'language=eng', replacement]);
+    makeFilm(replacement, ['fre', 'eng'], 4);
     fs.renameSync(replacement, file);
-    const languages = () => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream_tags=language', '-of', 'json', file]).toString())
-        .streams.map((x) => x.tags?.language).join(',');
-    const run = async () => {
-        const started = await api('POST', '/JellyfinMedic/Tracks/Run?dryRun=false');
-        expect(started.status === 200, 'track run ' + started.status + ' ' + started.text);
-        let p = null;
-        for (let i = 0; i < 60 && (!p || p.Running); i++) {
-            await sleep(1000);
-            p = await ok('/JellyfinMedic/Tracks/Progress');
-        }
-        return p;
-    };
 
     // In place, so the test leaves no folder owned by the container's user behind.
-    const s = await ok('/JellyfinMedic/MedicSettings');
-    await api('POST', '/JellyfinMedic/MedicSettings', { ...s, TracksExclude: 'Keep Me Too', TracksReplaceInPlace: true });
-    try {
-        const first = await run();
+    return withTrackSettings({ TracksExclude: 'Keep Me Too', TracksReplaceInPlace: true }, async () => {
+        const first = await runTracks();
         expect(first.Changed === 0 && first.Failed === 1, 'stale plan was not refused: ' + JSON.stringify(first.Recent));
-        expect(languages() === 'fre,eng', 'the file was changed anyway: ' + languages());
+        expect(audioLanguages(file) === 'fre,eng', 'the file was changed anyway: ' + audioLanguages(file));
 
         // Medic asked Jellyfin to read the file again; once it has, the run strips the French track.
         let firstLanguage = '';
@@ -299,13 +320,63 @@ await check('track cleanup checks the file itself before changing it', async () 
             firstLanguage = item?.MediaStreams?.find((m) => m.Type === 'Audio')?.Language || '';
         }
         expect(firstLanguage.startsWith('fr'), 'Jellyfin did not read the file again');
-        const second = await run();
+        const second = await runTracks();
         expect(second.Changed === 1 && second.Failed === 0, 'second run: ' + JSON.stringify(second.Recent));
-        expect(languages() === 'eng', 'English should be the only audio left: ' + languages());
+        expect(audioLanguages(file) === 'eng', 'English should be the only audio left: ' + audioLanguages(file));
         return 'stale plan refused, then English kept';
-    } finally {
-        await api('POST', '/JellyfinMedic/MedicSettings', { ...s, TracksExclude: '', TracksReplaceInPlace: false });
+    });
+});
+
+await check('track cleanup puts back an original left out by an interrupted swap', async () => {
+    // What Jellyfin stopping between the two moves leaves behind: the original kept aside, the
+    // cleaned copy still in its temp file, and nothing at the film's own path.
+    const dir = `${movies}/Keep Me Too (2016)`;
+    const file = `${dir}/Keep Me Too (2016).mkv`;
+    const kept = `${dir}/.medic-originals/Keep Me Too (2016).mkv`;
+    const temp = `${file}.medic-tmp.mkv`;
+    fs.mkdirSync(`${dir}/.medic-originals`, { recursive: true });
+    fs.renameSync(file, kept);
+    fs.copyFileSync(kept, temp);
+
+    return withTrackSettings({ TracksExclude: 'Two Tracks' }, async () => {
+        const p = await runTracks();
+        const notes = JSON.stringify(p.Recent);
+        expect((p.Recent || []).some((r) => /Put back the original of Keep Me Too/.test(r)), 'original not put back: ' + notes);
+        expect(!fs.existsSync(temp), 'the temp file was left behind');
+        expect(p.Changed === 1 && p.Failed === 0, 'the film was not cleaned after being put back: ' + notes);
+        expect(audioLanguages(file) === 'eng', 'cleaned film: ' + audioLanguages(file));
+        expect(audioLanguages(kept) === 'eng,fre', 'kept original: ' + audioLanguages(kept));
+        return 'original put back, then cleaned';
+    });
+});
+
+await check('track cleanup refuses a new copy that comes out shorter than the original', async () => {
+    // A file whose end can't be read (cut short here) still says it is 60 s long. FFmpeg copies what it can
+    // and exits 0, even with -xerror; the copy must not replace the original.
+    const dir = `${movies}/Cut Short (2018)`;
+    const file = `${dir}/Cut Short (2018).mkv`;
+    fs.mkdirSync(dir, { recursive: true });
+    makeFilm(file, ['eng', 'fre'], 60);
+    await api('POST', '/Library/Refresh');
+    let audio = 0;
+    for (let i = 0; i < 45 && audio < 2; i++) {
+        await sleep(2000);
+        const item = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Cut%20Short&Fields=MediaStreams')).Items[0];
+        audio = (item?.MediaStreams || []).filter((m) => m.Type === 'Audio').length;
     }
+    expect(audio === 2, 'Jellyfin did not pick up the new film');
+    fs.truncateSync(file, Math.floor(fs.statSync(file).size / 2));
+    const size = fs.statSync(file).size;
+
+    return withTrackSettings({ TracksExclude: 'Two Tracks\nKeep Me Too', TracksReplaceInPlace: true }, async () => {
+        const p = await runTracks();
+        const notes = JSON.stringify(p.Recent);
+        expect(p.Changed === 0 && p.Failed === 1, 'a short copy was accepted: ' + notes);
+        expect((p.Recent || []).some((r) => /Cut Short.*didn't come out right \(it lasts/.test(r)), 'not refused for its length: ' + notes);
+        expect(fs.statSync(file).size === size && audioLanguages(file) === 'eng,fre', 'the original was changed');
+        expect(!fs.existsSync(`${file}.medic-tmp.mkv`), 'the temp file was left behind');
+        return 'short copy refused, original untouched';
+    });
 });
 
 await check('Medic Picks builds picks from watch history', async () => {
