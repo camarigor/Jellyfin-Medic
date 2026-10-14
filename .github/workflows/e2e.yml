@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# It only reads the code.
+permissions:
+  contents: read
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
