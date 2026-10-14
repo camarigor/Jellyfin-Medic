@@ -5,12 +5,16 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 
 ## Unreleased
 
+### Added
+- **Remove can leave the download in the client.** The Remove panel has a new tick box, on by default. Untick it and the download stays in the download client, still seeding, while Sonarr or Radarr stops tracking it, as their own "Ignore download" does. Handy for a finished download that couldn't be imported.
+
 ### Fixed
 - **The keys file is now private.** `medic-profiles/secrets.json`, which holds the Sonarr and Radarr API keys and the qBittorrent password, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
 - **Saved keys stay with their server.** Changing Sonarr's, Radarr's or qBittorrent's address kept the saved key or password, and the next test or list sent it to the new address. When the address now points at a different server, the saved key or password is cleared and has to be typed again. A keys file that can't be read is also kept as `secrets.json.bad` instead of being replaced by one holding only the newest key (the other keys used to vanish without a word).
 - **Blocking files in qBittorrent keeps your own list as it was.** Block removed any of Medic Profiles' patterns you had added yourself (`*.zip`, say, with archives left unticked) while saying your entries were kept, and Unblock left the list switched on even if you had it off. Medic Profiles now remembers what it added and whether the list was on: Block only adds what's missing, and Unblock removes only what it added and switches the list back on or off as it was. The settings page now also says that qBittorrent applies the list to every torrent, not only films and series.
 - **Fewer sign-ins to qBittorrent, and no ban from a wrong password.** Every time the Settings tab opened, Medic Profiles signed in to qBittorrent again and never signed out. With a wrong password saved, each visit counted as a failed sign-in, and qBittorrent blocks the server's address after a few. It now keeps one session (and signs it out when the address or login changes), tries a refused password only once every 5 minutes, and says when qBittorrent answered but sent no settings instead of suggesting an update.
 - **Custom format advice no longer points at the wrong format.** Each piece of advice named the first custom format whose name matched a broad pattern, and listed every profile that didn't penalise that one format. With TRaSH's formats it could tell you to refuse "DV HDR10" (which has the fallback) or "TrueHD ATMOS" (lossless audio you had scored up), even where "DV (w/o HDR fallback)" and "DTS" were already refused, and it suggested holding back HEVC in 4K profiles too. Advice now looks at every matching format: profiles that already score one down are fine, profiles that score one up made a choice it won't overrule, and the Dolby Vision advice only matches formats for Dolby Vision without a fallback. The HEVC advice leaves out profiles that allow 2160p.
+- **A long download queue says when it's cut short.** Medic Profiles reads up to 1,000 queue entries from each app and didn't say when there were more. The Downloads summary now says how many of how many are shown.
 
 ## [1.1.1] – 2026-10-11
 

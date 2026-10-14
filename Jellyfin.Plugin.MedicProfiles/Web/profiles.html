@@ -288,6 +288,7 @@
                 let activeTab = 'downloads';
                 let filter = 'all';
                 let queue = [];
+                let queueNotes = {}; // per app, when its queue was too long to read in full
                 let timer = null;
                 // While a confirm or import panel is open, the list isn't redrawn under the admin's hands.
                 let busyPanels = 0;
@@ -355,6 +356,7 @@
                         showSetup(data.configured);
                         showErrors(data.errors);
                         queue = data.rows || [];
+                        queueNotes = data.notes || {};
                         renderQueue();
                     }).catch(function () {
                         showErrors({ radarr: 'Medic Profiles couldn’t load the queue. Reload the page and try again.' });
@@ -375,9 +377,9 @@
                         return filter === 'all' || (filter === 'problems' ? r.health !== 'ok' : r.app === filter);
                     });
                     const problems = queue.filter(function (r) { return r.health !== 'ok'; }).length;
-                    $('mp-queue-summary').textContent = queue.length
+                    $('mp-queue-summary').textContent = (queue.length
                         ? queue.length + ' download' + (queue.length === 1 ? '' : 's') + (problems ? ', ' + problems + ' need' + (problems === 1 ? 's' : '') + ' attention' : '') + '. Updates every 30 seconds.'
-                        : '';
+                        : '') + Object.keys(queueNotes).map(function (app) { return ' ' + queueNotes[app]; }).join('');
                     $('mp-queue-empty').hidden = rows.length > 0;
                     $('mp-queue-empty').textContent = queue.length ? 'Nothing matches this filter.' : 'Nothing is downloading.';
                     rows.forEach(function (r) { list.appendChild(downloadCard(r)); });
@@ -466,18 +468,21 @@
                 function openRemove(r, container, block) {
                     const box = openPanel(container, 'mp-confirm');
                     box.appendChild(el('p', null, block
-                        ? 'Remove “' + r.mediaTitle + '” from ' + appName(r.app) + ' and the download client, and block this release so it’s never grabbed again?'
-                        : 'Remove “' + r.mediaTitle + '” from ' + appName(r.app) + ' and the download client? It isn’t blocked, so it could be grabbed again.'));
-                    let again = null;
-                    if (block) {
+                        ? 'Remove “' + r.mediaTitle + '” from ' + appName(r.app) + ' and block this release so it’s never grabbed again?'
+                        : 'Remove “' + r.mediaTitle + '” from ' + appName(r.app) + '? It isn’t blocked, so it could be grabbed again.'));
+                    function check(text, checked) {
                         const label = el('label', 'mp-check');
-                        again = el('input');
-                        again.type = 'checkbox';
-                        again.checked = true;
-                        label.appendChild(again);
-                        label.appendChild(el('span', null, 'Search for a different release straight away'));
+                        const input = el('input');
+                        input.type = 'checkbox';
+                        input.checked = checked;
+                        label.appendChild(input);
+                        label.appendChild(el('span', null, text));
                         box.appendChild(label);
+                        return input;
                     }
+                    const again = block ? check('Search for a different release straight away', true) : null;
+                    // Unticked, the download stays in the client and keeps seeding; Sonarr or Radarr just stops tracking it.
+                    const fromClient = check('Also delete it from the download client. Untick to leave it there, still seeding; ' + appName(r.app) + ' stops tracking it.', true);
                     const row = el('div', 'mp-row');
                     const note = el('p', 'mp-note');
                     note.setAttribute('aria-live', 'polite');
@@ -485,7 +490,7 @@
                         go.disabled = true;
                         note.className = 'mp-note';
                         note.textContent = 'Working…';
-                        post('Queue/Remove', { app: r.app, queueIds: r.queueIds, block: block, searchAgain: again ? again.checked : false, title: r.mediaTitle })
+                        post('Queue/Remove', { app: r.app, queueIds: r.queueIds, block: block, searchAgain: again ? again.checked : false, keepInClient: !fromClient.checked, title: r.mediaTitle })
                             .then(function (res) {
                                 note.className = 'mp-note ' + (res.ok ? 'ok' : 'bad');
                                 note.textContent = res.message;
