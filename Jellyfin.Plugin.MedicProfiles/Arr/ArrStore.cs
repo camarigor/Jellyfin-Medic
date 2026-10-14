@@ -73,7 +73,7 @@ public class ArrStore
             }
 
             Directory.CreateDirectory(_root);
-            WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions));
+            WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions), secret: true);
         }
     }
 
@@ -86,7 +86,7 @@ public class ArrStore
             var secrets = ReadSecrets();
             secrets.QbitPassword = string.IsNullOrEmpty(password) ? null : password;
             Directory.CreateDirectory(_root);
-            WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions));
+            WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions), secret: true);
         }
     }
 
@@ -135,6 +135,7 @@ public class ArrStore
         {
             if (File.Exists(SecretsPath))
             {
+                KeepPrivate(SecretsPath);
                 return JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
             }
         }
@@ -147,13 +148,54 @@ public class ArrStore
     }
 
     // Writes to a temporary file first, so a crash mid-write can't leave a half-written file behind.
-    private void WriteAtomic(string path, string json)
+    // The keys file holds API keys and a password, so only the account Jellyfin runs as can read it.
+    private void WriteAtomic(string path, string json, bool secret = false)
     {
         var tmp = path + ".tmp";
         lock (_lock)
         {
-            File.WriteAllText(tmp, json);
+            if (secret && !OperatingSystem.IsWindows())
+            {
+                File.Delete(tmp);
+                var options = new FileStreamOptions
+                {
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.Write,
+                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                };
+                using (var writer = new StreamWriter(tmp, options))
+                {
+                    writer.Write(json);
+                }
+            }
+            else
+            {
+                File.WriteAllText(tmp, json);
+            }
+
             File.Move(tmp, path, true);
+        }
+    }
+
+    // Keys files saved by 1.1.1 and earlier could be read by any account on the server. Tighten them when read.
+    private void KeepPrivate(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        try
+        {
+            if (File.GetUnixFileMode(path) != Private)
+            {
+                File.SetUnixFileMode(path, Private);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Medic Profiles: could not make the keys file private");
         }
     }
 
