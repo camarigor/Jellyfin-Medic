@@ -19,6 +19,13 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 - **The report and the memory guard recognise tasks in any language too.** The library scan and database checks, the "heavy tasks during the day" check and the memory guard's list of heavy tasks also went by translated names, so on non-English servers those checks found nothing and the guard never stepped in. They now use the same keys.
 - **The schedule planner sees tasks that run past midnight.** Its day stopped at midnight, so a task you keep at 23:30 that takes an hour only blocked 23:30 to midnight, and a planned task could be put at 00:00 on top of it. A planned task also had to end by midnight, so it couldn't start at, say, 23:00 and run on into a quiet night. The planner now plans on the whole week, and a run carries on into the next day (Saturday night into Sunday). A kept task that Medic runs once a month now keeps that time free too, and a kept task that starts between quarter hours (23:50, say) blocks out all of its run.
 - **A schedule you change during a back-off is kept.** When a task fails, Medic moves it 3 hours later and puts the old time back after its next successful run. It put the old time back even when you had changed the schedule in Jellyfin's dashboard in the meantime. Now your change stays and the back-off simply ends.
+- **A schedule change can no longer leave a task with no schedule at all.** Applying a schedule cleared a monthly task's Jellyfin triggers before saving Medic's own note of when to run it, so if that save failed (a full disk, say) the task never ran again. Medic now saves its note first, and if that fails nothing is changed and the page says so. Restoring a backup works the same way.
+- **A monthly run that starts during an apply or restore is no longer forgotten.** Both wrote Medic's monthly schedule back from an earlier read, so a run started in between could be lost, and the task run again.
+- **A damaged Medic file is kept instead of overwritten.** When one of Medic's files couldn't be read, the next change replaced it with a new one, losing what was in it. It's now set aside with `.bad` added to its name, and the Jellyfin log says so. Files are also flushed to disk before they replace the old ones.
+- **Two schedule backups made in the same second no longer share a name.** The second replaced the first, so a restore straight after an apply could lose the schedule from before the apply.
+
+### Changed
+- **Medic keeps the 50 newest schedule backups and the newest 1000 schedule changes.** Both grew without limit.
 
 ## [1.0.17] – 2026-10-11
 
