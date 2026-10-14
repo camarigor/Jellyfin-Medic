@@ -16,7 +16,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Unit and end-to-end tests first: nothing is released or added to the manifest unless they pass.
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   release:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the tagged code
