@@ -104,7 +104,7 @@
                             </div>
                             <div class="md-maint-col">
                                 <strong>Is your server open to the internet?</strong>
-                                <p class="so-muted so-small">Checks whether Jellyfin answers from outside at an address you give. Only that address is sent. The boxes start from what Medic found; change any of them.</p>
+                                <p class="so-muted so-small">Checks whether something answers at an address you give. A domain, or an address over http, is tried from this server. An IP over https, or one that doesn't answer here, is tested from the internet by portchecker.io, which gets only that address and port. The boxes start from what Medic found; change any of them.</p>
                                 <div class="md-expose-form">
                                     <label class="md-field"><span>Protocol</span>
                                         <select id="md-expose-protocol" class="so-input">
@@ -3030,17 +3030,24 @@
                 async function loadExposureDefaults() {
                     try {
                         const d = await getJson('/JellyfinMedic/ExposureDefaults');
-                        exposeIp = pick(d, 'PublicIp');
-                        if ($('md-expose-host') && !$('md-expose-host').value) {
-                            $('md-expose-host').value = pick(d, 'Domain') || exposeIp || '';
+                        if ($('md-expose-host') && !$('md-expose-host').value && pick(d, 'Domain')) {
+                            $('md-expose-host').value = pick(d, 'Domain');
                         }
                         if (pick(d, 'Port')) $('md-expose-port').value = String(pick(d, 'Port'));
                         if (pick(d, 'Protocol')) $('md-expose-protocol').value = pick(d, 'Protocol');
                     } catch (e) { /* leave the boxes blank */ }
                 }
 
-                $('md-expose-use-ip').addEventListener('click', function () {
-                    if (exposeIp) $('md-expose-host').value = exposeIp;
+                // The public IP is only looked up on this button: finding it means asking a service on the internet.
+                $('md-expose-use-ip').addEventListener('click', async function () {
+                    const out = $('md-expose-result');
+                    if (!exposeIp) {
+                        try {
+                            exposeIp = pick(await getJson('/JellyfinMedic/ExposureDefaults', { publicIp: true }), 'PublicIp');
+                        } catch (e) { /* reported below */ }
+                    }
+                    if (!exposeIp) { out.textContent = 'Couldn\'t find your public IP. Type it in instead.'; out.className = 'so-muted so-small'; return; }
+                    $('md-expose-host').value = exposeIp;
                     $('md-expose-port').value = '8096';
                     $('md-expose-protocol').value = 'http';
                 });
@@ -3060,9 +3067,13 @@
                             protocol: $('md-expose-protocol').value
                         });
                         const where = pick(r, 'Host') + ':' + pick(r, 'Port');
+                        // A test from this server only shows this server's view, so it never reads as "closed to the internet".
+                        const fromHere = pick(r, 'FromThisServer');
                         if (pick(r, 'Error')) { out.textContent = pick(r, 'Error'); out.className = 'so-muted so-small'; }
-                        else if (pick(r, 'Reachable') && pick(r, 'RespondedAsJellyfin')) { out.textContent = 'Jellyfin answered from the internet at ' + where + '. If that\'s your HTTPS reverse proxy, that\'s expected — keep HTTPS on and use strong passwords. If it\'s the raw Jellyfin port, close it and use the proxy instead.'; out.className = 'md-warn-text so-small'; }
-                        else if (pick(r, 'Reachable')) { out.textContent = 'Something answered at ' + where + ', but it didn\'t look like Jellyfin. It may be your reverse proxy or another service.'; out.className = 'md-warn-text so-small'; }
+                        else if (pick(r, 'Reachable') && pick(r, 'RespondedAsJellyfin')) { out.textContent = 'Jellyfin answered at ' + where + ' (tested from this server, not from the internet). If that\'s your HTTPS reverse proxy, that\'s expected: keep HTTPS on and use strong passwords. If it\'s the raw Jellyfin port, don\'t open it to the internet; use the proxy instead.'; out.className = 'md-warn-text so-small'; }
+                        else if (pick(r, 'Reachable') && fromHere) { out.textContent = 'Something answered at ' + where + ' (tested from this server), but it didn\'t look like Jellyfin. It may be your reverse proxy, a redirect, a certificate this server doesn\'t trust, or another service.'; out.className = 'md-warn-text so-small'; }
+                        else if (pick(r, 'Reachable')) { out.textContent = 'Something answers at ' + where + ' from the internet (checked by portchecker.io, which only sees that the port is open). If that\'s the raw Jellyfin port, close it and use an HTTPS reverse proxy instead.'; out.className = 'md-warn-text so-small'; }
+                        else if (fromHere) { out.textContent = 'Nothing answered at ' + where + ' when this server tried it. That doesn\'t prove it\'s closed to the internet: many routers can\'t reach their own public address from inside, and a domain can point elsewhere on your network.'; out.className = 'so-muted so-small'; }
                         else { out.textContent = 'Nothing answered at ' + where + ' from the internet. Only people on your network or VPN can reach it there (or your ISP uses CGNAT, which blocks this test).'; out.className = 'md-ok-text so-small'; }
                     } catch (e) {
                         out.textContent = 'Couldn\'t run the check.';
