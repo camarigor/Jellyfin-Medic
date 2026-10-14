@@ -294,6 +294,31 @@ await check('Medic Profiles connects to Sonarr', async () => {
     expect(test.json?.ok, 'test failed: ' + test.text);
 });
 
+await check('Medic Profiles never sends a saved key to a new server, and keeps a damaged keys file', async () => {
+    const keySet = async () => (await ok('/MedicProfiles/Status')).sonarr.keySet;
+    try {
+        // Same server, key box left blank: the saved key stays.
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR + '/', RadarrUrl: '' });
+        expect(await keySet(), 'the key was dropped although the server is the same');
+        // Another server, key box left blank: the key must be typed again.
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: 'http://host.docker.internal:18994', RadarrUrl: '' });
+        expect(!(await keySet()), 'the saved key was kept for a different server');
+    } finally {
+        // Back to the pretend Sonarr whatever happened, so a failure here doesn't also fail the checks after it.
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
+    }
+
+    // A keys file that can't be read is set aside, not replaced by one holding only the new key.
+    const { execFileSync } = await import('node:child_process');
+    const dir = '/config/data/medic-profiles';
+    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{not json' > ${dir}/secrets.json`]);
+    await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
+    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'cat', `${dir}/secrets.json.bad`]).toString();
+    expect(kept.includes('{not json'), 'the damaged file was not kept: ' + kept);
+    expect(await keySet(), 'the new key was not saved');
+    return 'key dropped for a new server; damaged file kept as secrets.json.bad';
+});
+
 await check('Medic Profiles shows indexer status', async () => {
     const r = await ok('/MedicProfiles/Indexers');
     const byName = Object.fromEntries((r.rows || []).map((x) => [x.name, x]));
