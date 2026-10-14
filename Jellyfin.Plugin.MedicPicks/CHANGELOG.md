@@ -13,6 +13,8 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 - **"My requests" no longer fails when Seerr is down.** With Seerr unreachable, looking up the person's Seerr account wasn't caught, so the page got an error instead of "can't reach Seerr" (and only now and then, as a found account is remembered for 10 minutes). A refused key or a broken Seerr is now also told apart from "never signed in to Seerr". Every call to Seerr gives up after 10 seconds, so a Seerr that hangs can't hold the page open, and a picks rebuild that fails is now written to the log.
 - **A TMDb outage no longer empties Discover.** A refused key, a rate limit, a TMDb error or no connection came back as "no recommendations", so the nightly run saved an empty Discover over everyone's previous one, and also cleared the list of titles already shown. Those failures are now told apart from an empty answer: each person keeps their last Discover picks, and after the first failure the run stops asking TMDb for the others.
 - **A title you hide stays hidden even if your picks were being rebuilt at the time.** A rebuild, the nightly one included, saved the picks it had worked out with the title still in them, so it came back until the next rebuild. Picks are now saved without anything hidden at that moment, and your choices are changed one at a time, so two changes made together can't undo each other.
+- **Linked picks leave out titles you've started.** They only left out what you had finished, so a film you'd stopped halfway through, or a series with an episode under way, could be suggested to you.
+- **The My picks page names itself with the plugin's version.** It told Jellyfin it was version 0.0.1, which is what Dashboard and Devices showed for it.
 
 ## [1.2.3] – 2026-10-11
 
