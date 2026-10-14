@@ -7,6 +7,14 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Off and Suggest no longer clear the Schedule's time range.** The time range buttons' handler also caught the Off and Suggest buttons in Settings, so choosing one cleared the range, and choosing a range unmarked Off and Suggest.
+- **The arrow keys reach the Media report tab.** The tab list they used left it out, so they skipped it.
+- **"What's new" behaves like a dialog.** It now takes the focus when it opens, closes with Escape, keeps Tab inside it, and gives the focus back when it closes. Each tab also says which panel it controls, for screen readers.
+- **The playback test no longer puts your access token in the address.** It sent the token as `api_key` in every playlist and segment address, which ends up in proxy and server logs; it now goes in a header.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
