@@ -754,12 +754,18 @@ public class MedicController : ControllerBase
         return Ok(new { Success = true, Stopped = stopped.Count, Names = stopped });
     }
 
-    /// <summary>The address, port and protocol to offer in the exposure check (your public IP and domain, if known).</summary>
+    /// <summary>
+    /// The address, port and protocol to offer in the exposure check: the domain, if known, and the public IP
+    /// only when <paramref name="publicIp"/> is set, since finding it asks a service on the internet.
+    /// </summary>
     [HttpGet("ExposureDefaults")]
-    public async Task<ActionResult<ExposureDefaults>> GetExposureDefaults(CancellationToken cancellationToken) =>
-        Ok(await ExposureChecker.DefaultsAsync(TryNetwork(), cancellationToken).ConfigureAwait(false));
+    public async Task<ActionResult<ExposureDefaults>> GetExposureDefaults([FromQuery] bool publicIp = false, CancellationToken cancellationToken = default) =>
+        Ok(await ExposureChecker.DefaultsAsync(TryNetwork(), publicIp, cancellationToken).ConfigureAwait(false));
 
-    /// <summary>Checks whether Jellyfin answers from the internet at a host/port/protocol. Sends only that address.</summary>
+    /// <summary>
+    /// Checks whether something answers at a host/port/protocol: from this server for a domain or plain http,
+    /// otherwise through a public port-checker, which gets only that address and port.
+    /// </summary>
     [HttpPost("ExposureCheck")]
     public async Task<ActionResult<ExposureResult>> ExposureCheck([FromQuery] string host, [FromQuery] int port = 443, [FromQuery] string protocol = "https", CancellationToken cancellationToken = default)
     {

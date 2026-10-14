@@ -7,6 +7,14 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **The exposure check says where it tested from.** For a domain, or an address over http, the check connects from this server itself, but the result said "from the internet". It now says when a result is only this server's view, and a domain that doesn't answer from here is no longer shown in green as closed: a router that can't reach its own public address from inside, or a domain that points inside your network, looked the same. A certificate this server doesn't trust now counts as something answering, redirects are no longer followed, and an address with a path in it, or an IPv6 address over http, no longer breaks the check.
+
+### Changed
+- **Your public IP is looked up only when you press "Use my IP + 8096".** Opening the Dashboard asked a service on the internet for it every time. It's now asked for on that button only, and kept for an hour.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
