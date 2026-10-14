@@ -106,14 +106,16 @@ public class PicksController : ControllerBase
             return BadRequest();
         }
 
-        // Hidden titles are only changed by Hide and Unhide, so keep the saved ones.
-        var saved = _store.LoadPreferences(userId);
-        prefs.HiddenItems = saved.HiddenItems;
-        prefs.HiddenTmdb = saved.HiddenTmdb;
-        // New choices start from the best matches again.
-        prefs.SeenItems = new();
-        prefs.SeenTmdb = new();
-        _store.SavePreferences(userId, prefs.Normalise());
+        _store.UpdatePreferences(userId, saved =>
+        {
+            // Hidden titles are only changed by Hide and Unhide, so keep the saved ones.
+            prefs.HiddenItems = saved.HiddenItems;
+            prefs.HiddenTmdb = saved.HiddenTmdb;
+            // New choices start from the best matches again.
+            prefs.SeenItems = new();
+            prefs.SeenTmdb = new();
+            return prefs;
+        });
         StartRebuild(userId);
         return NoContent();
     }
@@ -129,15 +131,17 @@ public class PicksController : ControllerBase
             return Unauthorized();
         }
 
-        var prefs = _store.LoadPreferences(userId);
         var picks = _store.Load(userId);
-        if (picks is not null)
+        _store.UpdatePreferences(userId, prefs =>
         {
-            prefs.SeenItems.AddRange(picks.InLibrary.Concat(picks.Linked).Select(p => p.ItemId));
-            prefs.SeenTmdb.AddRange(picks.Discover.Select(p => (p.MediaType == "tv" ? "tv:" : "movie:") + p.TmdbId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
-        }
+            if (picks is not null)
+            {
+                prefs.SeenItems.AddRange(picks.InLibrary.Concat(picks.Linked).Select(p => p.ItemId));
+                prefs.SeenTmdb.AddRange(picks.Discover.Select(p => PicksStore.TmdbKey(p.MediaType, p.TmdbId)));
+            }
 
-        _store.SavePreferences(userId, prefs.Normalise());
+            return prefs;
+        });
         StartRebuild(userId);
         return NoContent();
     }
@@ -158,27 +162,23 @@ public class PicksController : ControllerBase
             return BadRequest();
         }
 
-        var prefs = _store.LoadPreferences(userId);
-        var picks = _store.Load(userId);
-        if (request.ItemId is { } itemId)
+        _store.UpdatePreferences(userId, prefs =>
         {
-            prefs.HiddenItems.Add(itemId);
-            picks?.InLibrary.RemoveAll(p => p.ItemId == itemId);
-            picks?.Linked.RemoveAll(p => p.ItemId == itemId);
-        }
-        else
-        {
-            string key = (request.MediaType == "tv" ? "tv:" : "movie:") + request.TmdbId!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            prefs.HiddenTmdb.Add(key);
-            picks?.Discover.RemoveAll(p => (p.MediaType == "tv" ? "tv:" : "movie:") + p.TmdbId.ToString(System.Globalization.CultureInfo.InvariantCulture) == key);
-        }
+            if (request.ItemId is { } itemId)
+            {
+                prefs.HiddenItems.Add(itemId);
+            }
+            else
+            {
+                prefs.HiddenTmdb.Add(PicksStore.TmdbKey(request.MediaType, request.TmdbId!.Value));
+            }
 
-        _store.SavePreferences(userId, prefs.Normalise());
-        if (picks is not null)
-        {
-            _store.Save(userId, picks);
-        }
+            return prefs;
+        });
+        _store.RemoveHidden(userId);
 
+        // A rebuild that started before this goes round again, to fill the gap; any rebuild, the nightly
+        // one included, leaves hidden titles out when it saves.
         RebuildAgainIfRunning(userId);
         return NoContent();
     }
@@ -194,10 +194,12 @@ public class PicksController : ControllerBase
             return Unauthorized();
         }
 
-        var prefs = _store.LoadPreferences(userId);
-        prefs.HiddenItems.Clear();
-        prefs.HiddenTmdb.Clear();
-        _store.SavePreferences(userId, prefs);
+        _store.UpdatePreferences(userId, prefs =>
+        {
+            prefs.HiddenItems.Clear();
+            prefs.HiddenTmdb.Clear();
+            return prefs;
+        });
         StartRebuild(userId);
         return NoContent();
     }
