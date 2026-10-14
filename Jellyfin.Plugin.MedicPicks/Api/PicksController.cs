@@ -381,7 +381,9 @@ public class PicksController : ControllerBase
         // Always check for a newer page, so an update shows straight away instead of a cached copy.
         Response.Headers.CacheControl = "no-cache";
         using var reader = new StreamReader(stream);
-        return Content(reader.ReadToEnd(), MediaTypeNames.Text.Html);
+        // The page names itself to Jellyfin (in Dashboard, Devices) with the plugin's own version.
+        string version = GetType().Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        return Content(reader.ReadToEnd().Replace("__MEDIC_PICKS_VERSION__", version, StringComparison.Ordinal), MediaTypeNames.Text.Html);
     }
 
     [HttpGet("Admin/Status")]

@@ -281,6 +281,16 @@ await check('My picks page is served with no-cache', async () => {
     expect((res.headers.get('cache-control') || '').includes('no-cache'), 'cache-control ' + res.headers.get('cache-control'));
 });
 
+await check('My picks page names itself with the plugin\'s version', async () => {
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    expect(plugin, 'Medic Picks not installed');
+    const version = plugin.Version.split('.').slice(0, 3).join('.');
+    const page = (await api('GET', '/MedicPicks/Page')).text;
+    const sent = (page.match(/var VERSION = '([^']*)'/) || [])[1];
+    expect(sent === version, `the page says ${sent}, the plugin is ${version}`);
+    return version;
+});
+
 // ---------- Medic Profiles, against a pretend Sonarr ----------
 
 const fakeArr = await import('./fake-arr.mjs');
