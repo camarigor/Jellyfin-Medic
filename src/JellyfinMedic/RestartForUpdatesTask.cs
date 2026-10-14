@@ -159,7 +159,7 @@ public static class SafeRestart
     }
 }
 
-/// <summary>Restarts Jellyfin only when plugin updates are waiting for one. Runs at 04:00 by default.</summary>
+/// <summary>Restarts Jellyfin only when plugin updates are waiting for one. It has no time set until someone adds one.</summary>
 public sealed class RestartForUpdatesTask : IScheduledTask
 {
     public const string TaskKey = "JellyfinMedicRestartForUpdates";
