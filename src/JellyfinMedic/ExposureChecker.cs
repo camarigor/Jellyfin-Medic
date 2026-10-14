@@ -27,18 +27,29 @@ public class ExposureResult
 
     public string Protocol { get; set; } = "https";
 
+    /// <summary>
+    /// True when the answer came from connecting from this server itself, not from a check out on the internet.
+    /// That can differ: a router may not reach its own public address from inside, or a domain may point home.
+    /// </summary>
+    public bool FromThisServer { get; set; }
+
     public string? Error { get; set; }
 }
 
 /// <summary>
-/// Checks whether Jellyfin answers from the open internet at a given address, port and protocol.
-/// With a domain it connects over the internet and sees whether the address responds as a Jellyfin
-/// server; for an IP and a raw port it uses a public port-checker. Only the address and port are
-/// sent out; no server data leaves your network. Runs only when the admin presses the button.
+/// Checks whether Jellyfin answers at a given address, port and protocol. With a domain (or plain http) it
+/// connects from this server and sees whether the address responds as a Jellyfin server; for an IP over
+/// https, or when that fails, it asks a public port-checker. Only the address and port are sent out; no
+/// server data leaves your network. Nothing goes out until the admin asks: the check runs on "Check now",
+/// and the public IP is looked up (at most once an hour) only for "Use my IP".
 /// </summary>
 public static class ExposureChecker
 {
-    private static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = true }) { Timeout = TimeSpan.FromSeconds(12) };
+    // Redirects aren't followed: an answer of any kind already means something is listening there.
+    private static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(12) };
+    private static readonly TimeSpan PublicIpCacheTime = TimeSpan.FromHours(1);
+    private static readonly TimeSpan NoPublicIpCacheTime = TimeSpan.FromMinutes(5);
+    private static PublicIpLookup? _publicIp;
 
     private static readonly string[] IpServices =
     {
@@ -47,11 +58,12 @@ public static class ExposureChecker
         "https://checkip.amazonaws.com"
     };
 
-    public static async Task<ExposureDefaults> DefaultsAsync(object? networkConfig, CancellationToken ct)
+    public static async Task<ExposureDefaults> DefaultsAsync(object? networkConfig, bool lookUpPublicIp, CancellationToken ct)
     {
         var defaults = new ExposureDefaults
         {
-            PublicIp = await PublicIpAsync(ct).ConfigureAwait(false)
+            // Only when asked for: finding it means asking a service out on the internet.
+            PublicIp = lookUpPublicIp ? await PublicIpAsync(ct).ConfigureAwait(false) : null
         };
 
         // Try to suggest the domain from the published server URL, if one is set.
@@ -83,13 +95,23 @@ public static class ExposureChecker
             return result;
         }
 
-        // A domain (or any host over http/https): try to reach it the way a viewer would.
-        bool looksLikeIp = IPAddress.TryParse(result.Host, out _);
+        // Only a host name or an address: anything else (a path, a query, a second address) is refused here,
+        // instead of ending up in the URL.
+        string bare = result.Host.Trim('[', ']');
+        if (Uri.CheckHostName(bare) == UriHostNameType.Unknown
+            || !Uri.TryCreate(new UriBuilder(protocol, bare, port, "/System/Info/Public").ToString(), UriKind.Absolute, out var url))
+        {
+            result.Error = "That doesn't look like a domain or IP address.";
+            return result;
+        }
+
+        // A domain (or plain http): connect from this server, the way a viewer's app would.
+        bool looksLikeIp = IPAddress.TryParse(bare, out _);
         if (!looksLikeIp || protocol == "http")
         {
+            result.FromThisServer = true;
             try
             {
-                string url = $"{protocol}://{result.Host}:{port}/System/Info/Public";
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
                 result.Checked = true;
@@ -98,25 +120,35 @@ public static class ExposureChecker
                 result.RespondedAsJellyfin = body.Contains("\"ServerName\"", StringComparison.OrdinalIgnoreCase) || body.Contains("\"Version\"", StringComparison.OrdinalIgnoreCase) || body.Contains("\"Id\"", StringComparison.OrdinalIgnoreCase);
                 return result;
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            catch (HttpRequestException ex) when (ex.HttpRequestError == HttpRequestError.SecureConnectionError)
             {
-                // Couldn't connect: for a domain that means nothing is answering there.
+                // A certificate this server doesn't trust (self-signed, say): something is listening there all the same.
+                result.Checked = true;
+                result.Reachable = true;
+                return result;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+            {
+                // Nothing answered from here. For a domain that is the result, though it only tells about this server's view.
                 if (!looksLikeIp)
                 {
                     result.Checked = true;
                     result.Reachable = false;
                     return result;
                 }
-                // For an IP, fall through to the port-checker.
+
+                // For an IP, ask the port-checker from outside instead.
+                result.FromThisServer = false;
             }
         }
 
         // A raw IP and port: ask a public port-checker whether it answers.
         try
         {
+            string query = System.Text.Json.JsonSerializer.Serialize(new { host = bare, ports = new[] { port.ToString(System.Globalization.CultureInfo.InvariantCulture) } });
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://portchecker.io/api/query")
             {
-                Content = new StringContent($"{{\"host\":\"{result.Host}\",\"ports\":[\"{port}\"]}}", System.Text.Encoding.UTF8, "application/json")
+                Content = new StringContent(query, System.Text.Encoding.UTF8, "application/json")
             };
             using var response = await Http.SendAsync(request, ct).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
@@ -146,7 +178,26 @@ public static class ExposureChecker
         return result;
     }
 
+    // Kept for a while so pressing the button again doesn't ask an outside service each time. A failed
+    // lookup is kept for less, so a short network blip doesn't hide the address for an hour.
     private static async Task<string?> PublicIpAsync(CancellationToken ct)
+    {
+        var known = _publicIp;
+        if (known is not null && DateTime.UtcNow - known.At < (known.Ip is null ? NoPublicIpCacheTime : PublicIpCacheTime))
+        {
+            return known.Ip;
+        }
+
+        string? ip = await LookUpPublicIpAsync(ct).ConfigureAwait(false);
+        if (!ct.IsCancellationRequested)
+        {
+            _publicIp = new PublicIpLookup(ip, DateTime.UtcNow);
+        }
+
+        return ip;
+    }
+
+    private static async Task<string?> LookUpPublicIpAsync(CancellationToken ct)
     {
         foreach (var service in IpServices)
         {
@@ -168,4 +219,7 @@ public static class ExposureChecker
 
         return null;
     }
+
+    // A class, not a tuple: requests can read it while another one replaces it, and a reference swap is atomic.
+    private sealed record PublicIpLookup(string? Ip, DateTime At);
 }

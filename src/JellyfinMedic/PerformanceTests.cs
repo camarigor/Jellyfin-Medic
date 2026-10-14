@@ -333,7 +333,8 @@ public static class SpeedTester
             result.Error = $"Couldn't reach the speed test server ({ex.Message}).";
         }
 
-        result.Options = SpeedAdvice.Options(result.UploadMbps);
+        // No upload measured means nothing to base a limit on: an advised "1 Mbps" would only be a guess.
+        result.Options = result.UploadMbps > 0 ? SpeedAdvice.Options(result.UploadMbps) : new List<SpeedOption>();
         result.IptvHdStreams = (int)Math.Floor(result.DownloadMbps * 0.8 / 8);
         return result;
     }
@@ -410,22 +411,54 @@ public static class SpeedTester
             {
                 while (!window.IsCancellationRequested && Interlocked.Read(ref total) < maxTotal)
                 {
-                    using var content = new ByteArrayContent(payload);
-                    content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                    using var content = new CountingContent(payload, sent => Interlocked.Add(ref total, sent));
                     using var response = await Http.PostAsync($"{Base}/__up", content, window.Token).ConfigureAwait(false);
                     response.EnsureSuccessStatusCode();
-                    Interlocked.Add(ref total, chunk);
                 }
             }
             catch (OperationCanceledException) when (window.IsCancellationRequested && !ct.IsCancellationRequested)
             {
-                // Time's up: only fully sent chunks are counted.
+                // Time's up: what was sent so far counts, so a slow upload that can't finish a chunk still measures.
             }
         }
 
         await Task.WhenAll(Enumerable.Range(0, Workers).Select(_ => Worker())).ConfigureAwait(false);
         sw.Stop();
         return Mbps(total, sw.Elapsed);
+    }
+
+    /// <summary>The upload body, written in small pieces and counted as each one is handed to the connection.</summary>
+    private sealed class CountingContent : HttpContent
+    {
+        private const int Piece = 64 * 1024;
+        private readonly byte[] _payload;
+        private readonly Action<int> _sent;
+
+        public CountingContent(byte[] payload, Action<int> sent)
+        {
+            _payload = payload;
+            _sent = sent;
+            Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) =>
+            SerializeToStreamAsync(stream, context, CancellationToken.None);
+
+        protected override async Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context, CancellationToken cancellationToken)
+        {
+            for (int offset = 0; offset < _payload.Length; offset += Piece)
+            {
+                int length = Math.Min(Piece, _payload.Length - offset);
+                await stream.WriteAsync(_payload.AsMemory(offset, length), cancellationToken).ConfigureAwait(false);
+                _sent(length);
+            }
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _payload.Length;
+            return true;
+        }
     }
 
     private static double Mbps(long bytes, TimeSpan elapsed) =>

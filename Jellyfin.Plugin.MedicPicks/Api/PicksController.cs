@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicPicks.Api;
 
@@ -36,8 +37,9 @@ public class PicksController : ControllerBase
     private readonly PicksEngine _engine;
     private readonly SeerrClient _seerr;
     private readonly RequestTracker _requests;
+    private readonly ILogger<PicksController> _logger;
 
-    public PicksController(PicksStore store, ITaskManager taskManager, IAuthorizationContext authContext, PicksEngine engine, SeerrClient seerr, RequestTracker requests)
+    public PicksController(PicksStore store, ITaskManager taskManager, IAuthorizationContext authContext, PicksEngine engine, SeerrClient seerr, RequestTracker requests, ILogger<PicksController> logger)
     {
         _requests = requests;
         _store = store;
@@ -45,6 +47,7 @@ public class PicksController : ControllerBase
         _authContext = authContext;
         _engine = engine;
         _seerr = seerr;
+        _logger = logger;
     }
 
     [HttpGet("Me")]
@@ -68,7 +71,7 @@ public class PicksController : ControllerBase
             note = picks is null
                 ? "Your picks haven't been built yet. They're made overnight, so check back tomorrow."
                 : picks.Note,
-            seerrUrl = string.IsNullOrWhiteSpace(config.JellyseerrUrl) ? null : config.JellyseerrUrl.TrimEnd('/'),
+            seerrUrl = SeerrLink(config),
             // "direct": the button makes the request; "link": it opens Seerr; "none": it opens TMDb.
             requestMode = RequestMode(config),
             preferences = _store.LoadPreferences(userId),
@@ -103,14 +106,16 @@ public class PicksController : ControllerBase
             return BadRequest();
         }
 
-        // Hidden titles are only changed by Hide and Unhide, so keep the saved ones.
-        var saved = _store.LoadPreferences(userId);
-        prefs.HiddenItems = saved.HiddenItems;
-        prefs.HiddenTmdb = saved.HiddenTmdb;
-        // New choices start from the best matches again.
-        prefs.SeenItems = new();
-        prefs.SeenTmdb = new();
-        _store.SavePreferences(userId, prefs.Normalise());
+        _store.UpdatePreferences(userId, saved =>
+        {
+            // Hidden titles are only changed by Hide and Unhide, so keep the saved ones.
+            prefs.HiddenItems = saved.HiddenItems;
+            prefs.HiddenTmdb = saved.HiddenTmdb;
+            // New choices start from the best matches again.
+            prefs.SeenItems = new();
+            prefs.SeenTmdb = new();
+            return prefs;
+        });
         StartRebuild(userId);
         return NoContent();
     }
@@ -126,15 +131,17 @@ public class PicksController : ControllerBase
             return Unauthorized();
         }
 
-        var prefs = _store.LoadPreferences(userId);
         var picks = _store.Load(userId);
-        if (picks is not null)
+        _store.UpdatePreferences(userId, prefs =>
         {
-            prefs.SeenItems.AddRange(picks.InLibrary.Concat(picks.Linked).Select(p => p.ItemId));
-            prefs.SeenTmdb.AddRange(picks.Discover.Select(p => (p.MediaType == "tv" ? "tv:" : "movie:") + p.TmdbId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
-        }
+            if (picks is not null)
+            {
+                prefs.SeenItems.AddRange(picks.InLibrary.Concat(picks.Linked).Select(p => p.ItemId));
+                prefs.SeenTmdb.AddRange(picks.Discover.Select(p => PicksStore.TmdbKey(p.MediaType, p.TmdbId)));
+            }
 
-        _store.SavePreferences(userId, prefs.Normalise());
+            return prefs;
+        });
         StartRebuild(userId);
         return NoContent();
     }
@@ -155,27 +162,23 @@ public class PicksController : ControllerBase
             return BadRequest();
         }
 
-        var prefs = _store.LoadPreferences(userId);
-        var picks = _store.Load(userId);
-        if (request.ItemId is { } itemId)
+        _store.UpdatePreferences(userId, prefs =>
         {
-            prefs.HiddenItems.Add(itemId);
-            picks?.InLibrary.RemoveAll(p => p.ItemId == itemId);
-            picks?.Linked.RemoveAll(p => p.ItemId == itemId);
-        }
-        else
-        {
-            string key = (request.MediaType == "tv" ? "tv:" : "movie:") + request.TmdbId!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            prefs.HiddenTmdb.Add(key);
-            picks?.Discover.RemoveAll(p => (p.MediaType == "tv" ? "tv:" : "movie:") + p.TmdbId.ToString(System.Globalization.CultureInfo.InvariantCulture) == key);
-        }
+            if (request.ItemId is { } itemId)
+            {
+                prefs.HiddenItems.Add(itemId);
+            }
+            else
+            {
+                prefs.HiddenTmdb.Add(PicksStore.TmdbKey(request.MediaType, request.TmdbId!.Value));
+            }
 
-        _store.SavePreferences(userId, prefs.Normalise());
-        if (picks is not null)
-        {
-            _store.Save(userId, picks);
-        }
+            return prefs;
+        });
+        _store.RemoveHidden(userId);
 
+        // A rebuild that started before this goes round again, to fill the gap; any rebuild, the nightly
+        // one included, leaves hidden titles out when it saves.
         RebuildAgainIfRunning(userId);
         return NoContent();
     }
@@ -191,10 +194,12 @@ public class PicksController : ControllerBase
             return Unauthorized();
         }
 
-        var prefs = _store.LoadPreferences(userId);
-        prefs.HiddenItems.Clear();
-        prefs.HiddenTmdb.Clear();
-        _store.SavePreferences(userId, prefs);
+        _store.UpdatePreferences(userId, prefs =>
+        {
+            prefs.HiddenItems.Clear();
+            prefs.HiddenTmdb.Clear();
+            return prefs;
+        });
         StartRebuild(userId);
         return NoContent();
     }
@@ -228,9 +233,10 @@ public class PicksController : ControllerBase
                 {
                     await _engine.BuildForUserAsync(userId, _engine.CreateRunContext(), System.Threading.CancellationToken.None).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // The nightly run will catch up.
+                    // The nightly run will catch up, but say why this one didn't.
+                    _logger.LogWarning(ex, "Medic Picks: couldn't rebuild picks for user {UserId}", userId);
                 }
 
                 lock (Rebuilding)
@@ -393,7 +399,9 @@ public class PicksController : ControllerBase
         // Always check for a newer page, so an update shows straight away instead of a cached copy.
         Response.Headers.CacheControl = "no-cache";
         using var reader = new StreamReader(stream);
-        return Content(reader.ReadToEnd(), MediaTypeNames.Text.Html);
+        // The page names itself to Jellyfin (in Dashboard, Devices) with the plugin's own version.
+        string version = GetType().Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        return Content(reader.ReadToEnd().Replace("__MEDIC_PICKS_VERSION__", version, StringComparison.Ordinal), MediaTypeNames.Text.Html);
     }
 
     [HttpGet("Admin/Status")]
@@ -482,6 +490,24 @@ public class PicksController : ControllerBase
             return "none";
         }
 
-        return config.SeerrDirectRequests && _store.GetSeerrKey() is not null ? "direct" : "link";
+        if (config.SeerrDirectRequests && _store.GetSeerrKey() is not null)
+        {
+            return "direct";
+        }
+
+        // A link is only offered with an address people can open.
+        return SeerrLink(config) is null ? "none" : "link";
+    }
+
+    /// <summary>
+    /// The Seerr address people's browsers open: the one for viewers when it's set, otherwise the one this
+    /// server uses. Only http and https addresses become links (never javascript:, say).
+    /// </summary>
+    private static string? SeerrLink(Configuration.PluginConfiguration config)
+    {
+        string url = (string.IsNullOrWhiteSpace(config.SeerrLinkUrl) ? config.JellyseerrUrl ?? string.Empty : config.SeerrLinkUrl).Trim();
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            ? url.TrimEnd('/')
+            : null;
     }
 }

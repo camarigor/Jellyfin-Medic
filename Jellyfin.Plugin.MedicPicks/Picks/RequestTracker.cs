@@ -88,7 +88,16 @@ public class RequestTracker
     /// </summary>
     public async Task<(List<RequestRow>? Rows, bool Linked)> ForUserAsync(string baseUrl, Guid jellyfinUserId, CancellationToken ct)
     {
-        int? seerrUserId = await _seerr.FindSeerrUserAsync(baseUrl, jellyfinUserId, ct).ConfigureAwait(false);
+        int? seerrUserId;
+        try
+        {
+            seerrUserId = await _seerr.FindSeerrUserAsync(baseUrl, jellyfinUserId, ct).ConfigureAwait(false);
+        }
+        catch (System.Net.Http.HttpRequestException)
+        {
+            return (null, true); // Seerr couldn't be reached (the client logs why)
+        }
+
         if (seerrUserId is null)
         {
             return (new List<RequestRow>(), false);

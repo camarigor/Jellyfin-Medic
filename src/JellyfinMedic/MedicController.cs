@@ -12,6 +12,7 @@ using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using System.Text;
 using JellyfinMedic.Services;
 
@@ -49,7 +50,8 @@ public class MedicController : ControllerBase
         IUserManager users,
         ISessionManager sessions,
         IInstallationManager installs,
-        IServiceProvider services)
+        IServiceProvider services,
+        ILoggerFactory loggerFactory)
     {
         _users = users;
         _activity = ResolveActivityManager(services);
@@ -64,7 +66,7 @@ public class MedicController : ControllerBase
         _library = library;
         _pluginManager = pluginManager;
         _mediaEncoder = mediaEncoder;
-        _engine = new DiagnosticsEngine(config, paths, library, tasks, pluginManager, host);
+        _engine = new DiagnosticsEngine(config, paths, library, tasks, pluginManager, host, loggerFactory.CreateLogger<DiagnosticsEngine>());
     }
 
     /// <summary>Full check: specs plus every finding, most serious first.</summary>
@@ -754,12 +756,18 @@ public class MedicController : ControllerBase
         return Ok(new { Success = true, Stopped = stopped.Count, Names = stopped });
     }
 
-    /// <summary>The address, port and protocol to offer in the exposure check (your public IP and domain, if known).</summary>
+    /// <summary>
+    /// The address, port and protocol to offer in the exposure check: the domain, if known, and the public IP
+    /// only when <paramref name="publicIp"/> is set, since finding it asks a service on the internet.
+    /// </summary>
     [HttpGet("ExposureDefaults")]
-    public async Task<ActionResult<ExposureDefaults>> GetExposureDefaults(CancellationToken cancellationToken) =>
-        Ok(await ExposureChecker.DefaultsAsync(TryNetwork(), cancellationToken).ConfigureAwait(false));
+    public async Task<ActionResult<ExposureDefaults>> GetExposureDefaults([FromQuery] bool publicIp = false, CancellationToken cancellationToken = default) =>
+        Ok(await ExposureChecker.DefaultsAsync(TryNetwork(), publicIp, cancellationToken).ConfigureAwait(false));
 
-    /// <summary>Checks whether Jellyfin answers from the internet at a host/port/protocol. Sends only that address.</summary>
+    /// <summary>
+    /// Checks whether something answers at a host/port/protocol: from this server for a domain or plain http,
+    /// otherwise through a public port-checker, which gets only that address and port.
+    /// </summary>
     [HttpPost("ExposureCheck")]
     public async Task<ActionResult<ExposureResult>> ExposureCheck([FromQuery] string host, [FromQuery] int port = 443, [FromQuery] string protocol = "https", CancellationToken cancellationToken = default)
     {
@@ -835,27 +843,29 @@ public class MedicController : ControllerBase
         return string.IsNullOrWhiteSpace(path) ? System.IO.Path.Combine(_paths.CachePath, "transcodes") : path;
     }
 
+    // The activity manager's interface, under its name in this Jellyfin version. Looked up across the loaded
+    // assemblies once: the controller is created for every request, the Dashboard's frequent polls included.
+    private static readonly Lazy<Type[]> ActivityManagerTypes = new(() =>
+        new[] { "MediaBrowser.Model.Activity.IActivityManager", "Jellyfin.Data.IActivityManager" }
+            .Select(name => AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType(name)).FirstOrDefault(t => t is not null))
+            .OfType<Type>()
+            .ToArray());
+
     private static object? ResolveActivityManager(IServiceProvider services)
     {
-        foreach (var name in new[] { "MediaBrowser.Model.Activity.IActivityManager", "Jellyfin.Data.IActivityManager" })
+        foreach (var type in ActivityManagerTypes.Value)
         {
-            var type = AppDomain.CurrentDomain.GetAssemblies()
-                .Select(a => a.GetType(name))
-                .FirstOrDefault(t => t is not null);
-            if (type is not null)
+            try
             {
-                try
+                var service = services.GetService(type);
+                if (service is not null)
                 {
-                    var service = services.GetService(type);
-                    if (service is not null)
-                    {
-                        return service;
-                    }
+                    return service;
                 }
-                catch
-                {
-                    // Not registered in this version; try the next name.
-                }
+            }
+            catch
+            {
+                // Not registered in this version; try the next name.
             }
         }
 

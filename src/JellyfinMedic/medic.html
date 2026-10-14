@@ -104,7 +104,7 @@
                             </div>
                             <div class="md-maint-col">
                                 <strong>Is your server open to the internet?</strong>
-                                <p class="so-muted so-small">Checks whether Jellyfin answers from outside at an address you give. Only that address is sent. The boxes start from what Medic found; change any of them.</p>
+                                <p class="so-muted so-small">Checks whether something answers at an address you give. A domain, or an address over http, is tried from this server. An IP over https, or one that doesn't answer here, is tested from the internet by portchecker.io, which gets only that address and port. The boxes start from what Medic found; change any of them.</p>
                                 <div class="md-expose-form">
                                     <label class="md-field"><span>Protocol</span>
                                         <select id="md-expose-protocol" class="so-input">
@@ -971,6 +971,11 @@
                 let nowTimer = null;
                 let iptv = null;
                 let exportText = '';
+
+                // False once the admin has left this page; polls only run while it's shown (see Polling below).
+                let pageShown = true;
+
+                function shown() { return pageShown && !document.hidden; }
 
                 function showStatus(text, type) {
                     status.className = 'so-status ' + type;
@@ -1961,10 +1966,11 @@
                     box.appendChild(actions);
                 }
 
-                page.querySelectorAll('.md-seg button').forEach(function (b) {
+                // Only the time range buttons: Settings has its own Off/Suggest buttons in the same style.
+                page.querySelectorAll('.md-seg button[data-range]').forEach(function (b) {
                     b.addEventListener('click', function () {
                         range = b.getAttribute('data-range');
-                        page.querySelectorAll('.md-seg button').forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+                        page.querySelectorAll('.md-seg button[data-range]').forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
                         renderTimeline();
                     });
                 });
@@ -2198,15 +2204,19 @@
                     return new Error(what + ' failed (HTTP ' + res.status + ')' + (reason ? ': ' + reason : ''));
                 }
 
+                // The token goes in a header, not the address, so it doesn't end up in proxy and server logs.
+                function authHeaders() {
+                    return { Authorization: 'MediaBrowser Token="' + ApiClient.accessToken() + '"' };
+                }
+
                 async function fetchText(url) {
-                    const res = await fetch(url);
+                    const res = await fetch(url, { headers: authHeaders() });
                     if (!res.ok) throw await httpError(res, 'Playlist');
                     return res.text();
                 }
 
                 async function playbackTest(film, target) {
                     const source = pick(film, 'MediaSources')[0];
-                    const token = ApiClient.accessToken();
                     const deviceId = ApiClient.deviceId();
                     const playSessionId = 'jellyfinmedic' + Date.now();
                     const started = new Date();
@@ -2217,8 +2227,7 @@
                         VideoCodec: 'h264', AudioCodec: 'aac', MaxWidth: target.maxWidth,
                         VideoBitrate: target.bitrate, AudioBitrate: 192000, MaxStreamingBitrate: target.bitrate + 192000,
                         TranscodingMaxAudioChannels: 2, SegmentContainer: 'ts', MinSegments: 1, BreakOnNonKeyFrames: true,
-                        AllowVideoStreamCopy: false, AllowAudioStreamCopy: false,
-                        api_key: token, ApiKey: token
+                        AllowVideoStreamCopy: false, AllowAudioStreamCopy: false
                     };
 
                     try {
@@ -2256,7 +2265,7 @@
                         const testStart = performance.now();
                         for (let i = first; i < segments.length && i < first + 10; i++) {
                             const t0 = performance.now();
-                            const res = await fetch(segments[i].url);
+                            const res = await fetch(segments[i].url, { headers: authHeaders() });
                             if (!res.ok) throw await httpError(res, 'Segment ' + (i - first + 1));
                             await res.arrayBuffer();
                             const took = (performance.now() - t0) / 1000;
@@ -2951,7 +2960,9 @@
                         box.hidden = !text || activeTab === 'tracks';
                         if (text) {
                             $('md-activity-text').textContent = text;
-                            activityTimer = setTimeout(updateActivity, 4000);
+                            // Cleared right before it's set, so two calls that overlap leave one timer, not two.
+                            clearTimeout(activityTimer);
+                            if (shown()) activityTimer = setTimeout(updateActivity, 4000);
                         }
                     } catch (e) {
                         box.hidden = true;
@@ -3030,17 +3041,24 @@
                 async function loadExposureDefaults() {
                     try {
                         const d = await getJson('/JellyfinMedic/ExposureDefaults');
-                        exposeIp = pick(d, 'PublicIp');
-                        if ($('md-expose-host') && !$('md-expose-host').value) {
-                            $('md-expose-host').value = pick(d, 'Domain') || exposeIp || '';
+                        if ($('md-expose-host') && !$('md-expose-host').value && pick(d, 'Domain')) {
+                            $('md-expose-host').value = pick(d, 'Domain');
                         }
                         if (pick(d, 'Port')) $('md-expose-port').value = String(pick(d, 'Port'));
                         if (pick(d, 'Protocol')) $('md-expose-protocol').value = pick(d, 'Protocol');
                     } catch (e) { /* leave the boxes blank */ }
                 }
 
-                $('md-expose-use-ip').addEventListener('click', function () {
-                    if (exposeIp) $('md-expose-host').value = exposeIp;
+                // The public IP is only looked up on this button: finding it means asking a service on the internet.
+                $('md-expose-use-ip').addEventListener('click', async function () {
+                    const out = $('md-expose-result');
+                    if (!exposeIp) {
+                        try {
+                            exposeIp = pick(await getJson('/JellyfinMedic/ExposureDefaults', { publicIp: true }), 'PublicIp');
+                        } catch (e) { /* reported below */ }
+                    }
+                    if (!exposeIp) { out.textContent = 'Couldn\'t find your public IP. Type it in instead.'; out.className = 'so-muted so-small'; return; }
+                    $('md-expose-host').value = exposeIp;
                     $('md-expose-port').value = '8096';
                     $('md-expose-protocol').value = 'http';
                 });
@@ -3060,9 +3078,13 @@
                             protocol: $('md-expose-protocol').value
                         });
                         const where = pick(r, 'Host') + ':' + pick(r, 'Port');
+                        // A test from this server only shows this server's view, so it never reads as "closed to the internet".
+                        const fromHere = pick(r, 'FromThisServer');
                         if (pick(r, 'Error')) { out.textContent = pick(r, 'Error'); out.className = 'so-muted so-small'; }
-                        else if (pick(r, 'Reachable') && pick(r, 'RespondedAsJellyfin')) { out.textContent = 'Jellyfin answered from the internet at ' + where + '. If that\'s your HTTPS reverse proxy, that\'s expected — keep HTTPS on and use strong passwords. If it\'s the raw Jellyfin port, close it and use the proxy instead.'; out.className = 'md-warn-text so-small'; }
-                        else if (pick(r, 'Reachable')) { out.textContent = 'Something answered at ' + where + ', but it didn\'t look like Jellyfin. It may be your reverse proxy or another service.'; out.className = 'md-warn-text so-small'; }
+                        else if (pick(r, 'Reachable') && pick(r, 'RespondedAsJellyfin')) { out.textContent = 'Jellyfin answered at ' + where + ' (tested from this server, not from the internet). If that\'s your HTTPS reverse proxy, that\'s expected: keep HTTPS on and use strong passwords. If it\'s the raw Jellyfin port, don\'t open it to the internet; use the proxy instead.'; out.className = 'md-warn-text so-small'; }
+                        else if (pick(r, 'Reachable') && fromHere) { out.textContent = 'Something answered at ' + where + ' (tested from this server), but it didn\'t look like Jellyfin. It may be your reverse proxy, a redirect, a certificate this server doesn\'t trust, or another service.'; out.className = 'md-warn-text so-small'; }
+                        else if (pick(r, 'Reachable')) { out.textContent = 'Something answers at ' + where + ' from the internet (checked by portchecker.io, which only sees that the port is open). If that\'s the raw Jellyfin port, close it and use an HTTPS reverse proxy instead.'; out.className = 'md-warn-text so-small'; }
+                        else if (fromHere) { out.textContent = 'Nothing answered at ' + where + ' when this server tried it. That doesn\'t prove it\'s closed to the internet: many routers can\'t reach their own public address from inside, and a domain can point elsewhere on your network.'; out.className = 'so-muted so-small'; }
                         else { out.textContent = 'Nothing answered at ' + where + ' from the internet. Only people on your network or VPN can reach it there (or your ISP uses CGNAT, which blocks this test).'; out.className = 'md-ok-text so-small'; }
                     } catch (e) {
                         out.textContent = 'Couldn\'t run the check.';
@@ -3240,7 +3262,17 @@
                         });
                     });
                     body.appendChild(el('p', 'so-muted so-small', 'Every version\'s changes are under Settings \u2192 What\'s new in each version.'));
+                    // A dialog: focus moves into it, and goes back to where it was when it closes.
+                    whatsNewReturn = document.activeElement;
                     $('md-whatsnew').hidden = false;
+                    $('md-whatsnew-close').focus();
+                }
+
+                let whatsNewReturn = null;
+                function closeWhatsNew() {
+                    $('md-whatsnew').hidden = true;
+                    if (whatsNewReturn && typeof whatsNewReturn.focus === 'function' && document.body.contains(whatsNewReturn)) whatsNewReturn.focus();
+                    whatsNewReturn = null;
                 }
 
                 // Once per person per version, on whichever device they open Medic first: the server remembers.
@@ -3270,8 +3302,19 @@
                         showStatus('Couldn\'t load the changelog.', 'error');
                     }
                 });
-                $('md-whatsnew-close').addEventListener('click', function () { $('md-whatsnew').hidden = true; });
-                $('md-whatsnew').addEventListener('click', function (e) { if (e.target === $('md-whatsnew')) $('md-whatsnew').hidden = true; });
+                $('md-whatsnew-close').addEventListener('click', closeWhatsNew);
+                $('md-whatsnew').addEventListener('click', function (e) { if (e.target === $('md-whatsnew')) closeWhatsNew(); });
+                // Escape closes it, and Tab stays inside it while it's open.
+                $('md-whatsnew').addEventListener('keydown', function (e) {
+                    if (e.key === 'Escape') { e.preventDefault(); closeWhatsNew(); return; }
+                    if (e.key !== 'Tab') return;
+                    const inside = Array.from($('md-whatsnew').querySelectorAll('button, a[href], [tabindex]:not([tabindex="-1"])'))
+                        .filter(function (x) { return !x.disabled && x.offsetParent !== null; });
+                    if (!inside.length) return;
+                    const first = inside[0], last = inside[inside.length - 1];
+                    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+                });
 
                 // ---------- Tracks ----------
 
@@ -3302,7 +3345,8 @@
                             $('md-tracks-summary').appendChild(el('p', 'so-muted', total
                                 ? 'Scanning ' + done.toLocaleString('en-GB') + ' of ' + total.toLocaleString('en-GB') + ' files… You can leave this tab; the scan carries on.'
                                 : 'Gathering your local files…'));
-                            scanTimer = setTimeout(function () { if (activeTab === 'tracks') pollScan(); }, 1500);
+                            clearTimeout(scanTimer);
+                            if (shown()) scanTimer = setTimeout(function () { if (activeTab === 'tracks') pollScan(); }, 1500);
                             return;
                         }
 
@@ -3796,7 +3840,8 @@
                         mediaStatus = await getJson('/JellyfinMedic/MediaReport');
                         renderMedia();
                         if (pick(mediaStatus, 'Running')) {
-                            mediaTimer = setTimeout(function () { if (activeTab === 'media') loadMedia(); }, 2000);
+                            clearTimeout(mediaTimer);
+                            if (shown()) mediaTimer = setTimeout(function () { if (activeTab === 'media') loadMedia(); }, 2000);
                         }
                     } catch (e) {
                         $('md-media-status').textContent = 'Couldn\'t load the media report. Check the Jellyfin log for Jellyfin Medic errors.';
@@ -3892,7 +3937,7 @@
                         }
                         if (running) {
                             clearTimeout(tracksTimer);
-                            tracksTimer = setTimeout(function () { if (activeTab === 'tracks') pollTracks(); }, 1500);
+                            if (shown()) tracksTimer = setTimeout(function () { if (activeTab === 'tracks') pollTracks(); }, 1500);
                         }
                     } catch (e) { /* ignore */ }
                 }
@@ -3985,7 +4030,7 @@
                     stopNowTimer();
                     loadNow();
                     nowTimer = setInterval(function () {
-                        if (!document.body.contains(page) || activeTab !== 'dashboard') { stopNowTimer(); return; }
+                        if (!shown() || !document.body.contains(page) || activeTab !== 'dashboard') { stopNowTimer(); return; }
                         loadNow();
                     }, 15000);
                 }
@@ -3993,6 +4038,35 @@
                 function stopNowTimer() {
                     if (nowTimer) { clearInterval(nowTimer); nowTimer = null; }
                 }
+
+                // ---------- Polling ----------
+
+                // Every poll stops when the admin leaves this page or the browser tab is hidden, and the
+                // open tab's polls start again when they come back.
+                function stopPolling() {
+                    clearTimeout(activityTimer);
+                    clearTimeout(scanTimer);
+                    clearTimeout(tracksTimer);
+                    clearTimeout(mediaTimer);
+                    stopNowTimer();
+                }
+
+                function resumePolling() {
+                    updateActivity();
+                    if (activeTab === 'dashboard') startNowTimer();
+                    else if (activeTab === 'tracks') { pollTracks(); pollScan(); }
+                    else if (activeTab === 'media') loadMedia();
+                }
+
+                page.addEventListener('pagehide', function () {
+                    pageShown = false;
+                    stopPolling();
+                });
+
+                document.addEventListener('visibilitychange', function () {
+                    if (document.hidden) stopPolling();
+                    else if (pageShown) resumePolling();
+                });
 
                 async function loadTab(name) {
                     try {
@@ -4041,7 +4115,20 @@
 
                 // ---------- Tabs ----------
 
-                const tabNames = ['dashboard', 'schedule', 'history', 'recs', 'iptv', 'tracks', 'tests', 'plugins', 'directory', 'settings', 'contact'];
+                // In page order, read from the tabs themselves so a new tab can't be left out of the arrow keys.
+                const tabNames = Array.from(page.querySelectorAll('.so-tab')).map(function (tab) { return tab.getAttribute('data-tab'); });
+
+                // Each tab says which panel it controls, and each panel which tab names it.
+                page.querySelectorAll('.so-tab').forEach(function (tab) {
+                    const name = tab.getAttribute('data-tab');
+                    const panel = page.querySelector('.so-tabpanel[data-panel="' + name + '"]');
+                    tab.id = 'so-tab-' + name;
+                    if (panel) {
+                        panel.id = 'so-panel-' + name;
+                        tab.setAttribute('aria-controls', panel.id);
+                        panel.setAttribute('aria-labelledby', tab.id);
+                    }
+                });
 
                 function selectTab(name) {
                     activeTab = name;
@@ -4130,6 +4217,7 @@
                 // Checked on every visit, not just the first: Jellyfin's web app keeps this page loaded,
                 // and doesn't reload after a restart, so an update can arrive while it's still open.
                 return function refresh() {
+                    pageShown = true;
                     maybeShowWhatsNew();
                     loadReport();
                     loadTab(activeTab);

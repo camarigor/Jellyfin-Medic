@@ -202,11 +202,15 @@ public class DownloadsService
 
     // ---------- Queue ----------
 
-    /// <summary>Both queues, problems first. Errors are per app, so one being down doesn't hide the other.</summary>
-    public async Task<(List<DownloadRow> Rows, Dictionary<string, string> Errors)> QueueAsync(CancellationToken ct)
+    /// <summary>
+    /// Both queues, problems first. Errors are per app, so one being down doesn't hide the other. Notes say
+    /// when a queue was too long to read in full.
+    /// </summary>
+    public async Task<(List<DownloadRow> Rows, Dictionary<string, string> Errors, Dictionary<string, string> Notes)> QueueAsync(CancellationToken ct)
     {
         var rows = new List<DownloadRow>();
         var errors = new Dictionary<string, string>();
+        var notes = new Dictionary<string, string>();
         foreach (var app in new[] { ArrApp.Sonarr, ArrApp.Radarr })
         {
             if (!_arr.IsConfigured(app))
@@ -214,11 +218,16 @@ public class DownloadsService
                 continue;
             }
 
-            var (records, error) = await QueueRecordsAsync(app, ct).ConfigureAwait(false);
+            var (records, error, total) = await QueueRecordsAsync(app, ct).ConfigureAwait(false);
             if (error is not null)
             {
                 errors[Key(app)] = error;
                 continue;
+            }
+
+            if (total > records.Count)
+            {
+                notes[Key(app)] = string.Format(CultureInfo.InvariantCulture, "Only the first {0:N0} of {1}'s {2:N0} queue entries are shown.", records.Count, ArrClient.Name(app), total);
             }
 
             rows.AddRange(Group(app, records));
@@ -233,12 +242,14 @@ public class DownloadsService
         return (rows
             .OrderBy(r => r.Health == "problem" ? 0 : r.Health == "stuck" ? 1 : 2)
             .ThenBy(r => r.AddedUtc ?? DateTime.MaxValue)
-            .ToList(), errors);
+            .ToList(), errors, notes);
     }
 
-    private async Task<(List<JsonElement> Records, string? Error)> QueueRecordsAsync(ArrApp app, CancellationToken ct)
+    // Reads at most MaxPages pages; Total is how many entries the app says it has.
+    private async Task<(List<JsonElement> Records, string? Error, int Total)> QueueRecordsAsync(ArrApp app, CancellationToken ct)
     {
         var records = new List<JsonElement>();
+        int total = 0;
         string include = app == ArrApp.Sonarr
             ? "includeSeries=true&includeEpisode=true&includeUnknownSeriesItems=true"
             : "includeMovie=true&includeUnknownMovieItems=true";
@@ -247,7 +258,7 @@ public class DownloadsService
             using var result = await _arr.GetAsync(app, $"queue?page={page}&pageSize={PageSize}&{include}", ct).ConfigureAwait(false);
             if (!result.Ok || result.Json is null)
             {
-                return (records, result.Ok ? $"{ArrClient.Name(app)} sent something unexpected." : result.Message);
+                return (records, result.Ok ? $"{ArrClient.Name(app)} sent something unexpected." : result.Message, total);
             }
 
             var root = result.Json.RootElement;
@@ -257,14 +268,14 @@ public class DownloadsService
                 records.AddRange(list.EnumerateArray().Select(e => e.Clone()));
             }
 
-            int total = Json.Int(root, "totalRecords") ?? 0;
+            total = Json.Int(root, "totalRecords") ?? 0;
             if (page * PageSize >= total)
             {
                 break;
             }
         }
 
-        return (records, null);
+        return (records, null, total);
     }
 
     private static IEnumerable<DownloadRow> Group(ArrApp app, List<JsonElement> records)
@@ -399,17 +410,20 @@ public class DownloadsService
     // ---------- Remove and block ----------
 
     /// <summary>
-    /// Removes a download from Sonarr or Radarr and the download client. With block, the release is
-    /// blocklisted so it's never grabbed again, and (unless told not to) a search starts for another.
+    /// Removes a download from Sonarr or Radarr's queue, and from the download client unless
+    /// <paramref name="keepInClient"/> is set: then it stays there (still seeding) and Sonarr or Radarr
+    /// stops tracking it, as their own "Ignore download" does. With block, the release is blocklisted
+    /// so it's never grabbed again, and (unless told not to) a search starts for another.
     /// </summary>
-    public async Task<(bool Ok, string Message)> RemoveAsync(ArrApp app, List<int> queueIds, bool block, bool searchAgain, string title, string? by, CancellationToken ct)
+    public async Task<(bool Ok, string Message)> RemoveAsync(ArrApp app, List<int> queueIds, bool block, bool searchAgain, bool keepInClient, string title, string? by, CancellationToken ct)
     {
         if (queueIds.Count == 0)
         {
             return (false, "Nothing to remove.");
         }
 
-        string query = "queue/bulk?removeFromClient=true&blocklist=" + (block ? "true" : "false")
+        string query = "queue/bulk?removeFromClient=" + (keepInClient ? "false" : "true")
+            + "&blocklist=" + (block ? "true" : "false")
             + "&skipRedownload=" + (block && searchAgain ? "false" : "true");
         using var result = await _arr.DeleteAsync(app, query, new { ids = queueIds }, ct).ConfigureAwait(false);
         if (!result.Ok)
@@ -417,18 +431,21 @@ public class DownloadsService
             return (false, result.Message);
         }
 
+        string detail = block ? (searchAgain ? "Blocked, searching for another release" : "Blocked, no new search") : "Removed";
         _store.Record(new ActionRecord
         {
             Utc = DateTime.UtcNow,
             App = Key(app),
             Action = block ? "block" : "remove",
             Title = title,
-            Detail = block ? (searchAgain ? "Blocked, searching for another release" : "Blocked, no new search") : "Removed",
+            Detail = keepInClient ? detail + ", kept in the download client" : detail,
             By = by
         });
-        return (true, block
+
+        string message = block
             ? (searchAgain ? "Removed and blocked. " + ArrClient.Name(app) + " is looking for a different release." : "Removed and blocked.")
-            : "Removed.");
+            : "Removed.";
+        return (true, keepInClient ? message + " It's still in the download client." : message);
     }
 
     // ---------- Blocked list ----------
