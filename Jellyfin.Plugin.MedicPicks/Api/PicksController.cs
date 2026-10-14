@@ -358,7 +358,13 @@ public class PicksController : ControllerBase
             return BadRequest();
         }
 
-        var (ok, message) = await _seerr.SetRequestStatusAsync(config.JellyseerrUrl, requestId, approve, cancellationToken).ConfigureAwait(false);
+        var adminId = await GetUserIdAsync().ConfigureAwait(false);
+        if (adminId == Guid.Empty)
+        {
+            return Unauthorized();
+        }
+
+        var (ok, message) = await _seerr.SetRequestStatusAsync(config.JellyseerrUrl, requestId, approve, adminId, cancellationToken).ConfigureAwait(false);
         return Json(new { ok, message });
     }
 

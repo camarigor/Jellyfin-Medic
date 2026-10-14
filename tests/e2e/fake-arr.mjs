@@ -76,3 +76,27 @@ export function startQbit(port) {
     });
     return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
 }
+
+// A pretend Seerr for approving requests: every Jellyfin account is Seerr user 42, and it
+// remembers which Seerr user each approve or decline was made as (X-API-User).
+export const seerr = { decisions: [] };
+
+export function startSeerr(port) {
+    const server = http.createServer((req, res) => {
+        const path = req.url.split('?')[0];
+        if (req.headers['x-api-key'] !== 'e2e-seerr-key') { res.writeHead(401); res.end(); return; }
+        res.setHeader('Content-Type', 'application/json');
+        if (req.method === 'GET' && path.startsWith('/api/v1/user/jellyfin/')) {
+            res.end(JSON.stringify({ id: 42, displayName: 'admin' }));
+            return;
+        }
+        const decision = path.match(/^\/api\/v1\/request\/(\d+)\/(approve|decline)$/);
+        if (req.method === 'POST' && decision) {
+            seerr.decisions.push({ id: Number(decision[1]), action: decision[2], asUser: req.headers['x-api-user'] ?? null });
+            res.end(JSON.stringify({ id: Number(decision[1]), status: decision[2] === 'approve' ? 2 : 3 }));
+            return;
+        }
+        res.writeHead(404); res.end('{}');
+    });
+    return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
+}
