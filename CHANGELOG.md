@@ -7,6 +7,17 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **A schedule change can no longer leave a task with no schedule at all.** Applying a schedule cleared a monthly task's Jellyfin triggers before saving Medic's own note of when to run it, so if that save failed (a full disk, say) the task never ran again. Medic now saves its note first, and if that fails nothing is changed and the page says so. Restoring a backup works the same way.
+- **A monthly run that starts during an apply or restore is no longer forgotten.** Both wrote Medic's monthly schedule back from an earlier read, so a run started in between could be lost, and the task run again.
+- **A damaged Medic file is kept instead of overwritten.** When one of Medic's files couldn't be read, the next change replaced it with a new one, losing what was in it. It's now set aside with `.bad` added to its name, and the Jellyfin log says so. Files are also flushed to disk before they replace the old ones.
+- **Two schedule backups made in the same second no longer share a name.** The second replaced the first, so a restore straight after an apply could lose the schedule from before the apply.
+
+### Changed
+- **Medic keeps the 50 newest schedule backups and the newest 1000 schedule changes.** Both grew without limit.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
