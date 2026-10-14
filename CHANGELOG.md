@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Restarts wait for Live TV recordings and for the gap between episodes.** Medic's restart tasks only looked for something playing, track cleanup and other scheduled tasks, so a restart could cut a Live TV recording short, or land in the few seconds between two episodes when nothing shows as playing. They now also wait while a recording is in progress, and a quiet moment has to still be quiet two minutes later.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
