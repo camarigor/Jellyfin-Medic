@@ -1961,10 +1961,11 @@
                     box.appendChild(actions);
                 }
 
-                page.querySelectorAll('.md-seg button').forEach(function (b) {
+                // Only the time range buttons: Settings has its own Off/Suggest buttons in the same style.
+                page.querySelectorAll('.md-seg button[data-range]').forEach(function (b) {
                     b.addEventListener('click', function () {
                         range = b.getAttribute('data-range');
-                        page.querySelectorAll('.md-seg button').forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+                        page.querySelectorAll('.md-seg button[data-range]').forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
                         renderTimeline();
                     });
                 });
@@ -2198,15 +2199,19 @@
                     return new Error(what + ' failed (HTTP ' + res.status + ')' + (reason ? ': ' + reason : ''));
                 }
 
+                // The token goes in a header, not the address, so it doesn't end up in proxy and server logs.
+                function authHeaders() {
+                    return { Authorization: 'MediaBrowser Token="' + ApiClient.accessToken() + '"' };
+                }
+
                 async function fetchText(url) {
-                    const res = await fetch(url);
+                    const res = await fetch(url, { headers: authHeaders() });
                     if (!res.ok) throw await httpError(res, 'Playlist');
                     return res.text();
                 }
 
                 async function playbackTest(film, target) {
                     const source = pick(film, 'MediaSources')[0];
-                    const token = ApiClient.accessToken();
                     const deviceId = ApiClient.deviceId();
                     const playSessionId = 'jellyfinmedic' + Date.now();
                     const started = new Date();
@@ -2217,8 +2222,7 @@
                         VideoCodec: 'h264', AudioCodec: 'aac', MaxWidth: target.maxWidth,
                         VideoBitrate: target.bitrate, AudioBitrate: 192000, MaxStreamingBitrate: target.bitrate + 192000,
                         TranscodingMaxAudioChannels: 2, SegmentContainer: 'ts', MinSegments: 1, BreakOnNonKeyFrames: true,
-                        AllowVideoStreamCopy: false, AllowAudioStreamCopy: false,
-                        api_key: token, ApiKey: token
+                        AllowVideoStreamCopy: false, AllowAudioStreamCopy: false
                     };
 
                     try {
@@ -2256,7 +2260,7 @@
                         const testStart = performance.now();
                         for (let i = first; i < segments.length && i < first + 10; i++) {
                             const t0 = performance.now();
-                            const res = await fetch(segments[i].url);
+                            const res = await fetch(segments[i].url, { headers: authHeaders() });
                             if (!res.ok) throw await httpError(res, 'Segment ' + (i - first + 1));
                             await res.arrayBuffer();
                             const took = (performance.now() - t0) / 1000;
@@ -3240,7 +3244,17 @@
                         });
                     });
                     body.appendChild(el('p', 'so-muted so-small', 'Every version\'s changes are under Settings \u2192 What\'s new in each version.'));
+                    // A dialog: focus moves into it, and goes back to where it was when it closes.
+                    whatsNewReturn = document.activeElement;
                     $('md-whatsnew').hidden = false;
+                    $('md-whatsnew-close').focus();
+                }
+
+                let whatsNewReturn = null;
+                function closeWhatsNew() {
+                    $('md-whatsnew').hidden = true;
+                    if (whatsNewReturn && typeof whatsNewReturn.focus === 'function' && document.body.contains(whatsNewReturn)) whatsNewReturn.focus();
+                    whatsNewReturn = null;
                 }
 
                 // Once per person per version, on whichever device they open Medic first: the server remembers.
@@ -3270,8 +3284,19 @@
                         showStatus('Couldn\'t load the changelog.', 'error');
                     }
                 });
-                $('md-whatsnew-close').addEventListener('click', function () { $('md-whatsnew').hidden = true; });
-                $('md-whatsnew').addEventListener('click', function (e) { if (e.target === $('md-whatsnew')) $('md-whatsnew').hidden = true; });
+                $('md-whatsnew-close').addEventListener('click', closeWhatsNew);
+                $('md-whatsnew').addEventListener('click', function (e) { if (e.target === $('md-whatsnew')) closeWhatsNew(); });
+                // Escape closes it, and Tab stays inside it while it's open.
+                $('md-whatsnew').addEventListener('keydown', function (e) {
+                    if (e.key === 'Escape') { e.preventDefault(); closeWhatsNew(); return; }
+                    if (e.key !== 'Tab') return;
+                    const inside = Array.from($('md-whatsnew').querySelectorAll('button, a[href], [tabindex]:not([tabindex="-1"])'))
+                        .filter(function (x) { return !x.disabled && x.offsetParent !== null; });
+                    if (!inside.length) return;
+                    const first = inside[0], last = inside[inside.length - 1];
+                    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+                });
 
                 // ---------- Tracks ----------
 
@@ -4041,7 +4066,20 @@
 
                 // ---------- Tabs ----------
 
-                const tabNames = ['dashboard', 'schedule', 'history', 'recs', 'iptv', 'tracks', 'tests', 'plugins', 'directory', 'settings', 'contact'];
+                // In page order, read from the tabs themselves so a new tab can't be left out of the arrow keys.
+                const tabNames = Array.from(page.querySelectorAll('.so-tab')).map(function (tab) { return tab.getAttribute('data-tab'); });
+
+                // Each tab says which panel it controls, and each panel which tab names it.
+                page.querySelectorAll('.so-tab').forEach(function (tab) {
+                    const name = tab.getAttribute('data-tab');
+                    const panel = page.querySelector('.so-tabpanel[data-panel="' + name + '"]');
+                    tab.id = 'so-tab-' + name;
+                    if (panel) {
+                        panel.id = 'so-panel-' + name;
+                        tab.setAttribute('aria-controls', panel.id);
+                        panel.setAttribute('aria-labelledby', tab.id);
+                    }
+                });
 
                 function selectTab(name) {
                     activeTab = name;
