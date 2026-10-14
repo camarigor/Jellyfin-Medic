@@ -60,9 +60,6 @@ public class ArrClient
     public Task<ArrResult> GetAsync(ArrApp app, string pathAndQuery, CancellationToken ct) =>
         SendAsync(app, HttpMethod.Get, pathAndQuery, null, ct);
 
-    public Task<ArrResult> PostAsync(ArrApp app, string path, object body, CancellationToken ct) =>
-        SendAsync(app, HttpMethod.Post, path, JsonSerializer.Serialize(body, ArrStore.JsonOptions), ct);
-
     public Task<ArrResult> PostRawAsync(ArrApp app, string path, string json, CancellationToken ct) =>
         SendAsync(app, HttpMethod.Post, path, json, ct);
 
