@@ -60,14 +60,16 @@ public sealed class PlannedTask
 /// in seconds can stay daily, a task that takes an hour gets spread out.
 ///
 /// When: tasks are fitted into 15-minute blocks, sized from their run time plus a buffer, so
-/// no two planned tasks overlap. Each night runs in stages: the library scan first, then the
-/// tasks that build on it, then upkeep. A task is only put before an earlier stage when every
-/// slot after it is much busier. Tasks that don't run every night are spread across nights.
+/// no two planned tasks overlap. A block can run on past midnight into the next day, and the
+/// tasks you keep and the times you asked to avoid are blocked out the same way. Each night
+/// runs in stages: the library scan first, then the tasks that build on it, then upkeep. A
+/// task is only put before an earlier stage when every slot after it is much busier. Tasks
+/// that don't run every night are spread across nights.
 /// </summary>
 public static class SchedulePlanner
 {
-    private const int CellMinutes = 15;
-    private const int CellsPerDay = 24 * 60 / CellMinutes;
+    private const int CellMinutes = WeekGrid.CellMinutes;
+    private const int CellsPerDay = WeekGrid.CellsPerDay;
     private const double BufferMinutes = 5;
     private const double MaxBlockMinutes = 720;
     private const double BufferShare = 0.25;          // runs vary, so leave a quarter of the run time spare (at least 5 minutes)
@@ -156,8 +158,8 @@ public static class SchedulePlanner
         BusyProfile busy,
         IReadOnlyDictionary<string, string>? choices = null)
     {
-        var grid = new bool[7, CellsPerDay];
-        busy.BlockAvoidedTimes(grid, CellMinutes);
+        var grid = new WeekGrid();
+        busy.BlockAvoidedTimes(grid);
 
         var planned = new List<PlannedTask>();
         var leftAlone = new List<PlannedTask>();
@@ -193,7 +195,7 @@ public static class SchedulePlanner
             if (choice == ScheduleStorage.ChoiceKeep)
             {
                 // Keep its times, but block them out so planned tasks avoid them.
-                ReserveExisting(grid, worker.Triggers, minutes ?? LeftAloneDefaultMinutes);
+                ReserveExisting(grid, worker.Triggers, managedRun, minutes ?? LeftAloneDefaultMinutes);
                 string why = rule is null
                     ? "Medic doesn't know what this task needs, so it's left as it is."
                     : unscheduled && (choices is null || !choices.ContainsKey(id))
@@ -230,7 +232,7 @@ public static class SchedulePlanner
             .ToList();
     }
 
-    private static PlannedTask Place(bool[,] grid, BusyProfile busy, NightOrder night, Candidate c, Cadence cadence)
+    private static PlannedTask Place(WeekGrid grid, BusyProfile busy, NightOrder night, Candidate c, Cadence cadence)
     {
         double estimate = c.Minutes ?? c.Rule.DefaultMinutes;
         int length = BlockCells(estimate);
@@ -289,7 +291,7 @@ public static class SchedulePlanner
 
         foreach (var (day, start) in slots)
         {
-            Mark(grid, new[] { day }, start, length);
+            grid.Mark(day, start, length);
             night.Placed(day, start, length);
         }
 
@@ -475,12 +477,15 @@ public static class SchedulePlanner
 
     // ---------- Slot allocation ----------
 
-    private static int BlockCells(double minutes)
+    // The run time plus a buffer, since runs vary.
+    private static double BlockMinutes(double minutes)
     {
         double run = Math.Min(Math.Max(minutes, 0), MaxBlockMinutes);
-        double total = run + Math.Max(BufferMinutes, run * BufferShare);
-        return Math.Max(1, (int)Math.Ceiling(total / CellMinutes)); // a quick task takes one 15-minute slot
+        return run + Math.Max(BufferMinutes, run * BufferShare);
     }
+
+    private static int BlockCells(double minutes) =>
+        Math.Max(1, (int)Math.Ceiling(BlockMinutes(minutes) / CellMinutes)); // a quick task takes one 15-minute slot
 
     /// <summary>
     /// The quietest start that is free on every one of the given days. Cost is the expected
@@ -488,12 +493,14 @@ public static class SchedulePlanner
     /// earlier stages have finished that night, a small nudge to follow them closely, a nudge
     /// towards days with less already planned, and (when costs are equal) the early hours.
     /// </summary>
-    private static (int Start, double Cost)? BestCommonStart(bool[,] grid, BusyProfile busy, NightOrder night, DayOfWeek[] days, int length)
+    private static (int Start, double Cost)? BestCommonStart(WeekGrid grid, BusyProfile busy, NightOrder night, DayOfWeek[] days, int length)
     {
         (int Start, double Cost)? best = null;
-        for (int start = 0; start + length <= CellsPerDay; start++)
+
+        // Any start time of the day: a run that doesn't end by midnight carries on into the next day.
+        for (int start = 0; start < CellsPerDay; start++)
         {
-            if (!days.All(d => IsFree(grid, d, start, length)))
+            if (!days.All(d => grid.IsFree(d, start, length)))
             {
                 continue;
             }
@@ -504,7 +511,7 @@ public static class SchedulePlanner
                 cost += busy.CostOver(day, start, length, CellMinutes);
                 cost += night.Cost(day, start);
 
-                cost += Load(grid, day) * SpreadNudge;
+                cost += grid.Load(day) * SpreadNudge;
             }
 
             // Prefer the early hours (from 01:00) when everything else is equal.
@@ -519,64 +526,42 @@ public static class SchedulePlanner
         return best;
     }
 
-    private static bool IsFree(bool[,] grid, DayOfWeek day, int start, int length)
+    private static void ReserveExisting(WeekGrid grid, IEnumerable<TaskTriggerInfo>? triggers, ManagedRun? managed, double minutes)
     {
-        for (int cell = start; cell < Math.Min(start + length, CellsPerDay); cell++)
+        foreach (var t in triggers ?? Enumerable.Empty<TaskTriggerInfo>())
         {
-            if (grid[(int)day, cell])
+            if (t.TimeOfDayTicks is not { } ticks)
             {
-                return false;
+                continue;
             }
-        }
 
-        return true;
-    }
-
-    private static void Mark(bool[,] grid, IEnumerable<DayOfWeek> days, int start, int length)
-    {
-        foreach (var day in days)
-        {
-            for (int cell = start; cell < Math.Min(start + length, CellsPerDay); cell++)
-            {
-                grid[(int)day, cell] = true;
-            }
-        }
-    }
-
-    private static int Load(bool[,] grid, DayOfWeek day)
-    {
-        int used = 0;
-        for (int cell = 0; cell < CellsPerDay; cell++)
-        {
-            if (grid[(int)day, cell])
-            {
-                used++;
-            }
-        }
-
-        return used;
-    }
-
-    private static void ReserveExisting(bool[,] grid, IEnumerable<TaskTriggerInfo>? triggers, double minutes)
-    {
-        if (triggers is null)
-        {
-            return;
-        }
-
-        int length = BlockCells(minutes);
-        foreach (var t in triggers.Where(t => t.TimeOfDayTicks.HasValue))
-        {
-            int start = (int)(TimeSpan.FromTicks(t.TimeOfDayTicks.GetValueOrDefault()).TotalMinutes / CellMinutes);
             if (t.Type == TaskTriggerInfoType.DailyTrigger)
             {
-                Mark(grid, AllDays, start, length);
+                foreach (var day in AllDays)
+                {
+                    Reserve(grid, day, TimeSpan.FromTicks(ticks), minutes);
+                }
             }
-            else if (t.Type == TaskTriggerInfoType.WeeklyTrigger && t.DayOfWeek.HasValue)
+            else if (t.Type == TaskTriggerInfoType.WeeklyTrigger && t.DayOfWeek is { } weekday)
             {
-                Mark(grid, new[] { t.DayOfWeek.Value }, start, length);
+                Reserve(grid, weekday, TimeSpan.FromTicks(ticks), minutes);
             }
         }
+
+        // A kept task that Medic runs once a month keeps that time too.
+        if (managed is not null)
+        {
+            Reserve(grid, managed.Weekday, TimeSpan.FromTicks(managed.TimeOfDayTicks), minutes);
+        }
+    }
+
+    // From the cell the run starts in to the one its buffer ends in: a 10-minute run at 23:50 also takes 00:00 to 00:15.
+    private static void Reserve(WeekGrid grid, DayOfWeek day, TimeSpan at, double minutes)
+    {
+        double start = at.TotalMinutes;
+        int first = (int)(start / CellMinutes);
+        int end = (int)Math.Ceiling((start + BlockMinutes(minutes)) / CellMinutes);
+        grid.Mark(day, first, Math.Max(1, end - first));
     }
 
     // ---------- Triggers ----------
