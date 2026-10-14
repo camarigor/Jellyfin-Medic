@@ -116,9 +116,9 @@ public static class HostPlatform
                 continue;
             }
 
-            // Unraid: a user share (fuse.shfs) or an array disk (/dev/md1, /dev/md1p1...).
-            if (parts[2].StartsWith("fuse.shfs", StringComparison.Ordinal)
-                || (parts[0].StartsWith("/dev/md", StringComparison.Ordinal) && parts[0].Length > 7 && char.IsDigit(parts[0][7])))
+            // Unraid: a user share (fuse.shfs). An array disk alone (/dev/md1p1) isn't enough: any Linux software RAID
+            // is also /dev/mdN, and getting Unraid instructions there is worse than getting the general Docker ones.
+            if (parts[2].StartsWith("fuse.shfs", StringComparison.Ordinal))
             {
                 unraid = true;
             }
@@ -141,8 +141,11 @@ public static class HostPlatform
             return HostKind.TrueNas;
         }
 
-        // Docker inside a Proxmox LXC is still set up through Docker, so Docker wins.
-        if (File.Exists("/.dockerenv") || Lines("/proc/1/cgroup").Any(l => l.Contains("docker", StringComparison.OrdinalIgnoreCase)))
+        // Docker inside a Proxmox LXC is still set up through Docker, so Docker wins. Podman (/run/.containerenv)
+        // takes the same device and volume options, so it gets the Docker advice. Under cgroup v2, /proc/1/cgroup
+        // only says "0::/", so the marker files are what tells.
+        if (File.Exists("/.dockerenv") || File.Exists("/run/.containerenv")
+            || Lines("/proc/1/cgroup").Any(l => l.Contains("docker", StringComparison.OrdinalIgnoreCase)))
         {
             return HostKind.Docker;
         }
