@@ -125,6 +125,45 @@ await check('storage: library drives and growing folders are listed', async () =
     return drive.Value;
 });
 
+await check('security: sign-ins from several places are counted per account', async () => {
+    // Two people with long names each sign in from two addresses. Counted per account that's two each,
+    // which isn't "several places"; lumping long entries together made it one "user" with four.
+    const me = (await ok('/Sessions')).find((s) => s.UserId?.replace(/-/g, '') === ctx.userId.replace(/-/g, ''));
+    const proxy = (me?.RemoteEndPoint || '').replace(/^::ffff:/, '').replace(/:\d+$/, '');
+    const network = await ok('/System/Configuration/network');
+    // Requests from this test reach Jellyfin through Docker; trusting that address lets X-Forwarded-For set the client's.
+    await api('POST', '/System/Configuration/network', { ...network, KnownProxies: [proxy] });
+    const names = ['a-very-long-account-name-for-testing-one', 'a-very-long-account-name-for-testing-two'];
+    const ids = [];
+    try {
+        for (const [i, name] of names.entries()) {
+            const made = await api('POST', '/Users/New', { Name: name, Password: 'e2e-pass' });
+            expect(made.status === 200, 'user not created: ' + made.text);
+            ids.push(made.json.Id);
+            for (const last of [10 + i * 2, 11 + i * 2]) {
+                const res = await fetch(JF + '/Users/AuthenticateByName', {
+                    method: 'POST',
+                    headers: { Authorization: AUTH.replace('medic-e2e', `e2e-${name}-${last}`), 'Content-Type': 'application/json', 'X-Forwarded-For': `203.0.113.${last}` },
+                    body: JSON.stringify({ Username: name, Pw: 'e2e-pass' })
+                });
+                expect(res.status === 200, `sign-in ${name} from 203.0.113.${last}: ${res.status}`);
+            }
+        }
+        await sleep(2000);
+        // Without this the test would pass for the wrong reason: all sign-ins from one address.
+        const log = await ok('/System/ActivityLog/Entries?limit=100');
+        const seen = (log.Items || []).filter((e) => /203\.0\.113\.1[0-3]/.test((e.ShortOverview || '') + (e.Overview || ''))).length;
+        expect(proxy && seen >= 4, `the forwarded addresses weren't used (proxy ${proxy || 'not found'}, ${seen} entries)`);
+        const findings = ((await ok('/JellyfinMedic/Report')).Findings || []).filter((f) => f.Area === 'Security');
+        const roaming = findings.find((f) => /sign in from several places/.test(f.Title));
+        expect(!roaming, 'counted as several places: ' + JSON.stringify(roaming));
+        return `${proxy} trusted; two accounts, two addresses each, no "several places"`;
+    } finally {
+        for (const id of ids) await api('DELETE', `/Users/${id}`);
+        await api('POST', '/System/Configuration/network', network);
+    }
+});
+
 await check('GPU/CPU advice: a slow software preset and full-frame trickplay are flagged', async () => {
     const enc = await ok('/System/Configuration/encoding');
     const cfg = await ok('/System/Configuration');
