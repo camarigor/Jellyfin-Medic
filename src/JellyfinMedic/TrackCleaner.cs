@@ -923,7 +923,15 @@ public static class TrackCleaner
 
         try
         {
-            var plans = new List<FilePlan>();
+            // Jellyfin's track list can be older than the file, so every file is probed again right before its remux.
+            string? ffprobe = dryRun ? null : FfprobePath(ffmpeg);
+            if (!dryRun && ffprobe is null)
+            {
+                Note("Error: FFprobe wasn't found next to FFmpeg, so no file was changed.");
+                return;
+            }
+
+            var plans = new List<(FilePlan Plan, BaseItem Item)>();
             foreach (var lib in libraries.Where(l => !l.IsStreamed))
             {
                 if (!Guid.TryParse(lib.Id, out var id))
@@ -943,12 +951,12 @@ public static class TrackCleaner
                     var plan = PlanForItem(item, lib.Name, keep, cfg);
                     if (plan is { WouldChange: true })
                     {
-                        plans.Add(plan);
+                        plans.Add((plan, item));
                     }
                 }
             }
 
-            foreach (var plan in plans)
+            foreach (var (plan, _) in plans)
             {
                 try { plan.SizeBytes = new FileInfo(plan.Path).Length; } catch { plan.SizeBytes = 0; }
             }
@@ -956,7 +964,7 @@ public static class TrackCleaner
             lock (Sync)
             {
                 Progress.Total = plans.Count;
-                Progress.BytesTotal = plans.Sum(p => p.SizeBytes);
+                Progress.BytesTotal = plans.Sum(p => p.Plan.SizeBytes);
                 Progress.WorkStartedUtc = DateTime.UtcNow;
             }
 
@@ -964,7 +972,7 @@ public static class TrackCleaner
             int threads = Math.Clamp(cfg.TracksFfmpegThreads, 0, 16);
             using var limiter = new SemaphoreSlim(concurrency);
 
-            var tasks = plans.Select(async plan =>
+            var tasks = plans.Select(async p =>
             {
                 await limiter.WaitAsync(ct).ConfigureAwait(false);
                 try
@@ -974,7 +982,7 @@ public static class TrackCleaner
                         await WaitUntilAllowedAsync(cfg, ct).ConfigureAwait(false);
                     }
 
-                    await ProcessOne(plan, ffmpeg, threads, dryRun, cfg.TracksReplaceInPlace, ct).ConfigureAwait(false);
+                    await ProcessOne(p.Plan, p.Item, ffmpeg, ffprobe, threads, dryRun, cfg.TracksReplaceInPlace, ct).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -1020,7 +1028,7 @@ public static class TrackCleaner
         }
     }
 
-    private static async Task ProcessOne(FilePlan plan, string ffmpeg, int threads, bool dryRun, bool replaceInPlace, CancellationToken ct)
+    private static async Task ProcessOne(FilePlan plan, BaseItem item, string ffmpeg, string? ffprobe, int threads, bool dryRun, bool replaceInPlace, CancellationToken ct)
     {
         lock (Sync) { Progress.Current = Path.GetFileName(plan.Path); }
 
@@ -1028,6 +1036,19 @@ public static class TrackCleaner
         {
             lock (Sync) { Progress.Done++; Progress.Changed++; }
             Note($"Would change {plan.Title}: {Summary(plan)}");
+            return;
+        }
+
+        // The plan comes from the tracks Jellyfin read at its last scan. If the file has changed since
+        // (cleaned before, or replaced by Sonarr or Radarr), mapping by those numbers keeps the wrong tracks.
+        string? mismatch = ffprobe is null
+            ? "FFprobe isn't available"
+            : DescribeMismatch(plan, await ProbeTracks(ffprobe, plan.Path, ct).ConfigureAwait(false));
+        if (mismatch is not null)
+        {
+            item.ChangedExternally();
+            lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
+            Note($"Skipped {plan.Title}: Jellyfin's list of its tracks is out of date ({mismatch}). Jellyfin has been asked to read the file again; run track cleanup again once it has.");
             return;
         }
 
@@ -1047,7 +1068,7 @@ public static class TrackCleaner
                 {
                     if (t.Keep)
                     {
-                        args.Add("-map"); args.Add($"0:a:{audioN}?");
+                        args.Add("-map"); args.Add($"0:a:{audioN}");
                         AddLanguageTags(tags, t, $"a:{outAudio}");
                         outAudio++;
                     }
@@ -1058,7 +1079,7 @@ public static class TrackCleaner
                 {
                     if (t.Keep)
                     {
-                        args.Add("-map"); args.Add($"0:s:{subN}?");
+                        args.Add("-map"); args.Add($"0:s:{subN}");
                         AddLanguageTags(tags, t, $"s:{outSub}");
                         outSub++;
                     }
@@ -1136,6 +1157,9 @@ public static class TrackCleaner
 
             // Languages set by hand are in the file now, and its track numbers have changed.
             TrackLanguages.ClearFile(plan.Path);
+
+            // Have Jellyfin read the new file, so its track list (and the next plan) matches it.
+            item.ChangedExternally();
 
             lock (Sync) { Progress.Changed++; Progress.Done++; Progress.BytesSaved += saved; _bytesFreed += freedNow; Progress.BytesDone += plan.SizeBytes; }
             Note($"Done {plan.Title}: {Summary(plan)}");
@@ -1520,6 +1544,112 @@ public static class TrackCleaner
         }
 
         return null;
+    }
+
+    /// <summary>FFprobe from the same folder as FFmpeg, as Jellyfin ships them together; null if it isn't there.</summary>
+    private static string? FfprobePath(string ffmpeg)
+    {
+        string path = Path.Combine(Path.GetDirectoryName(ffmpeg) ?? string.Empty, "ffprobe" + Path.GetExtension(ffmpeg));
+        return File.Exists(path) ? path : null;
+    }
+
+    /// <summary>The file's own audio and subtitle streams, in order, or null if FFprobe couldn't read it.</summary>
+    private static async Task<List<(int Index, string Kind, string Language)>?> ProbeTracks(string ffprobe, string path, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo(ffprobe) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        foreach (var a in new[] { "-v", "error", "-show_entries", "stream=index,codec_type:stream_tags=language", "-of", "json", path })
+        {
+            psi.ArgumentList.Add(a);
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromMinutes(2));
+        using var p = new Process { StartInfo = psi };
+        p.Start();
+        var stdout = p.StandardOutput.ReadToEndAsync(timeout.Token);
+        _ = p.StandardError.ReadToEndAsync(timeout.Token); // drained so FFprobe can't stall on a full pipe
+        try
+        {
+            await p.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            ct.ThrowIfCancellationRequested(); // stop pressed; otherwise it timed out
+            return null;
+        }
+
+        if (p.ExitCode != 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(await stdout.ConfigureAwait(false));
+            var tracks = new List<(int, string, string)>();
+            foreach (var s in doc.RootElement.GetProperty("streams").EnumerateArray())
+            {
+                string kind = s.TryGetProperty("codec_type", out var k) ? k.GetString() ?? string.Empty : string.Empty;
+                if (kind is not ("audio" or "subtitle"))
+                {
+                    continue;
+                }
+
+                string language = s.TryGetProperty("tags", out var tags) && tags.TryGetProperty("language", out var l) ? l.GetString() ?? "und" : "und";
+                tracks.Add((s.GetProperty("index").GetInt32(), kind, language.Trim().ToLowerInvariant()));
+            }
+
+            return tracks;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Why the planned tracks don't describe the file any more, or null when they do: same streams, at the same
+    /// positions, of the same kind and language. Separate subtitle files aren't in the container, so they're left out.
+    /// </summary>
+    private static string? DescribeMismatch(FilePlan plan, List<(int Index, string Kind, string Language)>? file)
+    {
+        if (file is null)
+        {
+            return "FFprobe couldn't read the file";
+        }
+
+        var planned = plan.Tracks.Where(t => !t.External).OrderBy(t => t.Index).ToList();
+        int Count(IEnumerable<string> kinds, string kind) => kinds.Count(k => k == kind);
+        if (planned.Count != file.Count)
+        {
+            return $"Jellyfin lists {Count(planned.Select(t => t.Kind), "audio")} audio and {Count(planned.Select(t => t.Kind), "subtitle")} subtitle tracks, "
+                + $"the file has {Count(file.Select(t => t.Kind), "audio")} and {Count(file.Select(t => t.Kind), "subtitle")}";
+        }
+
+        for (int i = 0; i < planned.Count; i++)
+        {
+            var (index, kind, language) = file[i];
+            if (planned[i].Index != index || planned[i].Kind != kind)
+            {
+                return $"stream {index} in the file is {kind}, Jellyfin expects {planned[i].Kind} at stream {planned[i].Index}";
+            }
+
+            if (!SameLanguage(planned[i].FileLanguage, language))
+            {
+                return $"{kind} stream {index} is {language} in the file, Jellyfin has {planned[i].FileLanguage}";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Jellyfin may store "deu" for a file tagged "ger", so both 3-letter forms and the 2-letter code count as one.</summary>
+    private static bool SameLanguage(string a, string b)
+    {
+        static string Norm(string code) => string.IsNullOrWhiteSpace(code) ? "und" : code.Trim().ToLowerInvariant();
+        string x = Norm(a), y = Norm(b);
+        return x == y || ThreeToTwo(x) == ThreeToTwo(y) || TwoToThree(x) == TwoToThree(y);
     }
 
     private static async Task<int> RunFfmpeg(string ffmpeg, List<string> args, CancellationToken ct)
