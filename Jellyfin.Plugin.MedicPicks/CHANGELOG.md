@@ -7,6 +7,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 ### Fixed
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **A title you hide stays hidden even if your picks were being rebuilt at the time.** A rebuild, the nightly one included, saved the picks it had worked out with the title still in them, so it came back until the next rebuild. Picks are now saved without anything hidden at that moment, and your choices are changed one at a time, so two changes made together can't undo each other.
 
 ## [1.2.3] – 2026-10-11
 
