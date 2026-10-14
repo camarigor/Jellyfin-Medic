@@ -46,6 +46,11 @@ jobs:
         shell: bash
         run: |
           VER="${GITHUB_REF_NAME#profiles-v}"
+          # Digits and dots only: the version ends up in file names, commands and the manifest.
+          if ! [[ "$VER" =~ ^[0-9]+(\.[0-9]+){2,3}$ ]]; then
+            echo "::error::Tag must look like profiles-v1.2.3 (got $GITHUB_REF_NAME)"
+            exit 1
+          fi
           IFS='.' read -r A B C D <<< "$VER"
           VER4="${A:-0}.${B:-0}.${C:-0}.${D:-0}"
           echo "version=$VER4" >> "$GITHUB_OUTPUT"
@@ -54,8 +59,9 @@ jobs:
 
       - name: Check the tag matches the project version
         shell: bash
+        env:
+          WANT: ${{ steps.meta.outputs.version }}
         run: |
-          WANT="${{ steps.meta.outputs.version }}"
           HAVE="$(grep -oP '(?<=<Version>)[^<]+' "$PROJECT" | head -1)"
           if [ "$WANT" != "$HAVE" ]; then
             echo "::error::Tag $GITHUB_REF_NAME is $WANT but $PROJECT says $HAVE. Tag the commit that has the new version."
@@ -75,51 +81,62 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           dotnet publish "$PROJECT" -c Release -o out \
             -p:JellyfinTarget=12 \
-            -p:Version="${{ steps.meta.outputs.version }}" \
-            -p:AssemblyVersion="${{ steps.meta.outputs.version }}" \
-            -p:FileVersion="${{ steps.meta.outputs.version }}"
+            -p:Version="$VERSION" \
+            -p:AssemblyVersion="$VERSION" \
+            -p:FileVersion="$VERSION"
 
       - name: Package
         id: pkg
         shell: bash
+        env:
+          ZIP: ${{ steps.meta.outputs.zip }}
         run: |
-          zip -j "${{ steps.meta.outputs.zip }}" "out/$DLL"
-          echo "md5=$(md5sum "${{ steps.meta.outputs.zip }}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          zip -j "$ZIP" "out/$DLL"
+          echo "md5=$(md5sum "$ZIP" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ZIP: ${{ steps.meta.outputs.zip }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
         run: |
           PRE=""
-          [ "${{ steps.meta.outputs.prerelease }}" = "true" ] && PRE="--prerelease"
+          [ "$PRERELEASE" = "true" ] && PRE="--prerelease"
           # The release may already exist if it was made on GitHub's Releases page (which creates
           # the tag): then add the zip to it and fill in its title and notes instead.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${{ steps.meta.outputs.zip }}" --clobber
-            gh release edit "$GITHUB_REF_NAME" --title "$NAME ${{ steps.meta.outputs.version }}" \
+            gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "$NAME $VERSION" \
               --notes-file CHANGES.md --latest=false $PRE
           else
-            gh release create "$GITHUB_REF_NAME" "${{ steps.meta.outputs.zip }}" \
-              --title "$NAME ${{ steps.meta.outputs.version }}" \
+            gh release create "$GITHUB_REF_NAME" "$ZIP" \
+              --title "$NAME $VERSION" \
               --notes-file CHANGES.md --latest=false $PRE
           fi
 
       - name: Add the version to manifest.json on main
         shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          ZIP: ${{ steps.meta.outputs.zip }}
+          MD5: ${{ steps.pkg.outputs.md5 }}
         run: |
           git fetch origin main
           git checkout -B main origin/main
           python3 scripts/update_manifest.py \
             --guid "$GUID" \
             --name "$NAME" \
-            --version "${{ steps.meta.outputs.version }}" \
+            --version "$VERSION" \
             --abi "$TARGET_ABI" \
-            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${{ steps.meta.outputs.zip }}" \
-            --checksum "${{ steps.pkg.outputs.md5 }}" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$ZIP" \
+            --checksum "$MD5" \
             --changelog-file CHANGES.md \
             --owner "$OWNER" \
             --description "$DESCRIPTION" \
@@ -128,7 +145,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add manifest.json
-          git commit -m "manifest: $NAME ${{ steps.meta.outputs.version }}"
+          git commit -m "manifest: $NAME $VERSION"
           # Fail if no push gets through, instead of ending green on the last pull's status.
           for _ in 1 2 3; do
             if git push origin main; then exit 0; fi

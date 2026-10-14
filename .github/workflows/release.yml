@@ -81,7 +81,7 @@ jobs:
           echo "MD5 checksum: \`$MD5\`" >> RELEASE_NOTES.md
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: Jellyfin Medic ${{ steps.meta.outputs.version }}
           files: ${{ steps.package.outputs.zip }}
