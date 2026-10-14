@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicPicks.Api;
 
@@ -36,8 +37,9 @@ public class PicksController : ControllerBase
     private readonly PicksEngine _engine;
     private readonly SeerrClient _seerr;
     private readonly RequestTracker _requests;
+    private readonly ILogger<PicksController> _logger;
 
-    public PicksController(PicksStore store, ITaskManager taskManager, IAuthorizationContext authContext, PicksEngine engine, SeerrClient seerr, RequestTracker requests)
+    public PicksController(PicksStore store, ITaskManager taskManager, IAuthorizationContext authContext, PicksEngine engine, SeerrClient seerr, RequestTracker requests, ILogger<PicksController> logger)
     {
         _requests = requests;
         _store = store;
@@ -45,6 +47,7 @@ public class PicksController : ControllerBase
         _authContext = authContext;
         _engine = engine;
         _seerr = seerr;
+        _logger = logger;
     }
 
     [HttpGet("Me")]
@@ -228,9 +231,10 @@ public class PicksController : ControllerBase
                 {
                     await _engine.BuildForUserAsync(userId, _engine.CreateRunContext(), System.Threading.CancellationToken.None).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // The nightly run will catch up.
+                    // The nightly run will catch up, but say why this one didn't.
+                    _logger.LogWarning(ex, "Medic Picks: couldn't rebuild picks for user {UserId}", userId);
                 }
 
                 lock (Rebuilding)
