@@ -5,8 +5,12 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 
 ## Unreleased
 
+### Added
+- **Remove can leave the download in the client.** The Remove panel has a new tick box, on by default. Untick it and the download stays in the download client, still seeding, while Sonarr or Radarr stops tracking it, as their own "Ignore download" does. Handy for a finished download that couldn't be imported.
+
 ### Fixed
 - **The keys file is now private.** `medic-profiles/secrets.json`, which holds the Sonarr and Radarr API keys and the qBittorrent password, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **A long download queue says when it's cut short.** Medic Profiles reads up to 1,000 queue entries from each app and didn't say when there were more. The Downloads summary now says how many of how many are shown.
 
 ## [1.1.1] – 2026-10-11
 
