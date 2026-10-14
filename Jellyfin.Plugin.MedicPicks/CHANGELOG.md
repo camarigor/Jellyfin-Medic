@@ -7,6 +7,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 ### Fixed
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **"My requests" checks each request is yours, and Discover-off accounts can't request.** The list relied on Seerr filtering requests by account; it now also checks every request against the person's own Seerr account, so a Seerr version that ignores the filter can't show anyone else's. Accounts with Discover turned off (a child's, say) could still request any title through the page's request call; that's now refused.
 - **Approving and declining now happen as you in Seerr.** They were sent with only the Seerr API key, which Seerr treats as its owner account: any Jellyfin admin could approve or decline (4K requests included) even without permission to manage requests in Seerr, and Seerr recorded its owner as the one who did it. Medic Picks now finds the admin's own Seerr account and acts as it, as it already did for requests; an admin who has never signed in to Seerr is told to do so first.
 
 ## [1.2.3] – 2026-10-11
