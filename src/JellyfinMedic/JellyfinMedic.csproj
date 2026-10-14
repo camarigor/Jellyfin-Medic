@@ -24,6 +24,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="JellyfinMedic.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="medic.html" />
     <EmbeddedResource Include="CHANGELOG.md" />
     <EmbeddedResource Include="assist.js" />
