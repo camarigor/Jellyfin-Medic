@@ -128,15 +128,20 @@ await check('storage: library drives and growing folders are listed', async () =
 await check('security: sign-ins from several places are counted per account', async () => {
     // Two people with long names each sign in from two addresses. Counted per account that's two each,
     // which isn't "several places"; lumping long entries together made it one "user" with four.
+    // A third person signs in from three addresses, which is several places: the check must still see them.
     // run.sh trusts Docker's gateway as a proxy, so X-Forwarded-For sets each sign-in's address.
-    const names = ['a-very-long-account-name-for-testing-one', 'a-very-long-account-name-for-testing-two'];
+    const people = [
+        ['a-very-long-account-name-for-testing-one', [10, 11]],
+        ['a-very-long-account-name-for-testing-two', [12, 13]],
+        ['roamer', [14, 15, 16]]
+    ];
     const ids = [];
     try {
-        for (const [i, name] of names.entries()) {
+        for (const [name, addresses] of people) {
             const made = await api('POST', '/Users/New', { Name: name, Password: 'e2e-pass' });
             expect(made.status === 200, 'user not created: ' + made.text);
             ids.push(made.json.Id);
-            for (const last of [10 + i * 2, 11 + i * 2]) {
+            for (const last of addresses) {
                 const res = await fetch(JF + '/Users/AuthenticateByName', {
                     method: 'POST',
                     headers: { Authorization: AUTH.replace('medic-e2e', `e2e-${name}-${last}`), 'Content-Type': 'application/json', 'X-Forwarded-For': `203.0.113.${last}` },
@@ -148,12 +153,14 @@ await check('security: sign-ins from several places are counted per account', as
         await sleep(2000);
         // Without this the test would pass for the wrong reason: all sign-ins from one address.
         const log = await ok('/System/ActivityLog/Entries?limit=100');
-        const seen = (log.Items || []).filter((e) => /203\.0\.113\.1[0-3]/.test((e.ShortOverview || '') + (e.Overview || ''))).length;
-        expect(seen >= 4, `the forwarded addresses weren't used (${seen} entries); run.sh sets Docker's gateway as a known proxy before Jellyfin starts`);
+        const seen = (log.Items || []).filter((e) => /203\.0\.113\.1[0-6]/.test((e.ShortOverview || '') + (e.Overview || ''))).length;
+        expect(seen >= 7, `the forwarded addresses weren't used (${seen} entries); run.sh sets Docker's gateway as a known proxy before Jellyfin starts`);
         const findings = ((await ok('/JellyfinMedic/Report')).Findings || []).filter((f) => f.Area === 'Security');
-        const roaming = findings.find((f) => /sign in from several places/.test(f.Title));
-        expect(!roaming, 'counted as several places: ' + JSON.stringify(roaming));
-        return 'two accounts, two addresses each, no "several places"';
+        // "An account signs in from several places", or "N accounts sign in from several places".
+        const roaming = findings.find((f) => /signs? in from several places/.test(f.Title));
+        expect(/roamer: 3 addresses/.test(roaming?.Current || ''), 'the account with three addresses wasn\'t reported: ' + JSON.stringify(roaming));
+        expect(!/a-very-long|a user/.test(roaming.Current), 'the accounts with two addresses were counted: ' + roaming.Current);
+        return 'roamer reported with 3 addresses; the two accounts with 2 each not reported';
     } finally {
         for (const id of ids) await api('DELETE', `/Users/${id}`);
     }
