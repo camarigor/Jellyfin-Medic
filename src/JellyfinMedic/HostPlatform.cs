@@ -160,7 +160,8 @@ public static class HostPlatform
         return HostKind.Linux;
     }
 
-    private static string[] Lines(string path)
+    /// <summary>A file's lines, or none when it's missing or can't be read.</summary>
+    internal static string[] Lines(string path)
     {
         try
         {

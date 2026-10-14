@@ -51,7 +51,7 @@ public static class SystemProbe
             InDocker = HostPlatform.IsDockerLike // one detector, so the two can't disagree
         };
 
-        info.CpuModel = ReadLines("/proc/cpuinfo")
+        info.CpuModel = HostPlatform.Lines("/proc/cpuinfo")
             .FirstOrDefault(l => l.StartsWith("model name", StringComparison.OrdinalIgnoreCase))?
             .Split(':', 2).ElementAtOrDefault(1)?.Trim();
 
@@ -68,7 +68,7 @@ public static class SystemProbe
             }
         }
 
-        var memLine = ReadLines("/proc/meminfo").FirstOrDefault(l => l.StartsWith("MemTotal:", StringComparison.Ordinal));
+        var memLine = HostPlatform.Lines("/proc/meminfo").FirstOrDefault(l => l.StartsWith("MemTotal:", StringComparison.Ordinal));
         if (memLine is not null)
         {
             var kb = memLine.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1);
@@ -173,7 +173,7 @@ public static class SystemProbe
         foreach (string candidate in new[] { name, System.Text.RegularExpressions.Regex.Replace(name, @"(?<=\D)\d+$|(?<=nvme\d+n\d+)p\d+$|(?<=mmcblk\d+)p\d+$", string.Empty) })
         {
             // Virtual disks (virtio, Xen, QEMU, VMware, Hyper-V) say they spin even when the host has an SSD.
-            string model = string.Join(' ', ReadLines($"/sys/block/{candidate}/device/vendor").Concat(ReadLines($"/sys/block/{candidate}/device/model")));
+            string model = string.Join(' ', HostPlatform.Lines($"/sys/block/{candidate}/device/vendor").Concat(HostPlatform.Lines($"/sys/block/{candidate}/device/model")));
             if (candidate.StartsWith("vd", StringComparison.Ordinal) || candidate.StartsWith("xvd", StringComparison.Ordinal)
                 || System.Text.RegularExpressions.Regex.IsMatch(model, "QEMU|VMware|Virtual|VBOX|Msft", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
             {
@@ -181,7 +181,7 @@ public static class SystemProbe
             }
 
             string file = $"/sys/block/{candidate}/queue/rotational";
-            var text = ReadLines(file).FirstOrDefault()?.Trim();
+            var text = HostPlatform.Lines(file).FirstOrDefault()?.Trim();
             if (text is "0" or "1")
             {
                 return text == "1";
@@ -198,7 +198,7 @@ public static class SystemProbe
             return null;
         }
 
-        return ReadLines("/proc/mounts")
+        return HostPlatform.Lines("/proc/mounts")
             .Select(l => l.Split(' '))
             .Where(p => p.Length >= 3 && p[1].Replace("\\040", " ", StringComparison.Ordinal) == mount.MountPoint)
             .Select(p => p[0])
@@ -223,7 +223,7 @@ public static class SystemProbe
         }
 
         (string MountPoint, string FsType)? best = null;
-        foreach (var line in ReadLines("/proc/mounts"))
+        foreach (var line in HostPlatform.Lines("/proc/mounts"))
         {
             var parts = line.Split(' ');
             if (parts.Length < 3)
@@ -325,7 +325,7 @@ public static class SystemProbe
 
             foreach (var dir in Directory.GetDirectories("/proc/driver/nvidia/gpus"))
             {
-                var model = ReadLines(Path.Combine(dir, "information"))
+                var model = HostPlatform.Lines(Path.Combine(dir, "information"))
                     .FirstOrDefault(l => l.StartsWith("Model:", StringComparison.OrdinalIgnoreCase));
                 if (model is not null)
                 {
@@ -341,17 +341,5 @@ public static class SystemProbe
         return null;
     }
 
-    private static IEnumerable<string> ReadLines(string path)
-    {
-        try
-        {
-            return File.Exists(path) ? File.ReadAllLines(path) : Array.Empty<string>();
-        }
-        catch
-        {
-            return Array.Empty<string>();
-        }
-    }
-
-    private static string? ReadFirstLine(string path) => ReadLines(path).FirstOrDefault();
+    private static string? ReadFirstLine(string path) => HostPlatform.Lines(path).FirstOrDefault();
 }
