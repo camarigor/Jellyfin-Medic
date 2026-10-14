@@ -60,14 +60,16 @@ public sealed class PlannedTask
 /// in seconds can stay daily, a task that takes an hour gets spread out.
 ///
 /// When: tasks are fitted into 15-minute blocks, sized from their run time plus a buffer, so
-/// no two planned tasks overlap. Each night runs in stages: the library scan first, then the
-/// tasks that build on it, then upkeep. A task is only put before an earlier stage when every
-/// slot after it is much busier. Tasks that don't run every night are spread across nights.
+/// no two planned tasks overlap. A block can run on past midnight into the next day, and the
+/// tasks you keep and the times you asked to avoid are blocked out the same way. Each night
+/// runs in stages: the library scan first, then the tasks that build on it, then upkeep. A
+/// task is only put before an earlier stage when every slot after it is much busier. Tasks
+/// that don't run every night are spread across nights.
 /// </summary>
 public static class SchedulePlanner
 {
-    private const int CellMinutes = 15;
-    private const int CellsPerDay = 24 * 60 / CellMinutes;
+    private const int CellMinutes = WeekGrid.CellMinutes;
+    private const int CellsPerDay = WeekGrid.CellsPerDay;
     private const double BufferMinutes = 5;
     private const double MaxBlockMinutes = 720;
     private const double BufferShare = 0.25;          // runs vary, so leave a quarter of the run time spare (at least 5 minutes)
@@ -110,44 +112,52 @@ public static class SchedulePlanner
 
     private static readonly DayOfWeek[][] WeeklySets = AllDays.Select(d => new[] { d }).ToArray();
 
-    // First match wins, so more specific names come first.
-    // Cheap / Moderate / Heavy: the cadence to use when the task's average run is
+    // Jellyfin's own tasks are matched by key, which is the same in every language (the name is translated);
+    // tasks from plugins, which have no key here, by name, where the first match wins, so more specific names
+    // come first. Cheap / Moderate / Heavy: the cadence to use when the task's average run is
     // under 5 minutes / 5 to 45 minutes / 45 minutes or more.
     private static readonly TaskRule[] Rules =
     {
-        new("Scan Media Library", Cadence.Daily, Cadence.Daily, Cadence.Daily, 0, 60,
+        new("RefreshLibrary", "Scan Media Library", Cadence.Daily, Cadence.Daily, Cadence.Daily, 0, 60,
             "New IPTV and local titles should appear by morning, and later tasks need an up-to-date library, so it runs daily and first."),
-        new("Guide", Cadence.Daily, Cadence.Daily, Cadence.Daily, 1, 20,
+        new("RefreshGuide", "Guide", Cadence.Daily, Cadence.Daily, Cadence.Daily, 1, 20,
             "The IPTV guide changes every day. It gets its own slot after the library scan, so their database writes never overlap."),
-        new("Transcode", Cadence.Daily, Cadence.Daily, Cadence.Daily, 1, 5,
+        new("DeleteTranscodeFiles", "Transcode", Cadence.Daily, Cadence.Daily, Cadence.Daily, 1, 5,
             "Clears leftover transcode files so the cache drive doesn't fill up."),
-        new("Subtitle", Cadence.TwiceWeekly, Cadence.TwiceWeekly, Cadence.TwiceWeekly, 2, 20,
+        new("DownloadSubtitles", "Subtitle", Cadence.TwiceWeekly, Cadence.TwiceWeekly, Cadence.TwiceWeekly, 2, 20,
             "Searching less often keeps you under subtitle provider limits."),
-        new("Chapter Image", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new("RefreshChapterImages", "Chapter Image", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added items, so batching them up loses nothing."),
-        new("Trickplay", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new("RefreshTrickplayImages", "Trickplay", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added items, so batching them up loses nothing."),
-        new("Media Segment", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new("TaskExtractMediaSegments", "Media Segment", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added items, so batching them up loses nothing."),
-        new("Keyframe", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new("KeyframeExtraction", "Keyframe", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added items, so batching them up loses nothing."),
-        new("Intro", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new(null, "Intro", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added episodes, so batching them up loses nothing."),
-        new("Audio Normali", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 15,
+        new("AudioNormalization", "Audio Normali", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 15,
             "Only works on newly added music, so batching it up loses nothing."),
-        new("Optimize", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 15,
+        new("OptimizeDatabaseTask", "Optimize", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 15,
             "Keeps the database tidy. Weekly is enough and avoids extra writes to the cache drive."),
-        new("Cache Directory", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
+        new("DeleteCacheFiles", "Cache Directory", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
             "Clears old cached images and files. Weekly is plenty."),
-        new("Log Directory", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
+        new("CleanLogFiles", "Log Directory", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
             "Removes old log files. Weekly is plenty."),
-        new("Update Plugins", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
+        new("PluginUpdates", "Update Plugins", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
             "Weekly keeps plugins current without surprise changes mid-week."),
-        new("People", Cadence.Weekly, Cadence.Weekly, Cadence.Monthly, 4, 60,
+        new("RefreshPeople", "People", Cadence.Weekly, Cadence.Weekly, Cadence.Monthly, 4, 60,
             "Refreshes cast and crew details, which rarely change."),
-        new("Activity Log", Cadence.Monthly, Cadence.Monthly, Cadence.Monthly, 4, 5,
+        new("CleanActivityLog", "Activity Log", Cadence.Monthly, Cadence.Monthly, Cadence.Monthly, 4, 5,
             "Only trims old entries from the activity log.")
     };
+
+    private static TaskRule? RuleFor(IScheduledTaskWorker worker)
+    {
+        string key = worker.ScheduledTask.Key;
+        return Rules.FirstOrDefault(r => string.Equals(r.Key, key, StringComparison.Ordinal))
+            ?? Rules.FirstOrDefault(r => worker.Name.Contains(r.Keyword, StringComparison.OrdinalIgnoreCase));
+    }
 
     public static List<PlannedTask> Build(
         IReadOnlyList<IScheduledTaskWorker> workers,
@@ -156,8 +166,8 @@ public static class SchedulePlanner
         BusyProfile busy,
         IReadOnlyDictionary<string, string>? choices = null)
     {
-        var grid = new bool[7, CellsPerDay];
-        busy.BlockAvoidedTimes(grid, CellMinutes);
+        var grid = new WeekGrid();
+        busy.BlockAvoidedTimes(grid);
 
         var planned = new List<PlannedTask>();
         var leftAlone = new List<PlannedTask>();
@@ -170,7 +180,7 @@ public static class SchedulePlanner
             profile.TryGetValue(id, out var rec);
             managed.TryGetValue(id, out var managedRun);
 
-            var rule = Rules.FirstOrDefault(r => worker.Name.Contains(r.Keyword, StringComparison.OrdinalIgnoreCase));
+            var rule = RuleFor(worker);
             var (minutes, evidence) = MeasureCost(worker, rec);
             string current = ScheduleStorage.FormatSchedule(worker.Triggers, managedRun);
 
@@ -193,7 +203,7 @@ public static class SchedulePlanner
             if (choice == ScheduleStorage.ChoiceKeep)
             {
                 // Keep its times, but block them out so planned tasks avoid them.
-                ReserveExisting(grid, worker.Triggers, minutes ?? LeftAloneDefaultMinutes);
+                ReserveExisting(grid, worker.Triggers, managedRun, minutes ?? LeftAloneDefaultMinutes);
                 string why = rule is null
                     ? "Medic doesn't know what this task needs, so it's left as it is."
                     : unscheduled && (choices is null || !choices.ContainsKey(id))
@@ -230,7 +240,7 @@ public static class SchedulePlanner
             .ToList();
     }
 
-    private static PlannedTask Place(bool[,] grid, BusyProfile busy, NightOrder night, Candidate c, Cadence cadence)
+    private static PlannedTask Place(WeekGrid grid, BusyProfile busy, NightOrder night, Candidate c, Cadence cadence)
     {
         double estimate = c.Minutes ?? c.Rule.DefaultMinutes;
         int length = BlockCells(estimate);
@@ -289,7 +299,7 @@ public static class SchedulePlanner
 
         foreach (var (day, start) in slots)
         {
-            Mark(grid, new[] { day }, start, length);
+            grid.Mark(day, start, length);
             night.Placed(day, start, length);
         }
 
@@ -475,12 +485,15 @@ public static class SchedulePlanner
 
     // ---------- Slot allocation ----------
 
-    private static int BlockCells(double minutes)
+    // The run time plus a buffer, since runs vary.
+    private static double BlockMinutes(double minutes)
     {
         double run = Math.Min(Math.Max(minutes, 0), MaxBlockMinutes);
-        double total = run + Math.Max(BufferMinutes, run * BufferShare);
-        return Math.Max(1, (int)Math.Ceiling(total / CellMinutes)); // a quick task takes one 15-minute slot
+        return run + Math.Max(BufferMinutes, run * BufferShare);
     }
+
+    private static int BlockCells(double minutes) =>
+        Math.Max(1, (int)Math.Ceiling(BlockMinutes(minutes) / CellMinutes)); // a quick task takes one 15-minute slot
 
     /// <summary>
     /// The quietest start that is free on every one of the given days. Cost is the expected
@@ -488,12 +501,14 @@ public static class SchedulePlanner
     /// earlier stages have finished that night, a small nudge to follow them closely, a nudge
     /// towards days with less already planned, and (when costs are equal) the early hours.
     /// </summary>
-    private static (int Start, double Cost)? BestCommonStart(bool[,] grid, BusyProfile busy, NightOrder night, DayOfWeek[] days, int length)
+    private static (int Start, double Cost)? BestCommonStart(WeekGrid grid, BusyProfile busy, NightOrder night, DayOfWeek[] days, int length)
     {
         (int Start, double Cost)? best = null;
-        for (int start = 0; start + length <= CellsPerDay; start++)
+
+        // Any start time of the day: a run that doesn't end by midnight carries on into the next day.
+        for (int start = 0; start < CellsPerDay; start++)
         {
-            if (!days.All(d => IsFree(grid, d, start, length)))
+            if (!days.All(d => grid.IsFree(d, start, length)))
             {
                 continue;
             }
@@ -504,7 +519,7 @@ public static class SchedulePlanner
                 cost += busy.CostOver(day, start, length, CellMinutes);
                 cost += night.Cost(day, start);
 
-                cost += Load(grid, day) * SpreadNudge;
+                cost += grid.Load(day) * SpreadNudge;
             }
 
             // Prefer the early hours (from 01:00) when everything else is equal.
@@ -519,64 +534,42 @@ public static class SchedulePlanner
         return best;
     }
 
-    private static bool IsFree(bool[,] grid, DayOfWeek day, int start, int length)
+    private static void ReserveExisting(WeekGrid grid, IEnumerable<TaskTriggerInfo>? triggers, ManagedRun? managed, double minutes)
     {
-        for (int cell = start; cell < Math.Min(start + length, CellsPerDay); cell++)
+        foreach (var t in triggers ?? Enumerable.Empty<TaskTriggerInfo>())
         {
-            if (grid[(int)day, cell])
+            if (t.TimeOfDayTicks is not { } ticks)
             {
-                return false;
+                continue;
             }
-        }
 
-        return true;
-    }
-
-    private static void Mark(bool[,] grid, IEnumerable<DayOfWeek> days, int start, int length)
-    {
-        foreach (var day in days)
-        {
-            for (int cell = start; cell < Math.Min(start + length, CellsPerDay); cell++)
-            {
-                grid[(int)day, cell] = true;
-            }
-        }
-    }
-
-    private static int Load(bool[,] grid, DayOfWeek day)
-    {
-        int used = 0;
-        for (int cell = 0; cell < CellsPerDay; cell++)
-        {
-            if (grid[(int)day, cell])
-            {
-                used++;
-            }
-        }
-
-        return used;
-    }
-
-    private static void ReserveExisting(bool[,] grid, IEnumerable<TaskTriggerInfo>? triggers, double minutes)
-    {
-        if (triggers is null)
-        {
-            return;
-        }
-
-        int length = BlockCells(minutes);
-        foreach (var t in triggers.Where(t => t.TimeOfDayTicks.HasValue))
-        {
-            int start = (int)(TimeSpan.FromTicks(t.TimeOfDayTicks.GetValueOrDefault()).TotalMinutes / CellMinutes);
             if (t.Type == TaskTriggerInfoType.DailyTrigger)
             {
-                Mark(grid, AllDays, start, length);
+                foreach (var day in AllDays)
+                {
+                    Reserve(grid, day, TimeSpan.FromTicks(ticks), minutes);
+                }
             }
-            else if (t.Type == TaskTriggerInfoType.WeeklyTrigger && t.DayOfWeek.HasValue)
+            else if (t.Type == TaskTriggerInfoType.WeeklyTrigger && t.DayOfWeek is { } weekday)
             {
-                Mark(grid, new[] { t.DayOfWeek.Value }, start, length);
+                Reserve(grid, weekday, TimeSpan.FromTicks(ticks), minutes);
             }
         }
+
+        // A kept task that Medic runs once a month keeps that time too.
+        if (managed is not null)
+        {
+            Reserve(grid, managed.Weekday, TimeSpan.FromTicks(managed.TimeOfDayTicks), minutes);
+        }
+    }
+
+    // From the cell the run starts in to the one its buffer ends in: a 10-minute run at 23:50 also takes 00:00 to 00:15.
+    private static void Reserve(WeekGrid grid, DayOfWeek day, TimeSpan at, double minutes)
+    {
+        double start = at.TotalMinutes;
+        int first = (int)(start / CellMinutes);
+        int end = (int)Math.Ceiling((start + BlockMinutes(minutes)) / CellMinutes);
+        grid.Mark(day, first, Math.Max(1, end - first));
     }
 
     // ---------- Triggers ----------
@@ -655,6 +648,7 @@ public static class SchedulePlanner
     }
 
     private sealed record TaskRule(
+        string? Key,
         string Keyword,
         Cadence Cheap,
         Cadence Moderate,

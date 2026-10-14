@@ -5,10 +5,21 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 ## Unreleased
 
+### Added
+- **A Seerr address for viewers.** If this server reaches Seerr at an address people can't open (http://seerr:5055 inside Docker, say), put theirs in the new "Seerr address for viewers" box: links to Seerr use it, while Medic Picks keeps using the other one itself.
+
 ### Fixed
+- **The settings page says when saving or removing a key fails.** Saving or removing the Seerr or TMDb key, and Build picks now, showed nothing when the server didn't take it. Each now says so, and a TMDb key that isn't saved no longer leaves Discover picks switched on.
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
 - **"My requests" checks each request is yours, and Discover-off accounts can't request.** The list relied on Seerr filtering requests by account; it now also checks every request against the person's own Seerr account, so a Seerr version that ignores the filter can't show anyone else's. Accounts with Discover turned off (a child's, say) could still request any title through the page's request call; that's now refused.
 - **Approving and declining now happen as you in Seerr.** They were sent with only the Seerr API key, which Seerr treats as its owner account: any Jellyfin admin could approve or decline (4K requests included) even without permission to manage requests in Seerr, and Seerr recorded its owner as the one who did it. Medic Picks now finds the admin's own Seerr account and acts as it, as it already did for requests; an admin who has never signed in to Seerr is told to do so first.
+- **Saving both keys at once no longer loses one.** The settings page saves the TMDb and Seerr keys together, and each save read the keys file, changed its own key and wrote the file back, so the second could write over the first: one key was then gone without any message (8 times in 20 in a test). Saving is now one locked step. A keys file that can't be read is kept as `secrets.json.bad` instead of being replaced by one holding only the new key, and its permissions are checked once instead of on every read.
+- **"My requests" no longer fails when Seerr is down.** With Seerr unreachable, looking up the person's Seerr account wasn't caught, so the page got an error instead of "can't reach Seerr" (and only now and then, as a found account is remembered for 10 minutes). A refused key or a broken Seerr is now also told apart from "never signed in to Seerr". Every call to Seerr gives up after 10 seconds, so a Seerr that hangs can't hold the page open, and a picks rebuild that fails is now written to the log.
+- **A TMDb outage no longer empties Discover.** A refused key, a rate limit, a TMDb error or no connection came back as "no recommendations", so the nightly run saved an empty Discover over everyone's previous one, and also cleared the list of titles already shown. Those failures are now told apart from an empty answer: each person keeps their last Discover picks, and after the first failure the run stops asking TMDb for the others.
+- **A title you hide stays hidden even if your picks were being rebuilt at the time.** A rebuild, the nightly one included, saved the picks it had worked out with the title still in them, so it came back until the next rebuild. Picks are now saved without anything hidden at that moment, and your choices are changed one at a time, so two changes made together can't undo each other.
+- **Linked picks leave out titles you've started.** They only left out what you had finished, so a film you'd stopped halfway through, or a series with an episode under way, could be suggested to you.
+- **The My picks page names itself with the plugin's version.** It told Jellyfin it was version 0.0.1, which is what Dashboard and Devices showed for it.
+- **Only http and https Seerr addresses become links.** The Seerr address went into every person's Request in Seerr link as it was typed.
 
 ## [1.2.3] – 2026-10-11
 

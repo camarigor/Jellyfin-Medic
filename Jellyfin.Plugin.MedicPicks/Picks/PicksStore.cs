@@ -1,5 +1,7 @@
 using System;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MediaBrowser.Common.Configuration;
@@ -10,7 +12,7 @@ namespace Jellyfin.Plugin.MedicPicks.Picks;
 /// <summary>
 /// Stores picks as one JSON file per user under the server's data folder
 /// (not the plugin folder, so picks survive plugin upgrades).
-/// Also holds the TMDb key in its own file so it never travels with the plugin's normal settings.
+/// Also holds the TMDb and Seerr keys in their own file so they never travel with the plugin's normal settings.
 /// </summary>
 public class PicksStore
 {
@@ -24,6 +26,7 @@ public class PicksStore
     private readonly string _root;
     private readonly ILogger<PicksStore> _logger;
     private readonly object _lock = new();
+    private volatile bool _checkedPrivate;
 
     public PicksStore(IApplicationPaths applicationPaths, ILogger<PicksStore> logger)
     {
@@ -123,41 +126,67 @@ public class PicksStore
 
     public string? GetTmdbKey() => ReadSecrets().TmdbKey;
 
-    public void SetTmdbKey(string? key)
-    {
-        var secrets = ReadSecrets();
-        secrets.TmdbKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
-        WriteSecrets(secrets);
-    }
+    public void SetTmdbKey(string? key) => UpdateSecrets(s => s.TmdbKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim());
 
     public string? GetSeerrKey() => ReadSecrets().SeerrKey;
 
-    public void SetSeerrKey(string? key)
+    public void SetSeerrKey(string? key) => UpdateSecrets(s => s.SeerrKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim());
+
+    // Read, change and write as one step, so saving both keys at once can't lose one of them.
+    private void UpdateSecrets(Action<Secrets> change)
     {
-        var secrets = ReadSecrets();
-        secrets.SeerrKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
-        WriteSecrets(secrets);
+        lock (_lock)
+        {
+            Secrets secrets;
+            try
+            {
+                secrets = ParseSecrets() ?? new Secrets();
+            }
+            catch (JsonException ex)
+            {
+                // Don't overwrite a damaged keys file with only the new key: keep it aside for the admin.
+                var damaged = SecretsPath + ".bad";
+                File.Move(SecretsPath, damaged, true);
+                _logger.LogWarning(ex, "Medic Picks: the keys file couldn't be read, so it was kept as {Path} and a new one started", damaged);
+                secrets = new Secrets();
+            }
+
+            change(secrets);
+            WriteSecrets(secrets);
+        }
     }
 
     private Secrets ReadSecrets()
     {
         try
         {
-            if (File.Exists(SecretsPath))
-            {
-                KeepPrivate(SecretsPath);
-                var secrets = JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
-                secrets.TmdbKey = string.IsNullOrWhiteSpace(secrets.TmdbKey) ? null : secrets.TmdbKey.Trim();
-                secrets.SeerrKey = string.IsNullOrWhiteSpace(secrets.SeerrKey) ? null : secrets.SeerrKey.Trim();
-                return secrets;
-            }
+            return ParseSecrets() ?? new Secrets();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Medic Picks: could not read the keys file");
+            return new Secrets();
+        }
+    }
+
+    // The keys file's contents, or null when there isn't one yet. Throws when it can't be read.
+    private Secrets? ParseSecrets()
+    {
+        if (!File.Exists(SecretsPath))
+        {
+            return null;
         }
 
-        return new Secrets();
+        if (!_checkedPrivate)
+        {
+            KeepPrivate(SecretsPath); // once: files written since are created private
+            _checkedPrivate = true;
+        }
+
+        var secrets = JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
+        secrets.TmdbKey = string.IsNullOrWhiteSpace(secrets.TmdbKey) ? null : secrets.TmdbKey.Trim();
+        secrets.SeerrKey = string.IsNullOrWhiteSpace(secrets.SeerrKey) ? null : secrets.SeerrKey.Trim();
+        return secrets;
     }
 
     private void WriteSecrets(Secrets secrets)
@@ -193,6 +222,52 @@ public class PicksStore
         Directory.CreateDirectory(PrefsDir);
         WriteAtomic(Path.Combine(PrefsDir, userId.ToString("N") + ".json"), JsonSerializer.Serialize(prefs, JsonOptions));
     }
+
+    /// <summary>
+    /// Reads, changes and saves one person's choices under the store's lock, so two changes at the same
+    /// time (a Hide while a rebuild forgets what was seen, say) can't undo each other.
+    /// </summary>
+    public UserPreferences UpdatePreferences(Guid userId, Func<UserPreferences, UserPreferences> change)
+    {
+        lock (_lock)
+        {
+            var updated = change(LoadPreferences(userId)).Normalise();
+            SavePreferences(userId, updated);
+            return updated;
+        }
+    }
+
+    /// <summary>
+    /// Saves picks without anything the person has hidden, as their choices stand at the moment of saving:
+    /// a title hidden while these picks were being built (by the nightly run, say) would otherwise come back.
+    /// </summary>
+    public void SaveWithoutHidden(Guid userId, UserPicks picks)
+    {
+        lock (_lock)
+        {
+            var prefs = LoadPreferences(userId);
+            picks.InLibrary.RemoveAll(p => prefs.HiddenItems.Contains(p.ItemId));
+            picks.Linked.RemoveAll(p => prefs.HiddenItems.Contains(p.ItemId));
+            picks.Discover.RemoveAll(p => prefs.HiddenTmdb.Contains(TmdbKey(p.MediaType, p.TmdbId)));
+            Save(userId, picks);
+        }
+    }
+
+    /// <summary>Takes anything the person has hidden out of their saved picks.</summary>
+    public void RemoveHidden(Guid userId)
+    {
+        lock (_lock)
+        {
+            if (Load(userId) is { } picks)
+            {
+                SaveWithoutHidden(userId, picks);
+            }
+        }
+    }
+
+    /// <summary>How a Discover title appears in the hidden and seen lists: "movie:123" or "tv:123".</summary>
+    public static string TmdbKey(string? mediaType, int tmdbId) =>
+        (mediaType == "tv" ? "tv:" : "movie:") + tmdbId.ToString(CultureInfo.InvariantCulture);
 
     private sealed class Secrets
     {

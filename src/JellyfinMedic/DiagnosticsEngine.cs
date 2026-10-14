@@ -7,6 +7,7 @@ using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Tasks;
+using Microsoft.Extensions.Logging;
 using JellyfinMedic.Api;
 
 namespace JellyfinMedic.Services;
@@ -64,6 +65,7 @@ public sealed class DiagnosticsEngine
     private readonly ITaskManager _tasks;
     private readonly IPluginManager _plugins;
     private readonly IServerApplicationHost _host;
+    private readonly ILogger _logger;
 
     private DiagnosticReport _report = new();
 
@@ -73,7 +75,8 @@ public sealed class DiagnosticsEngine
         ILibraryManager library,
         ITaskManager tasks,
         IPluginManager plugins,
-        IServerApplicationHost host)
+        IServerApplicationHost host,
+        ILogger logger)
     {
         _config = config;
         _paths = paths;
@@ -81,6 +84,7 @@ public sealed class DiagnosticsEngine
         _tasks = tasks;
         _plugins = plugins;
         _host = host;
+        _logger = logger;
     }
 
     private List<LibraryFacts>? _libraries;
@@ -165,14 +169,17 @@ public sealed class DiagnosticsEngine
     {
         _report = new DiagnosticReport();
 
-        var hw = SystemProbe.Probe();
+        // Guarded like the checks: if reading the hardware or listing the specs fails, the report
+        // still comes back with everything else, instead of the whole request failing.
+        var hw = new HardwareInfo();
+        Guard(AreaHardware, () => hw = SystemProbe.Probe());
         var server = (object)_config.Configuration;
         var encoding = TryConfig("encoding");
         var network = TryConfig("network");
         var liveTv = TryConfig("livetv");
         var libraries = Libraries;
 
-        AddSpecs(hw, encoding, libraries, pluginReports.Count);
+        Guard(AreaHardware, () => AddSpecs(hw, encoding, libraries, pluginReports.Count));
 
         Guard(AreaHardware, () => CheckTranscoding(hw, encoding));
         Guard(AreaStorage, () => CheckStorage(libraries, encoding));
@@ -1158,7 +1165,8 @@ public sealed class DiagnosticsEngine
     {
         var workers = _tasks.ScheduledTasks.ToList();
 
-        var scan = workers.FirstOrDefault(t => t.Name.Contains("Scan Media Library", StringComparison.OrdinalIgnoreCase));
+        // By key: the names are translated into the server's language.
+        var scan = workers.FirstOrDefault(t => t.ScheduledTask.Key == "RefreshLibrary");
         var fastScan = scan?.Triggers?
             .Where(t => t.Type == TaskTriggerInfoType.IntervalTrigger && t.IntervalTicks.HasValue)
             .Select(t => TimeSpan.FromTicks(t.IntervalTicks.GetValueOrDefault()))
@@ -1173,7 +1181,7 @@ public sealed class DiagnosticsEngine
                 WhereTasks);
         }
 
-        var optimise = workers.FirstOrDefault(t => t.Name.Contains("Optimize", StringComparison.OrdinalIgnoreCase));
+        var optimise = workers.FirstOrDefault(t => t.ScheduledTask.Key == "OptimizeDatabaseTask");
         if (optimise is not null)
         {
             if (optimise.Triggers is null || !optimise.Triggers.Any())
@@ -1295,8 +1303,10 @@ public sealed class DiagnosticsEngine
             plan = SchedulePlanner.Build(_tasks.ScheduledTasks.Where(IsVisibleTask).ToList(),
                 ScheduleStorage.LoadProfile(_paths), ScheduleStorage.LoadManaged(_paths), busy, ScheduleStorage.LoadChoices(_paths));
         }
-        catch
+        catch (Exception ex)
         {
+            // The schedule suggestion is left out of the report; the reason goes to the log.
+            _logger.LogWarning(ex, "Jellyfin Medic: couldn't work out the recommended schedule for the report");
             return;
         }
 
@@ -1510,6 +1520,12 @@ public sealed class DiagnosticsEngine
     /// <summary>Heavy maintenance scheduled during the day, when people are likely to be watching.</summary>
     private void CheckDaytimeTasks(List<IScheduledTaskWorker> workers)
     {
+        // Jellyfin's own heavy tasks by key (their names are translated); tasks from plugins by name.
+        string[] heavyKeys =
+        {
+            "RefreshLibrary", "OptimizeDatabaseTask", "RefreshChapterImages", "RefreshTrickplayImages", "MoveTrickplayImages",
+            "TaskExtractMediaSegments", "KeyframeExtraction", "RefreshPeople", "AudioNormalization", "DownloadSubtitles", "RefreshGuide"
+        };
         string[] heavy =
         {
             "Scan Media Library", "Optimize", "Optimise", "Chapter", "Trickplay", "Media Segment", "Keyframe",
@@ -1519,7 +1535,7 @@ public sealed class DiagnosticsEngine
         var daytime = new List<string>();
         foreach (var worker in workers.Where(IsVisibleTask))
         {
-            if (!heavy.Any(h => worker.Name.Contains(h, StringComparison.OrdinalIgnoreCase)))
+            if (!heavyKeys.Contains(worker.ScheduledTask.Key) && !heavy.Any(h => worker.Name.Contains(h, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
@@ -1648,6 +1664,7 @@ public sealed class DiagnosticsEngine
         }
         catch (Exception ex)
         {
+            _logger.LogWarning(ex, "Jellyfin Medic: some {Area} checks couldn't run", area);
             Add(area, Sev.Tip, "Some checks in this area couldn't run", ex.GetType().Name, string.Empty,
                 $"Medic hit an error reading these settings ({ex.Message}). The rest of the report is unaffected.", string.Empty);
         }

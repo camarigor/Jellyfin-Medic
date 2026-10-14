@@ -13,14 +13,15 @@ public sealed class LinkTarget
 }
 
 /// <summary>
-/// Checks that addresses respond. Results are kept for 10 minutes so opening the report
-/// repeatedly doesn't keep hitting the same sites.
+/// Checks that addresses respond. Successes are kept for 10 minutes and failures for 2, so opening
+/// the report repeatedly doesn't keep hitting the same sites, or waiting on one that's down.
 /// </summary>
 public static class LinkChecker
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
     private static readonly ConcurrentDictionary<string, (DateTime CheckedUtc, string Result, int Fails)> Cache = new(StringComparer.Ordinal);
     private static readonly TimeSpan KeepFor = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan RetryFailuresAfter = TimeSpan.FromMinutes(2);
 
     // A link is only reported as failing after it misses twice in a row, so one blip isn't called "dead".
     private const int FailuresBeforeReporting = 2;
@@ -45,10 +46,12 @@ public static class LinkChecker
 
     private static async Task CheckOneAsync(string url, CancellationToken ct)
     {
-        bool knownGood = Cache.TryGetValue(url, out var hit) && hit.Result == "OK";
-        if (hit.CheckedUtc != default && DateTime.UtcNow - hit.CheckedUtc < KeepFor && knownGood)
+        // A recent success is trusted for the full window. A recent failure is tried again after a short
+        // while: each check can wait on two timeouts, so a site that's down would slow every report.
+        if (Cache.TryGetValue(url, out var hit) && hit.CheckedUtc != default &&
+            DateTime.UtcNow - hit.CheckedUtc < (hit.Result == "OK" ? KeepFor : RetryFailuresAfter))
         {
-            return; // A recent success is trusted for the full cache window.
+            return;
         }
 
         // Try once; if it fails, try again after a moment before counting the failure, since

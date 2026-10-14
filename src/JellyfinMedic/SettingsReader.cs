@@ -17,9 +17,18 @@ public static class SettingsReader
 
     private static readonly string[] SecretWords =
     {
-        "password", "passwd", "secret", "token", "apikey", "api_key", "accesskey",
-        "privatekey", "credential", "username", "login"
+        "password", "passwd", "passphrase", "secret", "token", "apikey", "api_key", "accesskey",
+        "privatekey", "credential", "username", "login", "cookie", "sessionid", "bearer"
     };
+
+    // A credential after an auth scheme, e.g. a saved "Authorization: Bearer eyJ..." header. The credential
+    // must hold a capital, digit or symbol, so prose such as "basic authentication" in a log line is left alone.
+    private static readonly Regex AuthScheme =
+        new(@"\b((?i:bearer|basic|digest))\s+(?=[A-Za-z0-9._~+/=-]*[A-Z0-9._~+/=-])[A-Za-z0-9._~+/=-]{8,}", RegexOptions.Compiled);
+
+    // JSON Web Tokens anywhere in a value: three base64url parts, the first starting with "eyJ" ({").
+    private static readonly Regex Jwt =
+        new(@"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*", RegexOptions.Compiled);
 
     private static readonly Regex QuerySecrets =
         new(@"(?i)((?:password|passwd|pass|pwd|username|user|token|apikey|api_key|key)=)[^&\s]+", RegexOptions.Compiled);
@@ -277,13 +286,20 @@ public static class SettingsReader
     public static bool IsSecretName(string name)
     {
         string leaf = LeafName(name).ToLowerInvariant();
-        return leaf is "user" or "pass" or "pwd" or "key" || SecretWords.Any(word => leaf.Contains(word, StringComparison.Ordinal));
+        return leaf is "user" or "pass" or "pwd" or "key"
+            || leaf.EndsWith("key", StringComparison.Ordinal) // ServerKey, AuthKey, LicenseKey...
+            || SecretWords.Any(word => leaf.Contains(word, StringComparison.Ordinal));
     }
 
-    /// <summary>Hides credentials inside URLs, e.g. an IPTV playlist link with ?username=...&amp;password=...</summary>
+    /// <summary>
+    /// Hides credentials inside values: in URLs (e.g. an IPTV playlist link with ?username=...&amp;password=...),
+    /// after an auth scheme (Bearer, Basic, Digest) and JSON Web Tokens.
+    /// </summary>
     public static string MaskSecrets(string text)
     {
-        string masked = QuerySecrets.Replace(text, "$1••••");
+        string masked = Jwt.Replace(text, "••••");
+        masked = AuthScheme.Replace(masked, "$1 ••••");
+        masked = QuerySecrets.Replace(masked, "$1••••");
         masked = BotToken.Replace(masked, "bot••••");
         masked = WebhookPath.Replace(masked, "$1••••");
         return UrlUserInfo.Replace(masked, "://••••:••••@");

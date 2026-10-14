@@ -12,17 +12,18 @@ public sealed class PluginServerProfile
 {
     public int Users { get; set; }
 
-    public int Movies { get; set; }
+    // Null when the count couldn't be read: advice never rests on a number nobody knows.
+    public int? Movies { get; set; }
 
-    public int Series { get; set; }
+    public int? Series { get; set; }
 
-    public int Episodes { get; set; }
+    public int? Episodes { get; set; }
 
-    public int AudioTracks { get; set; }
+    public int? AudioTracks { get; set; }
 
-    public int Books { get; set; }
+    public int? Books { get; set; }
 
-    public int AnimeSeries { get; set; }
+    public int? AnimeSeries { get; set; }
 
     // Films and episodes marked as watched, added up across every user.
     public int MoviePlays { get; set; }
@@ -183,7 +184,8 @@ public static class PluginAdvisor
                 if (name.Contains("anime", StringComparison.OrdinalIgnoreCase)
                     && Guid.TryParse(SettingsReader.Text(folder, "ItemId"), out var id))
                 {
-                    profile.AnimeSeries = Math.Max(profile.AnimeSeries, Count(library, q => q.AncestorIds = new[] { id }, null, "Series"));
+                    int? inFolder = Count(library, q => q.AncestorIds = new[] { id }, null, "Series");
+                    profile.AnimeSeries = inFolder is null ? profile.AnimeSeries : Math.Max(profile.AnimeSeries ?? 0, inFolder.Value);
                 }
             }
         }
@@ -197,31 +199,33 @@ public static class PluginAdvisor
         profile.Users = everyone.Count;
         foreach (var user in everyone)
         {
-            profile.MoviePlays += Count(library, q => q.IsPlayed = true, user, "Movie");
-            profile.EpisodePlays += Count(library, q => q.IsPlayed = true, user, "Episode");
+            // Plays only lean towards suggesting something, so a count that can't be read adds nothing.
+            profile.MoviePlays += Count(library, q => q.IsPlayed = true, user, "Movie") ?? 0;
+            profile.EpisodePlays += Count(library, q => q.IsPlayed = true, user, "Episode") ?? 0;
         }
 
         return profile;
     }
 
     /// <summary>
-    /// Counts items of the named kinds, optionally as seen by one user. Returns 0 if this Jellyfin
-    /// doesn't know a kind, or if a per-user count can't be scoped to that user (so it never
-    /// silently counts the whole library instead).
+    /// Counts items of the named kinds, optionally as seen by one user. Null when the count can't be read:
+    /// this Jellyfin doesn't know a kind, a per-user count can't be scoped to that user (so it never silently
+    /// counts the whole library instead), or the query fails. A rule like "remove it, there are none" must not
+    /// fire on a count that failed.
     /// </summary>
-    private static int Count(ILibraryManager library, Action<InternalItemsQuery>? extra, object? user, params string[] kinds)
+    private static int? Count(ILibraryManager library, Action<InternalItemsQuery>? extra, object? user, params string[] kinds)
     {
         try
         {
             var query = new InternalItemsQuery { Recursive = true, IsVirtualItem = false };
             if (!SetKinds(query, kinds))
             {
-                return 0;
+                return null;
             }
 
             if (user is not null && !ForUser(query, user))
             {
-                return 0;
+                return null;
             }
 
             extra?.Invoke(query);
@@ -229,7 +233,7 @@ public static class PluginAdvisor
         }
         catch
         {
-            return 0;
+            return null;
         }
     }
 
@@ -341,6 +345,9 @@ public static class PluginAdvisor
     private static string Pct(double share) => Math.Round(share * 100).ToString(CultureInfo.InvariantCulture);
 
     private static string N(int value) => value.ToString("N0", CultureInfo.GetCultureInfo("en-GB"));
+
+    // Only used once a rule has matched, so the count is known.
+    private static string N(int? value) => N(value ?? 0);
 
     // ---------- Rules ----------
 

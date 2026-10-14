@@ -256,12 +256,14 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
     /// <summary>Every process started by Jellyfin, and theirs in turn, from /proc.</summary>
     private static List<int> Children(int root)
     {
-        var parents = new Dictionary<int, int>();
+        // Each process's children, gathered in one pass, so each descendant is a lookup rather than
+        // another pass over every process.
+        var children = new Dictionary<int, List<int>>();
         foreach (var dir in Directory.EnumerateDirectories("/proc"))
         {
             if (int.TryParse(Path.GetFileName(dir), out int pid) && ReadStat(pid) is { } s)
             {
-                parents[pid] = s.ParentPid;
+                (children.TryGetValue(s.ParentPid, out var list) ? list : children[s.ParentPid] = new List<int>()).Add(pid);
             }
         }
 
@@ -270,7 +272,7 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
         while (queue.Count > 0 && found.Count < 500)
         {
             int parent = queue.Dequeue();
-            foreach (var child in parents.Where(p => p.Value == parent).Select(p => p.Key))
+            foreach (var child in children.TryGetValue(parent, out var list) ? list : (IEnumerable<int>)Array.Empty<int>())
             {
                 found.Add(child);
                 queue.Enqueue(child);
@@ -405,12 +407,19 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
             });
             if (p is null || !p.WaitForExit(3000))
             {
-                p?.Kill();
+                p?.Kill(entireProcessTree: true);
+                _nvidiaRetryUtc = DateTime.UtcNow.AddMinutes(5); // hung: don't start another one every 15 seconds
                 return null;
             }
 
             var first = p.StandardOutput.ReadToEnd().Split('\n').FirstOrDefault()?.Trim();
-            return double.TryParse(first, NumberStyles.Any, CultureInfo.InvariantCulture, out var nv) ? nv : null;
+            if (double.TryParse(first, NumberStyles.Any, CultureInfo.InvariantCulture, out var nv))
+            {
+                return nv;
+            }
+
+            _nvidiaRetryUtc = DateTime.UtcNow.AddMinutes(5); // an answer that isn't a number won't change by itself
+            return null;
         }
         catch
         {

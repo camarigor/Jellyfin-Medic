@@ -143,9 +143,10 @@ public static class PluginRules
                 "Analysis during scans makes every scan longer and runs at whatever time the scan happens.");
         }
 
-        if (Number(root, "MaxParallelism") is { } parallel && parallel > Math.Max(1, ctx.CpuThreads / 2))
+        int mostAtOnce = Math.Max(1, ctx.CpuThreads / 2);
+        if (Number(root, "MaxParallelism") is { } parallel && parallel > mostAtOnce)
         {
-            Add(r, Sev.Improve, $"{r.Name} analyses {parallel:0} episodes at once", $"{parallel:0}", $"No more than {Math.Max(1, ctx.CpuThreads / 4)}",
+            Add(r, Sev.Improve, $"{r.Name} analyses {parallel:0} episodes at once", $"{parallel:0}", $"No more than {mostAtOnce}",
                 "Each analysis runs FFmpeg. Too many at once competes with playback for CPU.");
         }
 
