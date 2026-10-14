@@ -80,8 +80,13 @@
                 <h3>Seerr requests (optional)</h3>
                 <div class="inputContainer">
                     <input is="emby-input" type="url" id="JellyseerrUrl" label="Seerr address" />
-                    <div class="fieldDescription">Seerr is the merged Overseerr and Jellyseerr. Use an address people can reach
-                        from their own devices. Save key and Test Seerr save it too.</div>
+                    <div class="fieldDescription">Seerr is the merged Overseerr and Jellyseerr. The address this server reaches it
+                        at. Save key and Test Seerr save it too.</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="url" id="SeerrLinkUrl" label="Seerr address for viewers (optional)" />
+                    <div class="fieldDescription">If people open Seerr at a different address than this server uses
+                        (http://seerr:5055 inside Docker, say), put theirs here. Links to Seerr use it.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="password" id="SeerrKey" autocomplete="off" label="Seerr API key (Seerr → Settings → General)" />
@@ -238,6 +243,7 @@
                         $('DiscoverPickCount').value = config.DiscoverPickCount;
                         $('TmdbLanguage').value = config.TmdbLanguage || 'en-GB';
                         $('JellyseerrUrl').value = config.JellyseerrUrl || '';
+                        $('SeerrLinkUrl').value = config.SeerrLinkUrl || '';
                         $('SeerrDirectRequests').checked = config.SeerrDirectRequests !== false;
                         $('ShowRequests').checked = config.ShowRequests !== false;
                         $('MinimumWatchedTitles').value = config.MinimumWatchedTitles;
@@ -263,6 +269,7 @@
                     config.DiscoverPickCount = parseInt($('DiscoverPickCount').value, 10) || 20;
                     config.TmdbLanguage = $('TmdbLanguage').value.trim() || 'en-GB';
                     config.JellyseerrUrl = $('JellyseerrUrl').value.trim();
+                    config.SeerrLinkUrl = $('SeerrLinkUrl').value.trim();
                     config.SeerrDirectRequests = $('SeerrDirectRequests').checked;
                     config.ShowRequests = $('ShowRequests').checked;
                     config.MinimumWatchedTitles = parseInt($('MinimumWatchedTitles').value, 10) || 3;

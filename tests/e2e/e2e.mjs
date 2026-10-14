@@ -636,6 +636,29 @@ await check('My picks page names itself with the plugin\'s version', async () =>
     return version;
 });
 
+await check('Medic Picks gives people only a Seerr address they can open', async () => {
+    const id = 'b34ec5d1-b70f-435f-b77d-9b76979b03c7';
+    const cfg = await ok(`/Plugins/${id}/Configuration`);
+    const save = async (changes) => {
+        const r = await api('POST', `/Plugins/${id}/Configuration`, { ...cfg, ...changes });
+        expect(r.status === 204 || r.status === 200, 'saving settings ' + r.status);
+    };
+    try {
+        // The server reaches Seerr inside Docker; people open it at its public address.
+        await save({ JellyseerrUrl: 'http://seerr:5055', SeerrLinkUrl: 'https://requests.example.com/', SeerrDirectRequests: false });
+        let me = await ok('/MedicPicks/Me');
+        expect(me.seerrUrl === 'https://requests.example.com' && me.requestMode === 'link', `link: ${me.seerrUrl} (${me.requestMode})`);
+        // Never an address that isn't http or https in a link.
+        await save({ JellyseerrUrl: 'javascript:alert(1)//', SeerrLinkUrl: '', SeerrDirectRequests: false });
+        me = await ok('/MedicPicks/Me');
+        // No address at all: the field is left out of the answer.
+        expect(me.seerrUrl == null && me.requestMode === 'none', `javascript: address: ${me.seerrUrl} (${me.requestMode})`);
+        return 'public address in links; javascript: never';
+    } finally {
+        await api('POST', `/Plugins/${id}/Configuration`, cfg);
+    }
+});
+
 // ---------- Medic Profiles, against a pretend Sonarr ----------
 
 const fakeArr = await import('./fake-arr.mjs');

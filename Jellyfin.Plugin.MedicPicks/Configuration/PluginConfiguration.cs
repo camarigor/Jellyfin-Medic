@@ -36,6 +36,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Optional Seerr address (formerly Jellyseerr/Overseerr). The name is kept so existing settings carry over.</summary>
     public string JellyseerrUrl { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Optional: the Seerr address people open from their own devices, when this server reaches Seerr at
+    /// one they can't (http://seerr:5055 inside Docker, say). Empty: links use the Seerr address.
+    /// </summary>
+    public string SeerrLinkUrl { get; set; } = string.Empty;
+
     /// <summary>With a Seerr API key saved, the Request button makes the request directly, as the person who pressed it.</summary>
     public bool SeerrDirectRequests { get; set; } = true;
 
