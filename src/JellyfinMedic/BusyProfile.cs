@@ -165,16 +165,15 @@ public sealed class BusyProfile
     }
 
     /// <summary>Marks the avoided times as taken on every day, so nothing is placed there.</summary>
-    public void BlockAvoidedTimes(bool[,] grid, int cellMinutes)
+    internal void BlockAvoidedTimes(WeekGrid grid)
     {
-        int cellsPerDay = grid.GetLength(1);
         for (int d = 0; d < 7; d++)
         {
-            for (int cell = 0; cell < cellsPerDay; cell++)
+            for (int cell = 0; cell < WeekGrid.CellsPerDay; cell++)
             {
-                if (_avoid[cell * cellMinutes / SlotMinutes % SlotsPerDay])
+                if (_avoid[cell * WeekGrid.CellMinutes / SlotMinutes % SlotsPerDay])
                 {
-                    grid[d, cell] = true;
+                    grid.Mark((DayOfWeek)d, cell, 1);
                 }
             }
         }
