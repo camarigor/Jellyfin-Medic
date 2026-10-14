@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **The speed test measures slow uploads, and no longer advises 1 Mbps on a failed measurement.** Upload was only counted in whole 2 MB pieces finished within its 8 seconds, so below roughly 8 Mbps nothing finished, the result was 0 Mbps, and the advice was a 1 Mbps streaming limit. Upload is now counted as it's sent, and when nothing could be measured no limit is suggested.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
