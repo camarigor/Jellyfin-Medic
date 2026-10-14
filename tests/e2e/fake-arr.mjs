@@ -143,5 +143,5 @@ export function startSeerr(port) {
         }
         res.writeHead(404); res.end('{}');
     });
-    return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
+    return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
 }
