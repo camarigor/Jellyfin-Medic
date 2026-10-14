@@ -311,15 +311,22 @@ public static class Housekeeping
         }
     }
 
-    private static IEnumerable<string> SafeFiles(string path)
+    // Folders that can't be read are skipped rather than stopping the whole walk.
+    private static readonly EnumerationOptions AllReadable = new() { RecurseSubdirectories = true, IgnoreInaccessible = true };
+
+    /// <summary>
+    /// Every file under the folder, read in full here: walking lazily would let a folder that can't be
+    /// read throw later, outside this try, and turn the scan into an error or stop a clean halfway.
+    /// </summary>
+    private static List<string> SafeFiles(string path)
     {
         try
         {
-            return Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories);
+            return Directory.GetFiles(path, "*", AllReadable).ToList();
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return Enumerable.Empty<string>();
+            return new List<string>();
         }
     }
 
