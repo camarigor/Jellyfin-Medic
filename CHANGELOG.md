@@ -36,6 +36,7 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 ### Changed
 - **Your public IP is looked up only when you press "Use my IP + 8096".** Opening the Dashboard asked a service on the internet for it every time. It's now asked for on that button only, and kept for an hour.
 - **"Signs in from several places" counts per account.** Sign-ins were grouped by the activity entry's text, which is translated, names the device, and above 40 characters was replaced by "a user", so different people with long names were added up into one "account" with many addresses. They're now grouped by account, and an IPv6 address counts by its /64 network, as phones change IPv6 address often. When most failed sign-ins come from a private address, the advice now says it's probably your reverse proxy and to add it under Known proxies, and mentions Jellyfin's own limit on failed sign-ins per user.
+- **No waiting on the Dashboard, and a sign-in check that says when it couldn't run.** Several Dashboards asking for the current figures within a second each waited half a second in turn for a CPU reading; they now share one. The 5-minute CPU line also measured only since the Dashboard's last poll, and now measures its own 5 minutes. When the activity log doesn't answer in time, the security check now says sign-ins couldn't be checked, rather than looking like a week with no failed sign-ins.
 
 ## [1.0.17] – 2026-10-11
 
