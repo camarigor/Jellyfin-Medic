@@ -160,4 +160,10 @@ public class PicksRunContext
 
     /// <summary>TMDb results cached across users, keyed "movie:123" / "tv:456".</summary>
     public Dictionary<string, IReadOnlyList<TmdbTitle>> TmdbCache { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Set once TMDb has refused or failed in this run: the people after keep their Discover picks
+    /// instead of everyone asking TMDb again during an outage or a rate limit.
+    /// </summary>
+    public bool TmdbUnavailable { get; set; }
 }
