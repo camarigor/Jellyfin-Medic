@@ -134,8 +134,8 @@ public class ProfilesController : ControllerBase
     [HttpGet("Queue")]
     public async Task<ActionResult> GetQueue(CancellationToken ct)
     {
-        var (rows, errors) = await _downloads.QueueAsync(ct).ConfigureAwait(false);
-        return Json(new { configured = Configured(), rows, errors });
+        var (rows, errors, notes) = await _downloads.QueueAsync(ct).ConfigureAwait(false);
+        return Json(new { configured = Configured(), rows, errors, notes });
     }
 
     [HttpPost("Queue/Remove")]
@@ -146,7 +146,7 @@ public class ProfilesController : ControllerBase
             return BadRequest();
         }
 
-        var (ok, message) = await _downloads.RemoveAsync(app, request.QueueIds ?? new List<int>(), request.Block, request.SearchAgain, request.Title ?? "A download", UserName(), ct).ConfigureAwait(false);
+        var (ok, message) = await _downloads.RemoveAsync(app, request.QueueIds ?? new List<int>(), request.Block, request.SearchAgain, request.KeepInClient, request.Title ?? "A download", UserName(), ct).ConfigureAwait(false);
         return Json(new { ok, message });
     }
 
@@ -344,6 +344,9 @@ public class ProfilesController : ControllerBase
         public bool Block { get; set; }
 
         public bool SearchAgain { get; set; } = true;
+
+        // Leave it in the download client (still seeding); Sonarr or Radarr stops tracking it.
+        public bool KeepInClient { get; set; }
 
         public string? Title { get; set; }
     }
