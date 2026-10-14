@@ -931,6 +931,11 @@ public static class TrackCleaner
                 return;
             }
 
+            if (!dryRun)
+            {
+                RecoverInterruptedSwaps(LibraryFolders(library, libraries));
+            }
+
             var plans = new List<(FilePlan Plan, BaseItem Item)>();
             foreach (var lib in libraries.Where(l => !l.IsStreamed))
             {
@@ -1041,10 +1046,15 @@ public static class TrackCleaner
 
         // The plan comes from the tracks Jellyfin read at its last scan. If the file has changed since
         // (cleaned before, or replaced by Sonarr or Radarr), mapping by those numbers keeps the wrong tracks.
-        string? mismatch = ffprobe is null
-            ? "FFprobe isn't available"
-            : DescribeMismatch(plan, await ProbeTracks(ffprobe, plan.Path, ct).ConfigureAwait(false));
-        if (mismatch is not null)
+        ProbedFile? source = ffprobe is null ? null : await ProbeFile(ffprobe, plan.Path, ct).ConfigureAwait(false);
+        if (source is null)
+        {
+            lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
+            Note($"Skipped {plan.Title}: FFprobe couldn't read the file, so it was left alone");
+            return;
+        }
+
+        if (DescribeMismatch(plan, source) is { } mismatch)
         {
             item.ChangedExternally();
             lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
@@ -1052,12 +1062,13 @@ public static class TrackCleaner
             return;
         }
 
-        string temp = plan.Path + ".medic-tmp" + Path.GetExtension(plan.Path);
+        string temp = TempPath(plan.Path);
         try
         {
             // Map only the kept streams: all video, plus the audio/subtitle tracks we keep, by type-relative index.
             // Attachments ("0:t?") are the fonts styled subtitles need in MKV files; without them those subtitles render in the wrong font.
-            var args = new List<string> { "-nostdin", "-y", "-loglevel", "error", "-i", plan.Path, "-map", "0:v?", "-map", "0:t?", "-map_metadata", "0", "-map_chapters", "0" };
+            // -xerror stops at the first read or write error instead of finishing a shorter file.
+            var args = new List<string> { "-nostdin", "-y", "-loglevel", "error", "-xerror", "-i", plan.Path, "-map", "0:v?", "-map", "0:t?", "-map_metadata", "0", "-map_chapters", "0" };
 
             // Separate subtitle files aren't in the container, so they're left out of the numbering.
             int audioN = 0, subN = 0, outAudio = 0, outSub = 0;
@@ -1095,36 +1106,28 @@ public static class TrackCleaner
             args.Add(temp);
 
             long before = Size(plan.Path);
-            int exit = await RunFfmpeg(ffmpeg, args, ct).ConfigureAwait(false);
+            var (exit, errors) = await RunFfmpeg(ffmpeg, args, temp, ct).ConfigureAwait(false);
 
-            // Verify the new file is real and sane before touching the original.
-            if (exit != 0 || !File.Exists(temp) || Size(temp) < before / 3)
+            // Verify the new file is real and sound before touching the original.
+            string? problem = exit != 0 ? "FFmpeg failed" + (errors.Length > 0 ? ": " + errors : string.Empty)
+                : !File.Exists(temp) ? "FFmpeg wrote no file"
+                : CheckOutput(source, await ProbeFile(ffprobe!, temp, ct).ConfigureAwait(false), outAudio, outSub, before, Size(temp));
+            if (problem is not null)
             {
                 SafeDelete(temp);
                 lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
-                Note($"Skipped {plan.Title}: the new copy didn't come out right, so the original was left alone");
+                Note($"Skipped {plan.Title}: the new copy didn't come out right ({problem}), so the original was left alone");
                 return;
             }
 
             long saved = Math.Max(0, before - Size(temp));
             long freedNow = 0;
+            FlushToDisk(temp);
 
             if (replaceInPlace)
             {
-                // Replace the original only after the new file is verified.
-                string backup = plan.Path + ".medic-orig";
-                File.Move(plan.Path, backup, overwrite: true);
-                try
-                {
-                    File.Move(temp, plan.Path, overwrite: true);
-                }
-                catch
-                {
-                    File.Move(backup, plan.Path, overwrite: true); // put the original back
-                    throw;
-                }
-
-                SafeDelete(backup);
+                // One rename replaces the original, so there is never a moment without a file at its path.
+                File.Move(temp, plan.Path, overwrite: true);
                 freedNow = saved;
             }
             else
@@ -1141,6 +1144,8 @@ public static class TrackCleaner
                 }
                 else
                 {
+                    // Two moves: if Jellyfin stops between them, the next run (or "Tidy copies") puts the original
+                    // back, as the temp file beside the empty path shows the swap didn't finish.
                     EnsureOriginalsFolder(plan.Path);
                     File.Move(plan.Path, kept);
                     try
@@ -1253,9 +1258,9 @@ public static class TrackCleaner
                         if (deleteOriginals || File.Exists(keptOriginal))
                         {
                             // Either you asked to keep only the cleaned file, or a true original is already
-                            // kept and the file in place is an older cleaned copy.
+                            // kept and the file in place is an older cleaned copy. The copy replaces it in one
+                            // rename below, so the title is never left without a file if that fails.
                             freed += Size(original);
-                            File.Delete(original);
                             deletedCopies++;
                         }
                         else
@@ -1265,7 +1270,7 @@ public static class TrackCleaner
                         }
                     }
 
-                    File.Move(best, original);
+                    File.Move(best, original, overwrite: true);
                     titles++;
 
                     if (deleteOriginals && File.Exists(keptOriginal))
@@ -1282,13 +1287,15 @@ public static class TrackCleaner
                         deletedCopies++;
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Leave anything locked or odd exactly as it is.
+                    // Leave anything locked or odd as it is, but say so.
+                    Note($"Couldn't tidy {Path.GetFileName(group.Key)}: {ex.Message}");
                 }
             }
 
-            // Temp files from interrupted runs.
+            // Temp files from interrupted runs, once any original they belong to is back in place.
+            RecoverInterruptedSwaps(new[] { dir });
             foreach (var tmp in SafeFiles(dir).Where(f => Path.GetFileName(f).Contains(".medic-tmp", StringComparison.OrdinalIgnoreCase)))
             {
                 try { freed += Size(tmp); File.Delete(tmp); } catch { /* skip */ }
@@ -1553,11 +1560,17 @@ public static class TrackCleaner
         return File.Exists(path) ? path : null;
     }
 
-    /// <summary>The file's own audio and subtitle streams, in order, or null if FFprobe couldn't read it.</summary>
-    private static async Task<List<(int Index, string Kind, string Language)>?> ProbeTracks(string ffprobe, string path, CancellationToken ct)
+    /// <summary>What FFprobe reports about a file: every stream in order (kind is video, audio, subtitle, attachment...) and the duration when known.</summary>
+    private sealed record ProbedFile(List<(int Index, string Kind, string Language)> Streams, double? DurationSeconds)
+    {
+        public int Count(string kind) => Streams.Count(s => s.Kind == kind);
+    }
+
+    /// <summary>The file's own streams and duration, or null if FFprobe couldn't read it.</summary>
+    private static async Task<ProbedFile?> ProbeFile(string ffprobe, string path, CancellationToken ct)
     {
         var psi = new ProcessStartInfo(ffprobe) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-v", "error", "-show_entries", "stream=index,codec_type:stream_tags=language", "-of", "json", path })
+        foreach (var a in new[] { "-v", "error", "-show_entries", "format=duration:stream=index,codec_type:stream_tags=language", "-of", "json", path })
         {
             psi.ArgumentList.Add(a);
         }
@@ -1587,20 +1600,20 @@ public static class TrackCleaner
         try
         {
             using var doc = System.Text.Json.JsonDocument.Parse(await stdout.ConfigureAwait(false));
-            var tracks = new List<(int, string, string)>();
+            var streams = new List<(int, string, string)>();
             foreach (var s in doc.RootElement.GetProperty("streams").EnumerateArray())
             {
                 string kind = s.TryGetProperty("codec_type", out var k) ? k.GetString() ?? string.Empty : string.Empty;
-                if (kind is not ("audio" or "subtitle"))
-                {
-                    continue;
-                }
-
                 string language = s.TryGetProperty("tags", out var tags) && tags.TryGetProperty("language", out var l) ? l.GetString() ?? "und" : "und";
-                tracks.Add((s.GetProperty("index").GetInt32(), kind, language.Trim().ToLowerInvariant()));
+                streams.Add((s.GetProperty("index").GetInt32(), kind, language.Trim().ToLowerInvariant()));
             }
 
-            return tracks;
+            double? duration = doc.RootElement.TryGetProperty("format", out var format)
+                && format.TryGetProperty("duration", out var d)
+                && double.TryParse(d.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) && seconds > 0
+                ? seconds
+                : null;
+            return new ProbedFile(streams, duration);
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
         {
@@ -1612,13 +1625,9 @@ public static class TrackCleaner
     /// Why the planned tracks don't describe the file any more, or null when they do: same streams, at the same
     /// positions, of the same kind and language. Separate subtitle files aren't in the container, so they're left out.
     /// </summary>
-    private static string? DescribeMismatch(FilePlan plan, List<(int Index, string Kind, string Language)>? file)
+    private static string? DescribeMismatch(FilePlan plan, ProbedFile probed)
     {
-        if (file is null)
-        {
-            return "FFprobe couldn't read the file";
-        }
-
+        var file = probed.Streams.Where(s => s.Kind is "audio" or "subtitle").ToList();
         var planned = plan.Tracks.Where(t => !t.External).OrderBy(t => t.Index).ToList();
         int Count(IEnumerable<string> kinds, string kind) => kinds.Count(k => k == kind);
         if (planned.Count != file.Count)
@@ -1652,7 +1661,47 @@ public static class TrackCleaner
         return x == y || ThreeToTwo(x) == ThreeToTwo(y) || TwoToThree(x) == TwoToThree(y);
     }
 
-    private static async Task<int> RunFfmpeg(string ffmpeg, List<string> args, CancellationToken ct)
+    /// <summary>
+    /// Why the new file can't replace the original, or null when it's sound: FFprobe reads it, it has the same video
+    /// and attachments, exactly the audio and subtitle tracks that were kept, and the same length. When either length
+    /// is unknown, a file much smaller than the original fails instead.
+    /// </summary>
+    private static string? CheckOutput(ProbedFile source, ProbedFile? output, int audio, int subtitles, long sourceBytes, long outputBytes)
+    {
+        if (output is null)
+        {
+            return "FFprobe couldn't read it";
+        }
+
+        foreach (var (kind, expected) in new[] { ("video", source.Count("video")), ("attachment", source.Count("attachment")), ("audio", audio), ("subtitle", subtitles) })
+        {
+            if (output.Count(kind) != expected)
+            {
+                return $"it has {output.Count(kind)} {kind} streams instead of {expected}";
+            }
+        }
+
+        if (source.DurationSeconds is { } want && output.DurationSeconds is { } got)
+        {
+            double tolerance = Math.Max(2, want * 0.01);
+            return Math.Abs(want - got) > tolerance ? $"it lasts {got:0} s instead of {want:0} s" : null;
+        }
+
+        return sourceBytes > 0 && outputBytes < sourceBytes / 3 ? "it's much smaller than the original and its length can't be read" : null;
+    }
+
+    /// <summary>Makes sure the new file is on the disk before it takes the original's place, so a power cut can't leave an empty file.</summary>
+    private static void FlushToDisk(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite);
+        stream.Flush(flushToDisk: true);
+    }
+
+    // A remux that writes nothing for this long is stuck (a hung network drive, for example) and is stopped.
+    private static readonly TimeSpan StallLimit = TimeSpan.FromMinutes(10);
+
+    /// <summary>Runs FFmpeg writing to output. Returns its exit code and the end of its error output, for the note when it fails.</summary>
+    private static async Task<(int Exit, string Errors)> RunFfmpeg(string ffmpeg, List<string> args, string output, CancellationToken ct)
     {
         var psi = new ProcessStartInfo(ffmpeg) { RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         foreach (var a in args)
@@ -1662,10 +1711,36 @@ public static class TrackCleaner
 
         using var p = new Process { StartInfo = psi };
         p.Start();
-        var err = p.StandardError.ReadToEndAsync();
+        var err = p.StandardError.ReadToEndAsync(CancellationToken.None);
+        long lastSize = -1;
+        var lastGrowth = DateTime.UtcNow;
         try
         {
-            await p.WaitForExitAsync(ct).ConfigureAwait(false);
+            while (!p.HasExited)
+            {
+                using var tick = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                tick.CancelAfter(TimeSpan.FromSeconds(30));
+                try
+                {
+                    await p.WaitForExitAsync(tick.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // Still running: check that the new file is growing.
+                }
+
+                long size = Size(output);
+                if (size != lastSize)
+                {
+                    lastSize = size;
+                    lastGrowth = DateTime.UtcNow;
+                }
+                else if (!p.HasExited && DateTime.UtcNow - lastGrowth > StallLimit)
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
+                    return (-1, $"it wrote nothing for {StallLimit.TotalMinutes:0} minutes, so it was stopped");
+                }
+            }
         }
         catch (OperationCanceledException)
         {
@@ -1675,12 +1750,64 @@ public static class TrackCleaner
         }
 
         await Task.WhenAny(err, Task.Delay(1000, CancellationToken.None)).ConfigureAwait(false);
-        return p.ExitCode;
+        string errors = err.IsCompletedSuccessfully ? err.Result.Trim() : string.Empty;
+        if (errors.Length > 300)
+        {
+            errors = "..." + errors[^300..];
+        }
+
+        return (p.ExitCode, errors.Replace('\n', ' ').Replace('\r', ' '));
     }
 
     /// <summary>Where the untouched original of a file is kept: a hidden folder beside it.</summary>
     private static string OriginalPath(string path) =>
         Path.Combine(Path.GetDirectoryName(path) ?? string.Empty, OriginalsFolder, Path.GetFileName(path));
+
+    /// <summary>Where the cleaned copy is written before it takes the original's place.</summary>
+    private static string TempPath(string path) => path + ".medic-tmp" + Path.GetExtension(path);
+
+    /// <summary>
+    /// Puts originals back where a swap was cut short (Jellyfin stopped between moving the original away and
+    /// moving the cleaned copy in): the path is empty, the original is kept, and the temp file is still beside it.
+    /// Without the temp file the title was removed on purpose, so it's left alone. Also handles the ".medic-orig"
+    /// backups that "replace in place" used before it swapped in one step. Returns how many were put back.
+    /// </summary>
+    private static int RecoverInterruptedSwaps(IEnumerable<string> folders)
+    {
+        int restored = 0;
+        foreach (var dir in folders)
+        {
+            var candidates = new List<(string From, string To)>();
+            string kept = Path.Combine(dir, OriginalsFolder);
+            if (Directory.Exists(kept))
+            {
+                candidates.AddRange(SafeFiles(kept)
+                    .Select(f => (f, Path.Combine(dir, Path.GetFileName(f))))
+                    .Where(c => File.Exists(TempPath(c.Item2))));
+            }
+
+            candidates.AddRange(SafeFiles(dir)
+                .Where(f => f.EndsWith(".medic-orig", StringComparison.Ordinal))
+                .Select(f => (f, f[..^".medic-orig".Length])));
+
+            foreach (var (from, to) in candidates.Where(c => !File.Exists(c.To)))
+            {
+                try
+                {
+                    File.Move(from, to);
+                    SafeDelete(TempPath(to));
+                    restored++;
+                    Note($"Put back the original of {Path.GetFileName(to)}: an earlier run stopped while swapping it");
+                }
+                catch (Exception ex)
+                {
+                    Note($"Couldn't put back the original of {Path.GetFileName(to)}: {ex.Message}. It's still in {from}");
+                }
+            }
+        }
+
+        return restored;
+    }
 
     /// <summary>Files Medic must never treat as library media: its kept originals, temp files and old-style copies.</summary>
     private static bool IsMedicFile(string path) =>
