@@ -835,27 +835,29 @@ public class MedicController : ControllerBase
         return string.IsNullOrWhiteSpace(path) ? System.IO.Path.Combine(_paths.CachePath, "transcodes") : path;
     }
 
+    // The activity manager's interface, under its name in this Jellyfin version. Looked up across the loaded
+    // assemblies once: the controller is created for every request, the Dashboard's frequent polls included.
+    private static readonly Lazy<Type[]> ActivityManagerTypes = new(() =>
+        new[] { "MediaBrowser.Model.Activity.IActivityManager", "Jellyfin.Data.IActivityManager" }
+            .Select(name => AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType(name)).FirstOrDefault(t => t is not null))
+            .OfType<Type>()
+            .ToArray());
+
     private static object? ResolveActivityManager(IServiceProvider services)
     {
-        foreach (var name in new[] { "MediaBrowser.Model.Activity.IActivityManager", "Jellyfin.Data.IActivityManager" })
+        foreach (var type in ActivityManagerTypes.Value)
         {
-            var type = AppDomain.CurrentDomain.GetAssemblies()
-                .Select(a => a.GetType(name))
-                .FirstOrDefault(t => t is not null);
-            if (type is not null)
+            try
             {
-                try
+                var service = services.GetService(type);
+                if (service is not null)
                 {
-                    var service = services.GetService(type);
-                    if (service is not null)
-                    {
-                        return service;
-                    }
+                    return service;
                 }
-                catch
-                {
-                    // Not registered in this version; try the next name.
-                }
+            }
+            catch
+            {
+                // Not registered in this version; try the next name.
             }
         }
 
