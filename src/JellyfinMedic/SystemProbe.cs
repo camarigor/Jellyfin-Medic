@@ -242,9 +242,6 @@ public static class SystemProbe
         return best;
     }
 
-    /// <summary>True on Unraid. Kept for older callers; HostPlatform has the full picture.</summary>
-    public static bool OnUnraid => HostPlatform.Kind == HostKind.Unraid;
-
     public static long FileSize(string path)
     {
         try
