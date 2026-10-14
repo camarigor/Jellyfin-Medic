@@ -82,7 +82,13 @@ echo "== Starting Jellyfin ($IMAGE)"
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "$PORT:8096" --add-host=host.docker.internal:host-gateway \
   -v "$WORK/config:/config" -v "$WORK/cache:/cache" -v "$WORK/media:/media" "$IMAGE" >/dev/null
-cleanup() { [ "${KEEP:-0}" = 1 ] || docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+# Jellyfin runs as root in the container, so what it writes under $WORK belongs to root. It's handed back
+# before the container goes, or the next run couldn't delete $WORK and would stop before any test.
+cleanup() {
+  [ "${KEEP:-0}" = 1 ] && return
+  docker exec "$NAME" chown -R "$(id -u):$(id -g)" /config /cache /media >/dev/null 2>&1 || true
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 for i in $(seq 1 90); do
@@ -91,6 +97,7 @@ for i in $(seq 1 90); do
 done
 
 status=0
-JF="http://127.0.0.1:$PORT" WORK="$WORK" node "$ROOT/tests/e2e/e2e.mjs" || status=$?
+# The pretend Sonarr, qBittorrent and Seerr listen only where the container reaches this machine.
+JF="http://127.0.0.1:$PORT" WORK="$WORK" FAKE_HOST="${GATEWAY:-0.0.0.0}" node "$ROOT/tests/e2e/e2e.mjs" || status=$?
 docker logs "$NAME" 2>&1 | grep -E "\[ERR\]|\[FTL\]" | grep -iE "medic|picks|profiles" | head -20 || true
 exit $status
