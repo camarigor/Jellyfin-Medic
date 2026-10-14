@@ -40,6 +40,7 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 ### Changed
 - **Less work on every request.** Each request to Medic searched every loaded assembly for the activity log's type, including the Dashboard's frequent refreshes. It's now found once.
 - **Plugin advice no longer says "remove it" when Medic couldn't count.** A count that failed, or asked about a kind of item this Jellyfin doesn't have, came back as 0, so advice such as "there are no books on this server, remove the book provider" could rest on a number nobody knew. Such counts are now unknown, and advice that depends on them is left out. The Intro Skipper advice also recommends the same limit it warns about (it warned above half the CPU threads but suggested a quarter).
+- **The memory guard measures Jellyfin, not the whole machine.** It read memory use from the top of the cgroup tree, which inside a container is the container but on a server without one (or with the older cgroup v1) is the whole machine, so other programs' memory could make it stop Jellyfin's tasks. It now reads Jellyfin's own cgroup. A task it had paused was also forgotten if it wasn't quite stopped when the guard came back to it; it now waits its turn instead.
 
 ## [1.0.17] – 2026-10-11
 
