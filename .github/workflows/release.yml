@@ -15,6 +15,17 @@ concurrency:
   group: manifest-update
   cancel-in-progress: false
 
+# What the plugin catalogue shows, written to manifest.json by scripts/update_manifest.py (the same
+# script the Picks and Profiles releases use).
+env:
+  GUID: '8d1f5c2e-6b4a-4f7e-9c3d-2a7b5e1f0c94'
+  NAME: 'Jellyfin Medic'
+  OWNER: 'P1zzm1ssile'
+  TARGET_ABI: '12.1.0.0'
+  DESCRIPTION: "Health checks, performance tests and usage-aware task scheduling for your Jellyfin server."
+  OVERVIEW: "Keeps a busy Jellyfin server healthy: checks, tests and smart scheduling."
+  IMAGE: 'https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png'
+
 jobs:
   # Unit and end-to-end tests first: nothing is released or added to the manifest unless they pass.
   tests:
@@ -102,7 +113,18 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
           git checkout -B main origin/main
-          CHANGELOG="$(cat CHANGES.md)" python3 .github/scripts/update_manifest.py
+          python3 scripts/update_manifest.py \
+            --guid "$GUID" \
+            --name "$NAME" \
+            --version "$VERSION" \
+            --abi "$TARGET_ABI" \
+            --url "$SOURCE_URL" \
+            --checksum "$CHECKSUM" \
+            --changelog-file CHANGES.md \
+            --owner "$OWNER" \
+            --description "$DESCRIPTION" \
+            --overview "$OVERVIEW" \
+            --image-url "$IMAGE"
           git add manifest.json
           git commit -m "chore: add $VERSION to manifest"
           # Fail if no push gets through, instead of ending green on the last pull's status.
