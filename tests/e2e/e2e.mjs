@@ -704,6 +704,27 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
     }
 });
 
+// ---------- Exposure check, without asking any outside service ----------
+
+await check('exposure check says it tested from this server, and a failed TLS handshake counts as an answer', async () => {
+    const run = async (host, port, protocol) => {
+        const r = await api('POST', `/JellyfinMedic/ExposureCheck?host=${encodeURIComponent(host)}&port=${port}&protocol=${protocol}`);
+        expect(r.status === 200, `${host}:${port} returned ${r.status} ${r.text.slice(0, 200)}`);
+        return r.json;
+    };
+    // The pretend Sonarr only speaks plain http, so an https request to it fails the TLS handshake,
+    // the same way a certificate this server doesn't trust does.
+    const arr = new URL(ARR);
+    const tls = await run(arr.hostname, Number(arr.port), 'https');
+    expect(tls.Reachable && tls.FromThisServer, 'TLS failure: ' + JSON.stringify(tls));
+    const unknown = await run('medic-e2e.invalid', 443, 'https');
+    expect(unknown.Checked && !unknown.Reachable && unknown.FromThisServer, 'unknown domain: ' + JSON.stringify(unknown));
+    const withPath = await run('medic-e2e.invalid/System', 443, 'https');
+    expect(withPath.Error && !withPath.Checked, 'host with a path: ' + JSON.stringify(withPath));
+    const defaults = await ok('/JellyfinMedic/ExposureDefaults');
+    expect(!defaults.PublicIp, 'public IP looked up without being asked: ' + defaults.PublicIp);
+});
+
 // ---------- Pages in a real browser ----------
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
@@ -776,6 +797,27 @@ await check('schedule Preview: choosing per task updates the plan', async () => 
         .some((tr) => tr.cells[0].textContent === n && tr.querySelector('select').value === v && !tr.querySelector('select').disabled), [name, to], { timeout: 30000 });
     await rowSelect().selectOption(was);
     await sleep(1500);
+    const ours = errors.filter((e) => !/ResizeObserver|^CancelledError/i.test(e));
+    expect(ours.length === 0, ours.join(' | '));
+});
+
+await check('exposure check result says when it only tested from this server', async () => {
+    errors.length = 0;
+    await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+    await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+    const gotIt = page.locator('#md-whatsnew-close');
+    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+    await page.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+    await sleep(2000); // the boxes fill in from Medic's suggestions first
+    await page.fill('#md-expose-host', 'medic-e2e.invalid');
+    await page.fill('#md-expose-port', '443');
+    await page.selectOption('#md-expose-protocol', 'https');
+    await page.click('#md-expose');
+    await page.waitForFunction(() => !/^Checking/.test(document.getElementById('md-expose-result').textContent), null, { timeout: 30000 });
+    const result = page.locator('#md-expose-result');
+    const text = await result.textContent();
+    expect(/when this server tried it/.test(text) && !/from the internet/.test(text), 'said: ' + text);
+    expect(!/md-ok-text/.test(await result.getAttribute('class')), 'shown as all clear: ' + text);
     const ours = errors.filter((e) => !/ResizeObserver|^CancelledError/i.test(e));
     expect(ours.length === 0, ours.join(' | '));
 });
