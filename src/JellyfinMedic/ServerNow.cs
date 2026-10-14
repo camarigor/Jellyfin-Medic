@@ -34,7 +34,6 @@ public static class ServerNow
 {
     private static readonly object Sync = new();
     private static readonly Queue<double> History = new();
-    private static (DateTime Wall, TimeSpan Cpu)? _last;
     private static readonly ConcurrentDictionary<string, DateTime> RunningSince = new(StringComparer.OrdinalIgnoreCase);
 
     public static void TaskStarted(string taskId) => RunningSince[taskId] = DateTime.UtcNow;
@@ -68,34 +67,18 @@ public static class ServerNow
         : left.TotalMinutes < 90 ? $"about {Math.Ceiling(left.TotalMinutes):0} min left"
         : $"about {left.TotalHours:0.#} hours left";
 
-    /// <summary>Jellyfin's CPU use since the previous reading, as a share of all CPU threads.</summary>
-    public static double CpuPercent()
-    {
-        var process = Process.GetCurrentProcess();
-        lock (Sync)
-        {
-            var now = (DateTime.UtcNow, process.TotalProcessorTime);
-            if (_last is not { } prev || (now.UtcNow - prev.Wall).TotalSeconds < 1)
-            {
-                // No recent reading: measure over a short moment.
-                var start = (DateTime.UtcNow, process.TotalProcessorTime);
-                Thread.Sleep(500);
-                process.Refresh();
-                now = (DateTime.UtcNow, process.TotalProcessorTime);
-                prev = (start.UtcNow, start.TotalProcessorTime);
-            }
+    // Two meters: the Dashboard's "now" figure and the 5-minute line each measure since their own previous
+    // reading, so polling the Dashboard doesn't shrink the line's 5 minutes to the time since the last poll.
+    private static readonly CpuMeter NowMeter = new();
+    private static readonly CpuMeter LineMeter = new();
 
-            double wall = (now.UtcNow - prev.Wall).TotalMilliseconds;
-            double cpu = (now.TotalProcessorTime - prev.Cpu).TotalMilliseconds;
-            _last = (now.UtcNow, now.TotalProcessorTime);
-            return wall <= 0 ? 0 : Math.Round(Math.Clamp(cpu / wall / Environment.ProcessorCount * 100, 0, 100), 1);
-        }
-    }
+    /// <summary>Jellyfin's CPU use since the Dashboard's previous reading, as a share of all CPU threads.</summary>
+    public static double CpuPercent() => NowMeter.Read();
 
     /// <summary>Called every 5 minutes by the usage sampler to build the Dashboard's CPU line.</summary>
     public static void Record()
     {
-        double value = CpuPercent();
+        double value = LineMeter.Read();
         lock (Sync)
         {
             History.Enqueue(value);
@@ -103,6 +86,59 @@ public static class ServerNow
             {
                 History.Dequeue();
             }
+        }
+    }
+
+    /// <summary>Jellyfin's own CPU use between one reading and the next.</summary>
+    private sealed class CpuMeter
+    {
+        private readonly object _sync = new();
+        private (DateTime Wall, TimeSpan Cpu)? _last;
+        private double _value;
+
+        public double Read()
+        {
+            (DateTime Wall, TimeSpan Cpu) start;
+            lock (_sync)
+            {
+                var now = Sample();
+                if (_last is { } prev)
+                {
+                    // Two Dashboards polling within a second share one reading rather than measuring a sliver of time.
+                    if ((now.Wall - prev.Wall).TotalSeconds >= 1)
+                    {
+                        _value = Percent(prev, now);
+                        _last = now;
+                    }
+
+                    return _value;
+                }
+
+                start = now;
+            }
+
+            // First reading: measure over a short moment, outside the lock so no other request waits for it.
+            Thread.Sleep(500);
+            var end = Sample();
+            lock (_sync)
+            {
+                _value = Percent(start, end);
+                _last = end;
+                return _value;
+            }
+        }
+
+        private static (DateTime Wall, TimeSpan Cpu) Sample()
+        {
+            using var process = Process.GetCurrentProcess();
+            return (DateTime.UtcNow, process.TotalProcessorTime);
+        }
+
+        private static double Percent((DateTime Wall, TimeSpan Cpu) from, (DateTime Wall, TimeSpan Cpu) to)
+        {
+            double wall = (to.Wall - from.Wall).TotalMilliseconds;
+            double cpu = (to.Cpu - from.Cpu).TotalMilliseconds;
+            return wall <= 0 ? 0 : Math.Round(Math.Clamp(cpu / wall / Environment.ProcessorCount * 100, 0, 100), 1);
         }
     }
 
