@@ -15,6 +15,7 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 - **Data from Task Advisor and Setup Optimiser is brought over only once.** Medic copied any of their files missing from its own folder on every start, so a file you deleted, say to reset ignored findings, came back after a restart while the old folder was still there. It now copies them on its first start only.
 - **SSDs and NVMe drives on Unraid get their own temperature limit, and heat is no longer reported as a failing disk.** A drive at 55°C or more was listed under "A disk may be failing", NVMe drives included, which commonly run warmer than that. Heat now has its own finding, "A disk is running hot", from 55°C for spinning disks and 70°C for SSDs and NVMe drives.
 - **A plugin repository that's down no longer slows every report.** Medic only remembered addresses that answered, so one that didn't was tried again, twice, each time the report opened, which could add about 14 seconds. A failure is now remembered for 2 minutes.
+- **A hung nvidia-smi is no longer started again every 15 seconds.** When nvidia-smi took more than 3 seconds or answered with something that isn't a number, Medic tried again at the next reading; it now waits 5 minutes. Finding the processes Jellyfin started also goes through the process list once, not once for each process found.
 
 ## [1.0.17] – 2026-10-11
 
