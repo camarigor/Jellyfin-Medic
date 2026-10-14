@@ -277,6 +277,12 @@ public class PicksController : ControllerBase
             return BadRequest("Requests from this page aren't switched on.");
         }
 
+        // Accounts with Discover turned off (a child's, say) don't get suggestions, so they don't request from here either.
+        if (config.DiscoverDisabledUserIds.Any(id => Guid.TryParse(id, out var g) && g == userId))
+        {
+            return StatusCode(Microsoft.AspNetCore.Http.StatusCodes.Status403Forbidden, "Requests from this page are turned off for your account.");
+        }
+
         string type = request?.MediaType == "tv" ? "tv" : "movie";
         if (request is null || request.TmdbId <= 0)
         {
