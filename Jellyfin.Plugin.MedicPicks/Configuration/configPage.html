@@ -338,14 +338,14 @@
                     Dashboard.alert($('JellyseerrUrl').value.trim()
                         ? 'Seerr key and address saved.'
                         : 'Seerr key saved. Add the Seerr address too, or requests won\'t work.');
-                });
+                }).catch(function () { Dashboard.alert('The Seerr key wasn\'t saved. Try again.'); });
             });
 
             $('ClearSeerrKey').addEventListener('click', function () {
                 postSeerrKey(null).then(function () {
                     refreshStatus();
                     Dashboard.alert('Seerr key removed.');
-                });
+                }).catch(function () { Dashboard.alert('The Seerr key wasn\'t removed. Try again.'); });
             });
 
             $('TestSeerr').addEventListener('click', function () {
@@ -376,11 +376,15 @@
                     return;
                 }
                 // A TMDb key is only for Discover picks, so saving one switches them on.
+                var discoverWas = $('EnableDiscover').checked;
                 $('EnableDiscover').checked = true;
                 postKey(key).then(saveSettings).then(function () {
                     $('TmdbKey').value = '';
                     refreshStatus();
                     Dashboard.alert('TMDb key saved and Discover picks switched on. Picks are being rebuilt now.');
+                }).catch(function () {
+                    $('EnableDiscover').checked = discoverWas;
+                    Dashboard.alert('The TMDb key wasn\'t saved. Try again.');
                 });
             });
 
@@ -388,13 +392,13 @@
                 postKey(null).then(function () {
                     refreshStatus();
                     Dashboard.alert('TMDb key removed.');
-                });
+                }).catch(function () { Dashboard.alert('The TMDb key wasn\'t removed. Try again.'); });
             });
 
             $('RunNow').addEventListener('click', function () {
                 ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('MedicPicks/Admin/Refresh') }).then(function () {
                     Dashboard.alert('Building picks now. Progress shows under Scheduled Tasks.');
-                });
+                }).catch(function () { Dashboard.alert('Building picks didn\'t start. Try again.'); });
             });
         })();
     </script>

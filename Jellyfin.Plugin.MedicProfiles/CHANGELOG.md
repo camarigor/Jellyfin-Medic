@@ -6,6 +6,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 ## Unreleased
 
 ### Fixed
+- **The page says when a list can't be loaded.** The Blocked, Indexers, History and Settings tabs stayed blank or half filled when Medic Profiles didn't answer, and removing a saved key showed nothing if it failed. Each now says so. The Downloads tab's message for this no longer starts with "Radarr:".
 - **The keys file is now private.** `medic-profiles/secrets.json`, which holds the Sonarr and Radarr API keys and the qBittorrent password, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
 
 ## [1.1.1] – 2026-10-11

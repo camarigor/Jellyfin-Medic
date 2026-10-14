@@ -374,6 +374,38 @@ await openPage('Jellyfin Medic', '/configurationpage?name=JellyfinMedic', '#Jell
 await openPage('Medic Profiles', '/configurationpage?name=MedicProfiles', '#MedicProfilesPage .mp-tab', '.mp-tab');
 await openPage('Medic Picks settings', '/configurationpage?name=Medic%20Picks', '#MedicPicksConfigForm');
 
+await check('Medic Picks settings: the user boxes show, and a key that isn\'t saved says so', async () => {
+    await page.goto(JF + '/web/index.html#/configurationpage?name=Medic%20Picks');
+    await page.waitForSelector('#DiscoverUsers .discoverUser', { timeout: 30000 });
+    const upgraded = await page.evaluate(() => Array.from(document.querySelectorAll('#DiscoverUsers .discoverUser')).every((i) => i.classList.contains('emby-checkbox')));
+    expect(upgraded, 'the user boxes are plain inputs, not emby-checkbox');
+    const discoverWas = await page.isChecked('#EnableDiscover');
+    const tmdbKey = /MedicPicks\/Admin\/TmdbKey/;
+    await page.route(tmdbKey, (route) => route.fulfill({ status: 500, body: '' }));
+    try {
+        await page.fill('#TmdbKey', 'e2e-not-a-real-key');
+        await page.click('#SaveTmdbKey');
+        await page.getByText('The TMDb key wasn\'t saved').waitFor({ timeout: 10000 });
+        expect(await page.isChecked('#EnableDiscover') === discoverWas, 'Discover picks stayed switched on after the key failed to save');
+    } finally {
+        await page.unroute(tmdbKey);
+        await page.keyboard.press('Escape');
+    }
+});
+
+await check('Medic Profiles says so when one of its lists can\'t be loaded', async () => {
+    const blocked = /MedicProfiles\/Blocked/;
+    await page.route(blocked, (route) => route.abort());
+    try {
+        await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
+        await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
+        await page.click('#MedicProfilesPage .mp-tab[data-tab="blocked"]');
+        await page.getByText('Medic Profiles couldn’t load the blocked list').waitFor({ timeout: 10000 });
+    } finally {
+        await page.unroute(blocked);
+    }
+});
+
 await check('My picks page opens signed in', async () => {
     errors.length = 0;
     await page.goto(JF + '/MedicPicks/Page');
