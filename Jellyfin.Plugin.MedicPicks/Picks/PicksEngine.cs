@@ -282,6 +282,7 @@ public class PicksEngine
             var movies = userQuery();
             movies.IncludeItemTypes = new[] { BaseItemKind.Movie };
             movies.IsPlayed = false;
+            movies.IsResumable = false; // not finished is not enough: started ones are left out too
             movies.Recursive = true;
             movies.IsVirtualItem = false;
             pool.AddRange(_libraryManager.GetItemList(movies));
@@ -296,9 +297,21 @@ public class PicksEngine
             pool.AddRange(_libraryManager.GetItemList(series));
         }
 
+        // A series with an episode under way has been started, even if no episode is finished yet.
+        var started = new HashSet<Guid>();
+        if (prefs.Kind != "movies")
+        {
+            var underWay = userQuery();
+            underWay.IncludeItemTypes = new[] { BaseItemKind.Episode };
+            underWay.IsResumable = true;
+            underWay.Recursive = true;
+            underWay.IsVirtualItem = false;
+            started.UnionWith(_libraryManager.GetItemList(underWay).OfType<Episode>().Select(e => e.SeriesId));
+        }
+
         var hidden = new HashSet<Guid>(prefs.HiddenItems.Concat(prefs.SeenItems));
         var poolById = pool
-            .Where(c => !titles.ContainsKey(c.Id) && !hidden.Contains(c.Id) && !alreadyPicked.Contains(c.Id))
+            .Where(c => !titles.ContainsKey(c.Id) && !started.Contains(c.Id) && !hidden.Contains(c.Id) && !alreadyPicked.Contains(c.Id))
             .GroupBy(c => c.Id)
             .ToDictionary(g => g.Key, g => g.First());
         if (poolById.Count == 0)
@@ -590,7 +603,7 @@ public class PicksEngine
                 var itemGenres = c.Genres ?? Array.Empty<string>();
                 var genreScore = itemGenres.Sum(g => genres.GetValueOrDefault(g) / maxGenre) / Math.Sqrt(Math.Max(1, itemGenres.Length));
                 var rating = (c.CommunityRating ?? 6.5f) / 10.0;
-                return new Scored(c, genreScore + (0.1 * rating), genreScore);
+                return new Scored(c, genreScore + (0.1 * rating));
             })
             .OrderByDescending(s => s.Score)
             .Take(ShortlistSize)
@@ -921,18 +934,15 @@ public class PicksEngine
 
     private sealed class Scored
     {
-        public Scored(BaseItem item, double score, double genreScore)
+        public Scored(BaseItem item, double score)
         {
             Item = item;
             Score = score;
-            GenreScore = genreScore;
         }
 
         public BaseItem Item { get; }
 
         public double Score { get; set; }
-
-        public double GenreScore { get; }
 
         public double PeopleScore { get; set; }
 
