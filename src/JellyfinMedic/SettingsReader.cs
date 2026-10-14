@@ -105,6 +105,17 @@ public static class SettingsReader
 
     public static string? Text(object? root, string path) => ToText(Get(root, path));
 
+    /// <summary>Jellyfin's version from its application host, such as "12.2.0".</summary>
+    public static string ServerVersion(object? host) =>
+        Text(host, "ApplicationVersionString") ?? Text(host, "ApplicationVersion") ?? "unknown";
+
+    /// <summary>Where Jellyfin writes transcodes: the encoding setting, or its default under the cache folder.</summary>
+    public static string TranscodePath(object? encoding, string cachePath)
+    {
+        string? path = Text(encoding, "TranscodingTempPath");
+        return string.IsNullOrWhiteSpace(path) ? Path.Combine(cachePath, "transcodes") : path;
+    }
+
     /// <summary>A list setting, or null if the setting doesn't exist.</summary>
     public static List<string>? List(object? root, string path)
     {

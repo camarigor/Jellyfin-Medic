@@ -112,7 +112,6 @@ public sealed class TaskLifecycleListener : IHostedService
                 int completed = Math.Max(1, entry.TotalRuns - entry.Failures);
                 entry.AverageDurationSeconds = Math.Round(((entry.AverageDurationSeconds * (completed - 1)) + durationSeconds) / completed, 1);
             }
-            entry.RequiresExclusiveExecution = entry.FailureRatePercent > 30;
 
             if (failed && entry.OriginalTriggers is null)
             {
@@ -156,7 +155,6 @@ public sealed class TaskLifecycleListener : IHostedService
         }
 
         entry.OriginalTriggers = current;
-        entry.BackedOffSinceUtc = DateTime.UtcNow;
 
         string before = ScheduleStorage.FormatTriggers(current);
         string after = ScheduleStorage.FormatTriggers(shifted);
@@ -187,7 +185,6 @@ public sealed class TaskLifecycleListener : IHostedService
         if (!SameTriggers(worker.Triggers ?? Array.Empty<TaskTriggerInfo>(), original.Select(Shift)))
         {
             entry.OriginalTriggers = null;
-            entry.BackedOffSinceUtc = null;
             ScheduleStorage.AppendAudit(
                 _appPaths,
                 worker.Name,
@@ -209,7 +206,6 @@ public sealed class TaskLifecycleListener : IHostedService
         }
 
         entry.OriginalTriggers = null;
-        entry.BackedOffSinceUtc = null;
 
         string after = ScheduleStorage.FormatTriggers(original);
         ScheduleStorage.AppendAudit(

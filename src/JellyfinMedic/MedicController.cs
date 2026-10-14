@@ -161,7 +161,7 @@ public class MedicController : ControllerBase
     /// </summary>
     private static AdminAlert? WhatsNewAlert(string? seenVersion)
     {
-        string version = typeof(Plugin).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+        string version = Plugin.VersionText;
         if (string.Equals(seenVersion, version, StringComparison.Ordinal))
         {
             return null;
@@ -409,7 +409,7 @@ public class MedicController : ControllerBase
     [HttpGet("Version")]
     public ActionResult<object> GetVersion([FromQuery] bool all = false)
     {
-        string version = typeof(Plugin).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+        string version = Plugin.VersionText;
         string? seen = CurrentUserId() is { } id ? SeenStore.Get(_paths.PluginConfigurationsPath, id).SeenVersion : null;
         return Ok(new { Version = version, SeenVersion = seen, Changelog = ChangelogReader.Read(all ? int.MaxValue : 5) });
     }
@@ -456,7 +456,7 @@ public class MedicController : ControllerBase
     [HttpGet("Export")]
     public ActionResult GetExport([FromQuery] bool includeSystem = false)
     {
-        string version = SettingsReader.Text(_host, "ApplicationVersionString") ?? SettingsReader.Text(_host, "ApplicationVersion") ?? "unknown";
+        string version = SettingsReader.ServerVersion(_host);
         var summary = includeSystem ? SystemSummary(version) : null;
         string text = SettingsExporter.Build(_pluginManager, _paths, version, summary);
         return Content(text, "text/plain", Encoding.UTF8);
@@ -838,11 +838,7 @@ public class MedicController : ControllerBase
         }
     }
 
-    private string TranscodePath()
-    {
-        string? path = SettingsReader.Text(_config.GetConfiguration("encoding"), "TranscodingTempPath");
-        return string.IsNullOrWhiteSpace(path) ? System.IO.Path.Combine(_paths.CachePath, "transcodes") : path;
-    }
+    private string TranscodePath() => SettingsReader.TranscodePath(_config.GetConfiguration("encoding"), _paths.CachePath);
 
     // The activity manager's interface, under its name in this Jellyfin version. Looked up across the loaded
     // assemblies once: the controller is created for every request, the Dashboard's frequent polls included.

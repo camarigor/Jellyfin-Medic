@@ -171,10 +171,7 @@ public static class WeeklyLedger
         try
         {
             // Written to a temporary file first, so a crash mid-write can't wipe the history.
-            Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
-            string tmp = _file + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(_ledger));
-            File.Move(tmp, _file, overwrite: true);
+            ScheduleStorage.WriteText(_file, JsonSerializer.Serialize(_ledger));
         }
         catch
         {

@@ -183,13 +183,4 @@ public static class AdminAlerts
         string text = line.Trim();
         return text.Length > 220 ? text[..220] + "…" : text;
     }
-
-    /// <summary>Clears the cache, for tests and after settings change.</summary>
-    public static void Reset()
-    {
-        lock (Sync)
-        {
-            _cache = null;
-        }
-    }
 }

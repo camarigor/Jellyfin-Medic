@@ -180,8 +180,6 @@ public static class UsageAnalyzer
             .Select(h => Enumerable.Range(0, 7).Average(d => summary.AverageStreams[d * 24 + h]))
             .ToArray();
 
-        summary.NightAverage = Enumerable.Range(1, 5).Average(h => byHour[h]);
-
         double peak = byHour.Max();
         if (peak > 0)
         {
@@ -208,7 +206,6 @@ public static class UsageAnalyzer
             }
         }
 
-        summary.QuietStartHour = bestStart;
         summary.QuietWindow = $"{bestStart:00}:00–{(bestStart + window) % 24:00}:00";
 
         return summary;
