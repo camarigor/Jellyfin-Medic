@@ -10,7 +10,7 @@ namespace Jellyfin.Plugin.MedicPicks.Picks;
 /// <summary>
 /// Stores picks as one JSON file per user under the server's data folder
 /// (not the plugin folder, so picks survive plugin upgrades).
-/// Also holds the TMDb key in its own file so it never travels with the plugin's normal settings.
+/// Also holds the TMDb and Seerr keys in their own file so they never travel with the plugin's normal settings.
 /// </summary>
 public class PicksStore
 {
@@ -24,6 +24,7 @@ public class PicksStore
     private readonly string _root;
     private readonly ILogger<PicksStore> _logger;
     private readonly object _lock = new();
+    private volatile bool _checkedPrivate;
 
     public PicksStore(IApplicationPaths applicationPaths, ILogger<PicksStore> logger)
     {
@@ -123,41 +124,67 @@ public class PicksStore
 
     public string? GetTmdbKey() => ReadSecrets().TmdbKey;
 
-    public void SetTmdbKey(string? key)
-    {
-        var secrets = ReadSecrets();
-        secrets.TmdbKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
-        WriteSecrets(secrets);
-    }
+    public void SetTmdbKey(string? key) => UpdateSecrets(s => s.TmdbKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim());
 
     public string? GetSeerrKey() => ReadSecrets().SeerrKey;
 
-    public void SetSeerrKey(string? key)
+    public void SetSeerrKey(string? key) => UpdateSecrets(s => s.SeerrKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim());
+
+    // Read, change and write as one step, so saving both keys at once can't lose one of them.
+    private void UpdateSecrets(Action<Secrets> change)
     {
-        var secrets = ReadSecrets();
-        secrets.SeerrKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
-        WriteSecrets(secrets);
+        lock (_lock)
+        {
+            Secrets secrets;
+            try
+            {
+                secrets = ParseSecrets() ?? new Secrets();
+            }
+            catch (JsonException ex)
+            {
+                // Don't overwrite a damaged keys file with only the new key: keep it aside for the admin.
+                var damaged = SecretsPath + ".bad";
+                File.Move(SecretsPath, damaged, true);
+                _logger.LogWarning(ex, "Medic Picks: the keys file couldn't be read, so it was kept as {Path} and a new one started", damaged);
+                secrets = new Secrets();
+            }
+
+            change(secrets);
+            WriteSecrets(secrets);
+        }
     }
 
     private Secrets ReadSecrets()
     {
         try
         {
-            if (File.Exists(SecretsPath))
-            {
-                KeepPrivate(SecretsPath);
-                var secrets = JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
-                secrets.TmdbKey = string.IsNullOrWhiteSpace(secrets.TmdbKey) ? null : secrets.TmdbKey.Trim();
-                secrets.SeerrKey = string.IsNullOrWhiteSpace(secrets.SeerrKey) ? null : secrets.SeerrKey.Trim();
-                return secrets;
-            }
+            return ParseSecrets() ?? new Secrets();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Medic Picks: could not read the keys file");
+            return new Secrets();
+        }
+    }
+
+    // The keys file's contents, or null when there isn't one yet. Throws when it can't be read.
+    private Secrets? ParseSecrets()
+    {
+        if (!File.Exists(SecretsPath))
+        {
+            return null;
         }
 
-        return new Secrets();
+        if (!_checkedPrivate)
+        {
+            KeepPrivate(SecretsPath); // once: files written since are created private
+            _checkedPrivate = true;
+        }
+
+        var secrets = JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
+        secrets.TmdbKey = string.IsNullOrWhiteSpace(secrets.TmdbKey) ? null : secrets.TmdbKey.Trim();
+        secrets.SeerrKey = string.IsNullOrWhiteSpace(secrets.SeerrKey) ? null : secrets.SeerrKey.Trim();
+        return secrets;
     }
 
     private void WriteSecrets(Secrets secrets)
