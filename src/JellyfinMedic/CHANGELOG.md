@@ -9,6 +9,9 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
 ## Unreleased
 
+### Changed
+- **"Restart Jellyfin for waiting updates" no longer has a time set when Medic is installed.** It restarted Jellyfin at 04:00 by default whenever plugin updates were waiting, without anyone choosing that. Like Scheduled restart, it now does nothing until you give it a time under Scheduled Tasks. If you never changed its time, it has none after this update: add one to keep updates finishing overnight. A time you set yourself stays.
+
 ### Fixed
 - **Restarts wait for Live TV recordings and for the gap between episodes.** Medic's restart tasks only looked for something playing, track cleanup and other scheduled tasks, so a restart could cut a Live TV recording short, or land in the few seconds between two episodes when nothing shows as playing. They now also wait while a recording is in progress, and a quiet moment has to still be quiet two minutes later.
 
