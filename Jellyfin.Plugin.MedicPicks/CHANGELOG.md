@@ -5,8 +5,12 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 ## Unreleased
 
+### Added
+- **A Seerr address for viewers.** If this server reaches Seerr at an address people can't open (http://seerr:5055 inside Docker, say), put theirs in the new "Seerr address for viewers" box: links to Seerr use it, while Medic Picks keeps using the other one itself.
+
 ### Fixed
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **Only http and https Seerr addresses become links.** The Seerr address went into every person's Request in Seerr link as it was typed.
 
 ## [1.2.3] – 2026-10-11
 
