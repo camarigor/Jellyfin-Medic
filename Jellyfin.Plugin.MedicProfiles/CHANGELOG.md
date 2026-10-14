@@ -7,6 +7,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 
 ### Fixed
 - **The keys file is now private.** `medic-profiles/secrets.json`, which holds the Sonarr and Radarr API keys and the qBittorrent password, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **Saved keys stay with their server.** Changing Sonarr's, Radarr's or qBittorrent's address kept the saved key or password, and the next test or list sent it to the new address. When the address now points at a different server, the saved key or password is cleared and has to be typed again. A keys file that can't be read is also kept as `secrets.json.bad` instead of being replaced by one holding only the newest key (the other keys used to vanish without a word).
 
 ## [1.1.1] – 2026-10-11
 

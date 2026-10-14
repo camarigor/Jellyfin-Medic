@@ -62,8 +62,16 @@ public class ProfilesController : ControllerBase
         }
 
         var plugin = Plugin.Instance!;
-        plugin.Configuration.SonarrUrl = CleanUrl(request.SonarrUrl);
-        plugin.Configuration.RadarrUrl = CleanUrl(request.RadarrUrl);
+        string sonarrUrl = CleanUrl(request.SonarrUrl), radarrUrl = CleanUrl(request.RadarrUrl);
+
+        // A saved key or password is only ever sent to the server it was entered for: pointed at another
+        // server, it has to be typed again, so a changed address can't be used to collect it.
+        bool newSonarrHost = HostChanged(plugin.Configuration.SonarrUrl, sonarrUrl);
+        bool newRadarrHost = HostChanged(plugin.Configuration.RadarrUrl, radarrUrl);
+        bool newQbitHost = request.QbitUrl is not null && HostChanged(plugin.Configuration.QbitUrl, CleanUrl(request.QbitUrl));
+
+        plugin.Configuration.SonarrUrl = sonarrUrl;
+        plugin.Configuration.RadarrUrl = radarrUrl;
         plugin.Configuration.StuckAfterHours = Math.Clamp(request.StuckAfterHours ?? plugin.Configuration.StuckAfterHours, 1, 168);
         if (request.QbitUrl is not null)
         {
@@ -71,7 +79,7 @@ public class ProfilesController : ControllerBase
             plugin.Configuration.QbitUser = (request.QbitUser ?? string.Empty).Trim();
         }
 
-        if (request.ClearQbitPassword)
+        if (request.ClearQbitPassword || (newQbitHost && string.IsNullOrEmpty(request.QbitPassword)))
         {
             _store.SetQbitPassword(null);
         }
@@ -82,8 +90,8 @@ public class ProfilesController : ControllerBase
 
         plugin.SaveConfiguration();
 
-        // A blank key box means "keep the saved key"; Remove clears it.
-        if (request.ClearSonarrKey)
+        // A blank key box means "keep the saved key" (for the same server); Remove clears it.
+        if (request.ClearSonarrKey || (newSonarrHost && string.IsNullOrWhiteSpace(request.SonarrKey)))
         {
             _store.SetKey(ArrApp.Sonarr, null);
         }
@@ -92,7 +100,7 @@ public class ProfilesController : ControllerBase
             _store.SetKey(ArrApp.Sonarr, request.SonarrKey);
         }
 
-        if (request.ClearRadarrKey)
+        if (request.ClearRadarrKey || (newRadarrHost && string.IsNullOrWhiteSpace(request.RadarrKey)))
         {
             _store.SetKey(ArrApp.Radarr, null);
         }
@@ -277,6 +285,13 @@ public class ProfilesController : ControllerBase
         "radarr" => ArrApp.Radarr,
         _ => null
     };
+
+    // A different scheme, host or port; a first address (nothing saved before) isn't a change.
+    private static bool HostChanged(string? oldUrl, string newUrl) =>
+        !string.IsNullOrWhiteSpace(oldUrl) && !string.Equals(Authority(oldUrl), Authority(newUrl), StringComparison.OrdinalIgnoreCase);
+
+    private static string Authority(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u) ? $"{u.Scheme}://{u.Host}:{u.Port}" : url;
 
     private static string CleanUrl(string? url)
     {

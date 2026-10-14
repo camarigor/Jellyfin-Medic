@@ -44,6 +44,7 @@ public class ArrStore
     private readonly string _root;
     private readonly ILogger<ArrStore> _logger;
     private readonly object _lock = new();
+    private volatile bool _checkedPrivate;
 
     public ArrStore(IApplicationPaths applicationPaths, ILogger<ArrStore> logger)
     {
@@ -59,10 +60,9 @@ public class ArrStore
 
     public void SetKey(ArrApp app, string? key)
     {
-        lock (_lock)
+        string? clean = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
+        UpdateSecrets(secrets =>
         {
-            var secrets = ReadSecrets();
-            string? clean = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
             if (app == ArrApp.Sonarr)
             {
                 secrets.SonarrKey = clean;
@@ -71,20 +71,34 @@ public class ArrStore
             {
                 secrets.RadarrKey = clean;
             }
-
-            Directory.CreateDirectory(_root);
-            WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions), secret: true);
-        }
+        });
     }
 
     public string? GetQbitPassword() => ReadSecrets().QbitPassword;
 
-    public void SetQbitPassword(string? password)
+    public void SetQbitPassword(string? password) =>
+        UpdateSecrets(secrets => secrets.QbitPassword = string.IsNullOrEmpty(password) ? null : password);
+
+    // Read, change and write as one step. A keys file that can't be read is kept aside rather than replaced
+    // by one holding only the new value, which would lose the other keys without a word.
+    private void UpdateSecrets(Action<Secrets> change)
     {
         lock (_lock)
         {
-            var secrets = ReadSecrets();
-            secrets.QbitPassword = string.IsNullOrEmpty(password) ? null : password;
+            Secrets secrets;
+            try
+            {
+                secrets = ParseSecrets() ?? new Secrets();
+            }
+            catch (JsonException ex)
+            {
+                var damaged = SecretsPath + ".bad";
+                File.Move(SecretsPath, damaged, true);
+                _logger.LogWarning(ex, "Medic Profiles: the keys file couldn't be read, so it was kept as {Path} and a new one started", damaged);
+                secrets = new Secrets();
+            }
+
+            change(secrets);
             Directory.CreateDirectory(_root);
             WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions), secret: true);
         }
@@ -133,18 +147,30 @@ public class ArrStore
     {
         try
         {
-            if (File.Exists(SecretsPath))
-            {
-                KeepPrivate(SecretsPath);
-                return JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
-            }
+            return ParseSecrets() ?? new Secrets();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Medic Profiles: could not read the keys file");
+            return new Secrets();
+        }
+    }
+
+    // The keys file's contents, or null when there isn't one yet. Throws when it can't be read.
+    private Secrets? ParseSecrets()
+    {
+        if (!File.Exists(SecretsPath))
+        {
+            return null;
         }
 
-        return new Secrets();
+        if (!_checkedPrivate)
+        {
+            KeepPrivate(SecretsPath); // once: files written since are created private
+            _checkedPrivate = true;
+        }
+
+        return JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
     }
 
     // Writes to a temporary file first, so a crash mid-write can't leave a half-written file behind.
