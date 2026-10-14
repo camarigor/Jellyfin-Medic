@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Changed
+- **Less work on every request.** Each request to Medic searched every loaded assembly for the activity log's type, including the Dashboard's frequent refreshes. It's now found once.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
