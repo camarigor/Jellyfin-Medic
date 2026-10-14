@@ -320,46 +320,70 @@ public class ScheduleController : ControllerBase
         var (backupFile, _) = WriteBackup();
         var appliedIds = new List<string>();
         var failedNames = new List<string>();
+        var audits = new List<MovementAudit>();
 
         lock (ScheduleStorage.SyncRoot)
         {
+            // Read, change and write the monthly runs under one lock, so a run the background service
+            // records meanwhile isn't lost. They're saved before any triggers change: if saving fails,
+            // nothing has changed yet, and a monthly task is never left with no triggers and no run.
             string managedPath = ScheduleStorage.ManagedPath(_appPaths);
-            var managedRuns = ScheduleStorage.ReadList<ManagedRun>(managedPath);
+            var current = ScheduleStorage.ReadList<ManagedRun>(managedPath);
+            var managedRuns = current.Where(m => !changing.Any(c => ScheduleStorage.SameId(m.TaskId, c.Worker.Id.ToString()))).ToList();
+            foreach (var item in changing.Where(c => c.Managed is not null))
+            {
+                // The plan was made from an earlier read: a run started since then still counts this month.
+                var now = current.LastOrDefault(m => ScheduleStorage.SameId(m.TaskId, item.Worker.Id.ToString()));
+                item.Managed!.LastStartedLocal = Later(now?.LastStartedLocal, item.Managed.LastStartedLocal)
+                    ?? DateTime.Now; // First run is next month, not tonight.
+                managedRuns.Add(item.Managed);
+            }
 
+            if (!TryWriteManaged(managedPath, managedRuns))
+            {
+                return Ok(new
+                {
+                    Success = false,
+                    AppliedTasks = 0,
+                    BackupFile = backupFile,
+                    Message = "Couldn't save Medic's schedule file, so nothing was changed. See the Jellyfin log for details."
+                });
+            }
+
+            bool putBack = false;
             foreach (var item in changing)
             {
                 string id = item.Worker.Id.ToString();
                 try
                 {
-                    if (item.Managed is not null)
-                    {
-                        // Monthly: Jellyfin has no monthly trigger, so its own triggers are cleared
-                        // and Medic starts the task on the day.
-                        item.Worker.Triggers = Array.Empty<TaskTriggerInfo>();
-                        item.Managed.LastStartedLocal ??= DateTime.Now; // First run is next month, not tonight.
-                        managedRuns.RemoveAll(m => ScheduleStorage.SameId(m.TaskId, id));
-                        managedRuns.Add(item.Managed);
-                    }
-                    else
-                    {
-                        // The same assignment Jellyfin's own dashboard uses: saves to disk and re-arms the timers.
-                        item.Worker.Triggers = item.Triggers ?? Array.Empty<TaskTriggerInfo>();
-                        managedRuns.RemoveAll(m => ScheduleStorage.SameId(m.TaskId, id));
-                    }
-
+                    // Monthly: Jellyfin has no monthly trigger, so its own triggers are cleared and Medic
+                    // starts the task on the day. Otherwise the same assignment Jellyfin's own dashboard
+                    // uses: saves to disk and re-arms the timers.
+                    item.Worker.Triggers = item.Managed is not null
+                        ? Array.Empty<TaskTriggerInfo>()
+                        : item.Triggers ?? Array.Empty<TaskTriggerInfo>();
                     appliedIds.Add(id);
-                    ScheduleStorage.AppendAudit(_appPaths, item.Worker.Name, item.CurrentSchedule, item.ProposedSchedule, $"{item.CadenceLabel}. {item.Reason}");
+                    audits.Add(ScheduleStorage.Audit(item.Worker.Name, item.CurrentSchedule, item.ProposedSchedule, $"{item.CadenceLabel}. {item.Reason}"));
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Jellyfin Medic: could not apply the new schedule to {TaskName}", item.Worker.Name);
                     failedNames.Add(item.Worker.Name);
+
+                    // Its triggers didn't change, so its monthly run goes back to what it was too.
+                    managedRuns.RemoveAll(m => ScheduleStorage.SameId(m.TaskId, id));
+                    managedRuns.AddRange(current.Where(m => ScheduleStorage.SameId(m.TaskId, id)));
+                    putBack = true;
                 }
             }
 
-            ScheduleStorage.WriteJson(managedPath, managedRuns);
+            if (putBack)
+            {
+                TryWriteManaged(managedPath, managedRuns);
+            }
         }
 
+        WriteAudits(audits);
         ScheduleStorage.ClearBackoffs(_appPaths, appliedIds);
         _logger.LogInformation("Jellyfin Medic: applied recommended schedule to {Count} tasks. Backup: {BackupFile}", appliedIds.Count, backupFile);
 
@@ -431,71 +455,103 @@ public class ScheduleController : ControllerBase
         }
 
         // Snapshot the current schedule first, so a restore can itself be undone.
-        var (safetyBackup, _) = WriteBackup();
+        var (safetyBackup, _) = WriteBackup(keep: safeName);
 
-        var currentManaged = ScheduleStorage.LoadManaged(_appPaths);
         var backupManaged = (backup.ManagedRuns ?? new List<ManagedRun>())
             .GroupBy(m => m.TaskId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
 
         var restoredIds = new List<string>();
-        var newManaged = new List<ManagedRun>();
+        var audits = new List<MovementAudit>();
         int changed = 0;
         int missing = 0;
 
-        foreach (var (taskId, triggers) in backup.TriggersByTaskId)
-        {
-            var worker = ScheduleStorage.FindWorker(_taskManager, taskId);
-            if (worker is null)
-            {
-                missing++; // Task no longer exists, e.g. its plugin was removed.
-                continue;
-            }
-
-            string id = worker.Id.ToString();
-            currentManaged.TryGetValue(id, out var managedNow);
-            backupManaged.TryGetValue(id, out var managedThen);
-
-            var target = triggers ?? Array.Empty<TaskTriggerInfo>();
-            string before = ScheduleStorage.FormatSchedule(worker.Triggers, managedNow);
-            string after = ScheduleStorage.FormatSchedule(target, managedThen);
-
-            try
-            {
-                worker.Triggers = target;
-                restoredIds.Add(id);
-
-                if (managedThen is not null)
-                {
-                    managedThen.LastStartedLocal = DateTime.Now; // Don't fire straight away after a restore.
-                    newManaged.Add(managedThen);
-                }
-
-                if (before != after)
-                {
-                    changed++;
-                    ScheduleStorage.AppendAudit(_appPaths, worker.Name, before, after, $"Restored from backup {safeName}.");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Jellyfin Medic: could not restore the schedule for {TaskName}", worker.Name);
-                if (managedNow is not null)
-                {
-                    newManaged.Add(managedNow); // Leave this task as it was.
-                }
-            }
-        }
-
-        // Tasks that weren't in the backup keep their current monthly schedule.
-        newManaged.AddRange(currentManaged.Values.Where(m =>
-            !backup.TriggersByTaskId.Keys.Any(k => ScheduleStorage.SameId(k, m.TaskId))));
-
         lock (ScheduleStorage.SyncRoot)
         {
-            ScheduleStorage.WriteJson(ScheduleStorage.ManagedPath(_appPaths), newManaged);
+            // As in Apply: read, change and write the monthly runs under one lock, and save them before
+            // any triggers change.
+            string managedPath = ScheduleStorage.ManagedPath(_appPaths);
+            var current = ScheduleStorage.ReadList<ManagedRun>(managedPath);
+            var currentManaged = current
+                .GroupBy(m => m.TaskId, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+
+            var targets = new List<(IScheduledTaskWorker Worker, TaskTriggerInfo[] Triggers, ManagedRun? Now, ManagedRun? Then)>();
+            foreach (var (taskId, triggers) in backup.TriggersByTaskId)
+            {
+                var worker = ScheduleStorage.FindWorker(_taskManager, taskId);
+                if (worker is null)
+                {
+                    missing++; // Task no longer exists, e.g. its plugin was removed.
+                    continue;
+                }
+
+                string id = worker.Id.ToString();
+                currentManaged.TryGetValue(id, out var managedNow);
+                backupManaged.TryGetValue(id, out var managedThen);
+                targets.Add((worker, triggers ?? Array.Empty<TaskTriggerInfo>(), managedNow, managedThen));
+            }
+
+            // Tasks that weren't in the backup keep their current monthly schedule.
+            var managedRuns = current.Where(m => !backup.TriggersByTaskId.Keys.Any(k => ScheduleStorage.SameId(k, m.TaskId))).ToList();
+            foreach (var target in targets.Where(t => t.Then is not null))
+            {
+                target.Then!.LastStartedLocal = DateTime.Now; // Don't fire straight away after a restore.
+                managedRuns.Add(target.Then);
+            }
+
+            if (!TryWriteManaged(managedPath, managedRuns))
+            {
+                return Ok(new
+                {
+                    Success = false,
+                    RestoredTasks = 0,
+                    ChangedTasks = 0,
+                    BackupFile = safetyBackup,
+                    Message = "Couldn't save Medic's schedule file, so nothing was restored. See the Jellyfin log for details."
+                });
+            }
+
+            bool putBack = false;
+            foreach (var (worker, triggers, managedNow, managedThen) in targets)
+            {
+                string id = worker.Id.ToString();
+                string before = ScheduleStorage.FormatSchedule(worker.Triggers, managedNow);
+                string after = ScheduleStorage.FormatSchedule(triggers, managedThen);
+
+                try
+                {
+                    worker.Triggers = triggers;
+                    restoredIds.Add(id);
+
+                    if (before != after)
+                    {
+                        changed++;
+                        audits.Add(ScheduleStorage.Audit(worker.Name, before, after, $"Restored from backup {safeName}."));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Jellyfin Medic: could not restore the schedule for {TaskName}", worker.Name);
+
+                    // Leave this task as it was, monthly run included.
+                    managedRuns.RemoveAll(m => ScheduleStorage.SameId(m.TaskId, id));
+                    if (managedNow is not null)
+                    {
+                        managedRuns.Add(managedNow);
+                    }
+
+                    putBack = true;
+                }
+            }
+
+            if (putBack)
+            {
+                TryWriteManaged(managedPath, managedRuns);
+            }
         }
 
+        WriteAudits(audits);
         ScheduleStorage.ClearBackoffs(_appPaths, restoredIds);
         _logger.LogInformation("Jellyfin Medic: restored {Count} tasks from {Backup} ({Changed} changed).", restoredIds.Count, safeName, changed);
 
@@ -519,7 +575,7 @@ public class ScheduleController : ControllerBase
     private BusyProfile Busy() =>
         BusyProfile.Create(UsageAnalyzer.Summarise(UsageStore.Load(_appPaths)), Plugin.Instance?.Configuration);
 
-    private (string FileName, int Count) WriteBackup()
+    private (string FileName, int Count) WriteBackup(string? keep = null)
     {
         var backup = new TaskBackupContainer
         {
@@ -531,9 +587,42 @@ public class ScheduleController : ControllerBase
             backup.TriggersByTaskId[task.Id.ToString()] = task.Triggers?.ToArray() ?? Array.Empty<TaskTriggerInfo>();
         }
 
-        string fileName = $"schedule_backup_{DateTime.UtcNow:yyyyMMdd_HHmmss}.json";
+        // Down to the millisecond: two backups in the same second used to share a name, so the second
+        // replaced the first (a restore straight after an apply lost the schedule from before the apply).
+        string fileName = $"schedule_backup_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}.json";
         ScheduleStorage.WriteJson(Path.Combine(ScheduleStorage.BackupDir(_appPaths), fileName), backup);
+        ScheduleStorage.PruneBackups(_appPaths, keep);
 
         return (fileName, backup.TriggersByTaskId.Count);
     }
+
+    // False when the file couldn't be written; the error is logged.
+    private bool TryWriteManaged(string path, List<ManagedRun> runs)
+    {
+        try
+        {
+            ScheduleStorage.WriteJson(path, runs);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Jellyfin Medic: could not save the monthly task schedule to {Path}", path);
+            return false;
+        }
+    }
+
+    // The schedule has already changed by now, so a log that can't be written is reported, not fatal.
+    private void WriteAudits(List<MovementAudit> audits)
+    {
+        try
+        {
+            ScheduleStorage.AppendAudits(_appPaths, audits);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Jellyfin Medic: could not add {Count} entries to the schedule changes log", audits.Count);
+        }
+    }
+
+    private static DateTime? Later(DateTime? a, DateTime? b) => a is null ? b : b is null ? a : (a > b ? a : b);
 }
