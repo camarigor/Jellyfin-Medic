@@ -21,4 +21,10 @@ public class PluginConfiguration : BasePluginConfiguration
     public string QbitUrl { get; set; } = string.Empty;
 
     public string QbitUser { get; set; } = string.Empty;
+
+    /// <summary>The patterns Medic Profiles added to qBittorrent's excluded file names, so unblocking removes only those.</summary>
+    public string[] QbitPatternsAdded { get; set; } = System.Array.Empty<string>();
+
+    /// <summary>Whether that list was switched on before Medic Profiles first blocked anything; null while nothing is blocked.</summary>
+    public bool? QbitListWasOn { get; set; }
 }
