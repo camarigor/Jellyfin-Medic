@@ -158,7 +158,7 @@ public class PicksEngine
         {
             picks.Note = "Watch a few more things and your picks will appear here after the next nightly run.";
             await ReplacePlaylistAsync(userId, picks, Array.Empty<Guid>(), config.PlaylistName, false).ConfigureAwait(false);
-            _store.Save(userId, picks);
+            _store.SaveWithoutHidden(userId, picks);
             return;
         }
 
@@ -222,7 +222,7 @@ public class PicksEngine
         // Save the new playlist's ID straight away (keeping last run's Discover picks for now), so if the
         // TMDb step below fails or is stopped, the next run can still find this playlist and replace it.
         picks.Discover = previous?.Discover ?? picks.Discover;
-        _store.Save(userId, picks);
+        _store.SaveWithoutHidden(userId, picks);
 
         // 4. Discover picks from TMDb.
         var discoverAllowed = config.EnableDiscover
@@ -257,7 +257,7 @@ public class PicksEngine
             }
         }
 
-        _store.Save(userId, picks);
+        _store.SaveWithoutHidden(userId, picks);
     }
 
     /// <summary>
@@ -486,21 +486,21 @@ public class PicksEngine
         }
     }
 
-    // Re-read before saving, so a title hidden while this run was going isn't lost.
-    private void ForgetSeen(Guid userId, bool items)
-    {
-        var fresh = _store.LoadPreferences(userId);
-        if (items)
+    // Changed under the store's lock, so a title hidden while this run was going isn't lost.
+    private void ForgetSeen(Guid userId, bool items) =>
+        _store.UpdatePreferences(userId, fresh =>
         {
-            fresh.SeenItems.Clear();
-        }
-        else
-        {
-            fresh.SeenTmdb.Clear();
-        }
+            if (items)
+            {
+                fresh.SeenItems.Clear();
+            }
+            else
+            {
+                fresh.SeenTmdb.Clear();
+            }
 
-        _store.SavePreferences(userId, fresh);
-    }
+            return fresh;
+        });
 
     private List<LibraryPick> BuildLibraryPicks(Func<InternalItemsQuery> userQuery, List<WatchedTitle> ranked, Dictionary<Guid, WatchedTitle> titles, int count, UserPreferences prefs, AudioLanguage language)
     {
