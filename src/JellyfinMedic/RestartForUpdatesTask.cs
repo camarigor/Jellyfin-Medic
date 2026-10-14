@@ -185,7 +185,8 @@ public sealed class RestartForUpdatesTask : IScheduledTask
 
     public string Description =>
         "If plugin updates are waiting for a restart, restarts Jellyfin, but only when nobody is watching, no track cleanup or Live TV recording is running "
-        + "and no other scheduled task is busy, and it's still so two minutes later. If it isn't safe, it checks again every 5 minutes for up to an hour, then waits for its next run.";
+        + "and no other scheduled task is busy, and it's still so two minutes later. If it isn't safe, it checks again every 5 minutes for up to an hour, then waits for its next run. "
+        + "It has no time set to begin with: add one (04:00, say) to turn it on.";
 
     public string Category => "Jellyfin Medic";
 
@@ -204,13 +205,8 @@ public sealed class RestartForUpdatesTask : IScheduledTask
             .ConfigureAwait(false);
     }
 
-    public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
-    {
-        return new[]
-        {
-            new TaskTriggerInfo { Type = TaskTriggerInfoType.DailyTrigger, TimeOfDayTicks = TimeSpan.FromHours(4).Ticks }
-        };
-    }
+    // No time to begin with, like Scheduled restart: restarting the server is the admin's choice to make.
+    public IEnumerable<TaskTriggerInfo> GetDefaultTriggers() => Array.Empty<TaskTriggerInfo>();
 }
 
 /// <summary>
