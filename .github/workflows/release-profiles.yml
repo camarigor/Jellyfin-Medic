@@ -19,6 +19,7 @@ concurrency:
 
 env:
   PROJECT: 'Jellyfin.Plugin.MedicProfiles/Jellyfin.Plugin.MedicProfiles.csproj'
+  CHANGELOG_FILE: 'Jellyfin.Plugin.MedicProfiles/CHANGELOG.md'
   DLL: 'Jellyfin.Plugin.MedicProfiles.dll'
   GUID: '1eb65368-7b2e-4a55-8f2b-b56134f3fe68'
   NAME: 'Medic Profiles'
@@ -60,6 +61,17 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME is $WANT but $PROJECT says $HAVE. Tag the commit that has the new version."
             exit 1
           fi
+          # And it must be on main: a branch that already has the new version but isn't merged would pass the check above.
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME is on a commit that isn't on main. Merge first, then tag the merged commit."
+            exit 1
+          fi
+          # The release notes and the manifest's changelog are this version's section of the changelog.
+          if ! python3 scripts/changelog_section.py "$CHANGELOG_FILE" "${GITHUB_REF_NAME#profiles-v}" > CHANGES.md; then
+            echo "::error::$CHANGELOG_FILE has no section for ${GITHUB_REF_NAME#profiles-v}. Add it, merge, then tag."
+            exit 1
+          fi
 
       - name: Build
         shell: bash
@@ -76,16 +88,6 @@ jobs:
         run: |
           zip -j "${{ steps.meta.outputs.zip }}" "out/$DLL"
           echo "md5=$(md5sum "${{ steps.meta.outputs.zip }}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          # An annotated tag's message, else the commit's title (the PR's title for a merge commit)
-          NOTES=""
-          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" = tag ]; then
-            NOTES="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed '/-----BEGIN/,$d')"
-          else
-            NOTES="$(git log -1 --format=%s)"
-            case "$NOTES" in "Merge pull request"*) NOTES="$(git log -1 --format=%b | head -n1)";; esac
-          fi
-          [ -z "$NOTES" ] && NOTES="$NAME ${{ steps.meta.outputs.version }}"
-          printf '%s\n' "$NOTES" > notes.txt
 
       - name: Create GitHub release
         shell: bash
@@ -99,11 +101,11 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${{ steps.meta.outputs.zip }}" --clobber
             gh release edit "$GITHUB_REF_NAME" --title "$NAME ${{ steps.meta.outputs.version }}" \
-              --notes-file notes.txt --latest=false $PRE
+              --notes-file CHANGES.md --latest=false $PRE
           else
             gh release create "$GITHUB_REF_NAME" "${{ steps.meta.outputs.zip }}" \
               --title "$NAME ${{ steps.meta.outputs.version }}" \
-              --notes-file notes.txt --latest=false $PRE
+              --notes-file CHANGES.md --latest=false $PRE
           fi
 
       - name: Add the version to manifest.json on main
@@ -118,7 +120,7 @@ jobs:
             --abi "$TARGET_ABI" \
             --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${{ steps.meta.outputs.zip }}" \
             --checksum "${{ steps.pkg.outputs.md5 }}" \
-            --changelog-file notes.txt \
+            --changelog-file CHANGES.md \
             --owner "$OWNER" \
             --description "$DESCRIPTION" \
             --overview "$OVERVIEW" \
@@ -127,7 +129,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add manifest.json
           git commit -m "manifest: $NAME ${{ steps.meta.outputs.version }}"
-          for attempt in 1 2 3; do
-            git push origin main && break
+          # Fail if no push gets through, instead of ending green on the last pull's status.
+          for _ in 1 2 3; do
+            if git push origin main; then exit 0; fi
             git pull --rebase origin main
           done
+          echo "::error::Couldn't push manifest.json to main after 3 tries; this release isn't in the manifest."
+          exit 1
