@@ -305,6 +305,8 @@ await check('Medic Profiles shows indexer status', async () => {
 
 await check('Medic Profiles blocks program files in qBittorrent, keeping the owner\'s own entries', async () => {
     const qbitServer = await fakeArr.startQbit(18080);
+    // The owner's own list, switched off on purpose, holding *.zip, which is also one of Medic Profiles' patterns.
+    Object.assign(fakeArr.qbit.prefs, { excluded_file_names_enabled: false, excluded_file_names: '*.nfo\n*.zip' });
     try {
         const QB = ARR.replace('18989', '18080');
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'secret' });
@@ -315,11 +317,13 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
         const sent = fakeArr.qbit.sets.at(-1);
         expect(sent.excluded_file_names_enabled === true, 'list not switched on');
         const list = sent.excluded_file_names.split('\n');
-        expect(list.includes('*.exe') && list.includes('*.nfo') && !list.includes('*.rar'), 'list: ' + sent.excluded_file_names);
+        expect(list.includes('*.exe') && list.includes('*.nfo') && list.includes('*.zip') && !list.includes('*.rar'), 'list: ' + sent.excluded_file_names);
         state = await ok('/MedicProfiles/FileFilter');
         expect(state.blocksPrograms && !state.blocksArchives, 'after: ' + JSON.stringify(state));
         await api('POST', '/MedicProfiles/FileFilter', { block: false, archives: false });
-        expect(fakeArr.qbit.prefs.excluded_file_names === '*.nfo', 'unblock left: ' + fakeArr.qbit.prefs.excluded_file_names);
+        const after = fakeArr.qbit.prefs;
+        expect(after.excluded_file_names === '*.nfo\n*.zip' && after.excluded_file_names_enabled === false,
+            `unblock left: ${JSON.stringify(after.excluded_file_names)}, switched ${after.excluded_file_names_enabled ? 'on' : 'off'}`);
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'wrong' });
         state = await ok('/MedicProfiles/FileFilter');
         expect(!state.reachable && /user name and password/.test(state.message), 'wrong password: ' + JSON.stringify(state));
