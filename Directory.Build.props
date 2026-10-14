@@ -1,0 +1,7 @@
+<Project>
+  <!-- Build settings shared by every project in this repository. -->
+  <PropertyGroup>
+    <!-- Everything builds without warnings today; this keeps it that way. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>
