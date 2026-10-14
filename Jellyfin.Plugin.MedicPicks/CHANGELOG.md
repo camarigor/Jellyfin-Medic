@@ -7,6 +7,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 ### Fixed
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **A TMDb outage no longer empties Discover.** A refused key, a rate limit, a TMDb error or no connection came back as "no recommendations", so the nightly run saved an empty Discover over everyone's previous one, and also cleared the list of titles already shown. Those failures are now told apart from an empty answer: each person keeps their last Discover picks, and after the first failure the run stops asking TMDb for the others.
 
 ## [1.2.3] – 2026-10-11
 
