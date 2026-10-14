@@ -498,6 +498,36 @@ await check('My picks page is served with no-cache', async () => {
     expect((res.headers.get('cache-control') || '').includes('no-cache'), 'cache-control ' + res.headers.get('cache-control'));
 });
 
+await check('Medic Picks "My requests" says Seerr is out of reach instead of failing', async () => {
+    // A Seerr that refuses connections, then one that never answers: both must come back as
+    // reachable:false, which the page shows, and the second within the time limit per call.
+    const http = await import('node:http');
+    const silent = http.createServer(() => { /* never answers */ });
+    await new Promise((resolve) => silent.listen(18991, '0.0.0.0', resolve));
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+    const myRequests = async (url) => {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: url, ShowRequests: true });
+        const started = Date.now();
+        const r = await api('GET', '/MedicPicks/Me/Requests');
+        return { ...r, seconds: (Date.now() - started) / 1000 };
+    };
+    try {
+        const refused = await myRequests('http://host.docker.internal:9');
+        expect(refused.status === 200 && refused.json?.reachable === false, `refused: ${refused.status} ${refused.text.slice(0, 200)}`);
+        const silentSeerr = await myRequests('http://host.docker.internal:18991');
+        expect(silentSeerr.status === 200 && silentSeerr.json?.reachable === false, `no answer: ${silentSeerr.status} ${silentSeerr.text.slice(0, 200)}`);
+        expect(silentSeerr.seconds < 30, `took ${silentSeerr.seconds} s`);
+        return `both reported as out of reach (the silent one after ${silentSeerr.seconds.toFixed(0)} s)`;
+    } finally {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        silent.closeAllConnections();
+        silent.close();
+    }
+});
+
 // ---------- Medic Profiles, against a pretend Sonarr ----------
 
 const fakeArr = await import('./fake-arr.mjs');
