@@ -110,44 +110,52 @@ public static class SchedulePlanner
 
     private static readonly DayOfWeek[][] WeeklySets = AllDays.Select(d => new[] { d }).ToArray();
 
-    // First match wins, so more specific names come first.
-    // Cheap / Moderate / Heavy: the cadence to use when the task's average run is
+    // Jellyfin's own tasks are matched by key, which is the same in every language (the name is translated);
+    // tasks from plugins, which have no key here, by name, where the first match wins, so more specific names
+    // come first. Cheap / Moderate / Heavy: the cadence to use when the task's average run is
     // under 5 minutes / 5 to 45 minutes / 45 minutes or more.
     private static readonly TaskRule[] Rules =
     {
-        new("Scan Media Library", Cadence.Daily, Cadence.Daily, Cadence.Daily, 0, 60,
+        new("RefreshLibrary", "Scan Media Library", Cadence.Daily, Cadence.Daily, Cadence.Daily, 0, 60,
             "New IPTV and local titles should appear by morning, and later tasks need an up-to-date library, so it runs daily and first."),
-        new("Guide", Cadence.Daily, Cadence.Daily, Cadence.Daily, 1, 20,
+        new("RefreshGuide", "Guide", Cadence.Daily, Cadence.Daily, Cadence.Daily, 1, 20,
             "The IPTV guide changes every day. It gets its own slot after the library scan, so their database writes never overlap."),
-        new("Transcode", Cadence.Daily, Cadence.Daily, Cadence.Daily, 1, 5,
+        new("DeleteTranscodeFiles", "Transcode", Cadence.Daily, Cadence.Daily, Cadence.Daily, 1, 5,
             "Clears leftover transcode files so the cache drive doesn't fill up."),
-        new("Subtitle", Cadence.TwiceWeekly, Cadence.TwiceWeekly, Cadence.TwiceWeekly, 2, 20,
+        new("DownloadSubtitles", "Subtitle", Cadence.TwiceWeekly, Cadence.TwiceWeekly, Cadence.TwiceWeekly, 2, 20,
             "Searching less often keeps you under subtitle provider limits."),
-        new("Chapter Image", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new("RefreshChapterImages", "Chapter Image", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added items, so batching them up loses nothing."),
-        new("Trickplay", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new("RefreshTrickplayImages", "Trickplay", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added items, so batching them up loses nothing."),
-        new("Media Segment", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new("TaskExtractMediaSegments", "Media Segment", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added items, so batching them up loses nothing."),
-        new("Keyframe", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new("KeyframeExtraction", "Keyframe", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added items, so batching them up loses nothing."),
-        new("Intro", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
+        new(null, "Intro", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 30,
             "Only works on newly added episodes, so batching them up loses nothing."),
-        new("Audio Normali", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 15,
+        new("AudioNormalization", "Audio Normali", Cadence.Daily, Cadence.EveryOtherDay, Cadence.TwiceWeekly, 2, 15,
             "Only works on newly added music, so batching it up loses nothing."),
-        new("Optimize", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 15,
+        new("OptimizeDatabaseTask", "Optimize", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 15,
             "Keeps the database tidy. Weekly is enough and avoids extra writes to the cache drive."),
-        new("Cache Directory", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
+        new("DeleteCacheFiles", "Cache Directory", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
             "Clears old cached images and files. Weekly is plenty."),
-        new("Log Directory", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
+        new("CleanLogFiles", "Log Directory", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
             "Removes old log files. Weekly is plenty."),
-        new("Update Plugins", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
+        new("PluginUpdates", "Update Plugins", Cadence.Weekly, Cadence.Weekly, Cadence.Weekly, 3, 5,
             "Weekly keeps plugins current without surprise changes mid-week."),
-        new("People", Cadence.Weekly, Cadence.Weekly, Cadence.Monthly, 4, 60,
+        new("RefreshPeople", "People", Cadence.Weekly, Cadence.Weekly, Cadence.Monthly, 4, 60,
             "Refreshes cast and crew details, which rarely change."),
-        new("Activity Log", Cadence.Monthly, Cadence.Monthly, Cadence.Monthly, 4, 5,
+        new("CleanActivityLog", "Activity Log", Cadence.Monthly, Cadence.Monthly, Cadence.Monthly, 4, 5,
             "Only trims old entries from the activity log.")
     };
+
+    private static TaskRule? RuleFor(IScheduledTaskWorker worker)
+    {
+        string key = worker.ScheduledTask.Key;
+        return Rules.FirstOrDefault(r => string.Equals(r.Key, key, StringComparison.Ordinal))
+            ?? Rules.FirstOrDefault(r => worker.Name.Contains(r.Keyword, StringComparison.OrdinalIgnoreCase));
+    }
 
     public static List<PlannedTask> Build(
         IReadOnlyList<IScheduledTaskWorker> workers,
@@ -170,7 +178,7 @@ public static class SchedulePlanner
             profile.TryGetValue(id, out var rec);
             managed.TryGetValue(id, out var managedRun);
 
-            var rule = Rules.FirstOrDefault(r => worker.Name.Contains(r.Keyword, StringComparison.OrdinalIgnoreCase));
+            var rule = RuleFor(worker);
             var (minutes, evidence) = MeasureCost(worker, rec);
             string current = ScheduleStorage.FormatSchedule(worker.Triggers, managedRun);
 
@@ -655,6 +663,7 @@ public static class SchedulePlanner
     }
 
     private sealed record TaskRule(
+        string? Key,
         string Keyword,
         Cadence Cheap,
         Cadence Moderate,
