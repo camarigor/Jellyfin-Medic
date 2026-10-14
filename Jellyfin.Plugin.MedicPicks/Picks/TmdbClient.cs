@@ -12,6 +12,15 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicPicks.Picks;
 
+/// <summary>TMDb couldn't answer (refused key, rate limit, server error, no connection): not the same as "no recommendations".</summary>
+public class TmdbUnavailableException : Exception
+{
+    public TmdbUnavailableException(string message, Exception? inner = null)
+        : base(message, inner)
+    {
+    }
+}
+
 /// <summary>
 /// Calls TMDb's /recommendations endpoint. Accepts either a v3 API key or a v4 read access token.
 /// </summary>
@@ -60,15 +69,15 @@ public class TmdbClient
 
             var client = _httpClientFactory.CreateClient(NamedClient.Default);
             using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return results; // TMDb doesn't know this title: it simply has no recommendations
+            }
+
             if (!response.IsSuccessStatusCode)
             {
-                // Never log the URL: it may contain the key.
-                _logger.LogWarning(
-                    "Medic Picks: TMDb returned {Status} for {Type} {Id}",
-                    (int)response.StatusCode,
-                    mediaType,
-                    tmdbId);
-                return results;
+                // Never log or show the URL: it may contain the key.
+                throw new TmdbUnavailableException($"TMDb answered {(int)response.StatusCode} for {mediaType} {tmdbId}");
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -126,9 +135,18 @@ public class TmdbClient
         {
             throw;
         }
-        catch (Exception ex)
+        catch (TmdbUnavailableException)
         {
-            _logger.LogWarning(ex, "Medic Picks: TMDb request failed for {Type} {Id}", mediaType, tmdbId);
+            throw;
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new TmdbUnavailableException($"TMDb couldn't be reached for {mediaType} {tmdbId}", ex);
+        }
+        catch (JsonException ex)
+        {
+            // An answer that isn't JSON: treat this title as having no recommendations.
+            _logger.LogWarning(ex, "Medic Picks: TMDb sent something unexpected for {Type} {Id}", mediaType, tmdbId);
         }
 
         return results;
