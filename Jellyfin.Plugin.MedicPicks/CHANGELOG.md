@@ -7,6 +7,8 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 ### Fixed
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **Linked picks leave out titles you've started.** They only left out what you had finished, so a film you'd stopped halfway through, or a series with an episode under way, could be suggested to you.
+- **The My picks page names itself with the plugin's version.** It told Jellyfin it was version 0.0.1, which is what Dashboard and Devices showed for it.
 
 ## [1.2.3] – 2026-10-11
 
