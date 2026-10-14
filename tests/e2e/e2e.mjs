@@ -287,6 +287,27 @@ const fakeArr = await import('./fake-arr.mjs');
 const arrServer = await fakeArr.start(18989);
 const ARR = process.env.ARR_URL || 'http://host.docker.internal:18989';
 
+await check('Medic Picks approves and declines requests as the admin\'s own Seerr account', async () => {
+    // Without X-API-User, Seerr acts as its owner account for any call made with the API key.
+    const seerrServer = await fakeArr.startSeerr(18992);
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18992', ShowRequests: true });
+    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+    try {
+        const approved = await api('POST', '/MedicPicks/Admin/Requests/7/Approve');
+        const declined = await api('POST', '/MedicPicks/Admin/Requests/8/Decline');
+        expect(approved.json?.ok && declined.json?.ok, `answers: ${approved.text} ${declined.text}`);
+        const made = fakeArr.seerr.decisions.map((d) => `${d.action} ${d.id} as ${d.asUser}`).join(', ');
+        expect(made === 'approve 7 as 42, decline 8 as 42', 'Seerr saw: ' + made);
+        return made;
+    } finally {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        seerrServer.close();
+    }
+});
+
 await check('Medic Profiles connects to Sonarr', async () => {
     const saved = await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
     expect(saved.status === 200 || saved.status === 204, 'saving settings ' + saved.status);
