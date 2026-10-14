@@ -12,6 +12,7 @@ using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using System.Text;
 using JellyfinMedic.Services;
 
@@ -49,7 +50,8 @@ public class MedicController : ControllerBase
         IUserManager users,
         ISessionManager sessions,
         IInstallationManager installs,
-        IServiceProvider services)
+        IServiceProvider services,
+        ILoggerFactory loggerFactory)
     {
         _users = users;
         _activity = ResolveActivityManager(services);
@@ -64,7 +66,7 @@ public class MedicController : ControllerBase
         _library = library;
         _pluginManager = pluginManager;
         _mediaEncoder = mediaEncoder;
-        _engine = new DiagnosticsEngine(config, paths, library, tasks, pluginManager, host);
+        _engine = new DiagnosticsEngine(config, paths, library, tasks, pluginManager, host, loggerFactory.CreateLogger<DiagnosticsEngine>());
     }
 
     /// <summary>Full check: specs plus every finding, most serious first.</summary>
