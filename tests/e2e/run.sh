@@ -63,6 +63,21 @@ mkdir -p "$WORK/media/livetv"
   done
 } > "$WORK/media/livetv/channels.m3u"
 
+# The tests reach Jellyfin through Docker's gateway. Trusting it as a proxy lets a test set the client's
+# address with X-Forwarded-For; Jellyfin only reads its known proxies when it starts, so it's set here.
+GATEWAY="$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)"
+if [ -n "$GATEWAY" ]; then
+  mkdir -p "$WORK/config/config"
+  cat > "$WORK/config/config/network.xml" <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<NetworkConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <KnownProxies>
+    <string>$GATEWAY</string>
+  </KnownProxies>
+</NetworkConfiguration>
+XML
+fi
+
 echo "== Starting Jellyfin ($IMAGE)"
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "$PORT:8096" --add-host=host.docker.internal:host-gateway \

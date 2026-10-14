@@ -128,11 +128,7 @@ await check('storage: library drives and growing folders are listed', async () =
 await check('security: sign-ins from several places are counted per account', async () => {
     // Two people with long names each sign in from two addresses. Counted per account that's two each,
     // which isn't "several places"; lumping long entries together made it one "user" with four.
-    const me = (await ok('/Sessions')).find((s) => s.UserId?.replace(/-/g, '') === ctx.userId.replace(/-/g, ''));
-    const proxy = (me?.RemoteEndPoint || '').replace(/^::ffff:/, '').replace(/:\d+$/, '');
-    const network = await ok('/System/Configuration/network');
-    // Requests from this test reach Jellyfin through Docker; trusting that address lets X-Forwarded-For set the client's.
-    await api('POST', '/System/Configuration/network', { ...network, KnownProxies: [proxy] });
+    // run.sh trusts Docker's gateway as a proxy, so X-Forwarded-For sets each sign-in's address.
     const names = ['a-very-long-account-name-for-testing-one', 'a-very-long-account-name-for-testing-two'];
     const ids = [];
     try {
@@ -153,14 +149,13 @@ await check('security: sign-ins from several places are counted per account', as
         // Without this the test would pass for the wrong reason: all sign-ins from one address.
         const log = await ok('/System/ActivityLog/Entries?limit=100');
         const seen = (log.Items || []).filter((e) => /203\.0\.113\.1[0-3]/.test((e.ShortOverview || '') + (e.Overview || ''))).length;
-        expect(proxy && seen >= 4, `the forwarded addresses weren't used (proxy ${proxy || 'not found'}, ${seen} entries)`);
+        expect(seen >= 4, `the forwarded addresses weren't used (${seen} entries); run.sh sets Docker's gateway as a known proxy before Jellyfin starts`);
         const findings = ((await ok('/JellyfinMedic/Report')).Findings || []).filter((f) => f.Area === 'Security');
         const roaming = findings.find((f) => /sign in from several places/.test(f.Title));
         expect(!roaming, 'counted as several places: ' + JSON.stringify(roaming));
-        return `${proxy} trusted; two accounts, two addresses each, no "several places"`;
+        return 'two accounts, two addresses each, no "several places"';
     } finally {
         for (const id of ids) await api('DELETE', `/Users/${id}`);
-        await api('POST', '/System/Configuration/network', network);
     }
 });
 
