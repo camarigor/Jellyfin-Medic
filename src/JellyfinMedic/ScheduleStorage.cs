@@ -233,6 +233,18 @@ public static class ScheduleStorage
         };
     }
 
+    // Jellyfin's own tasks by key, which is the same in every language (the name is translated).
+    private static readonly Dictionary<string, string> CategoryByKey = new(StringComparer.Ordinal)
+    {
+        ["RefreshLibrary"] = "library", ["RefreshGuide"] = "library", ["RefreshInternetChannels"] = "library",
+        ["RefreshChapterImages"] = "analysis", ["RefreshTrickplayImages"] = "analysis", ["MoveTrickplayImages"] = "analysis",
+        ["TaskExtractMediaSegments"] = "analysis", ["KeyframeExtraction"] = "analysis", ["AudioNormalization"] = "analysis",
+        ["DownloadSubtitles"] = "analysis", ["DownloadLyrics"] = "analysis",
+        ["OptimizeDatabaseTask"] = "upkeep", ["DeleteCacheFiles"] = "upkeep", ["CleanLogFiles"] = "upkeep",
+        ["PluginUpdates"] = "upkeep", ["DeleteTranscodeFiles"] = "upkeep", ["RefreshPeople"] = "upkeep",
+        ["CleanActivityLog"] = "upkeep", ["CleanupUserDataTask"] = "upkeep"
+    };
+
     /// <summary>Colour group on the timeline.</summary>
     public static string Category(IScheduledTaskWorker worker, bool managed)
     {
@@ -241,6 +253,12 @@ public static class ScheduleStorage
             return "monthly";
         }
 
+        if (CategoryByKey.TryGetValue(worker.ScheduledTask.Key, out var category))
+        {
+            return category;
+        }
+
+        // Tasks from plugins, by their (usually English) name.
         string name = worker.Name;
         bool Has(params string[] words) => words.Any(w => name.Contains(w, StringComparison.OrdinalIgnoreCase));
 
