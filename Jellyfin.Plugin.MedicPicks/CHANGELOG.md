@@ -7,6 +7,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 ### Fixed
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **Saving both keys at once no longer loses one.** The settings page saves the TMDb and Seerr keys together, and each save read the keys file, changed its own key and wrote the file back, so the second could write over the first: one key was then gone without any message (8 times in 20 in a test). Saving is now one locked step. A keys file that can't be read is kept as `secrets.json.bad` instead of being replaced by one holding only the new key, and its permissions are checked once instead of on every read.
 
 ## [1.2.3] – 2026-10-11
 
