@@ -65,13 +65,54 @@ public class PicksStore
     }
 
     // Writes to a temporary file first, so a crash mid-write can't leave a half-written file behind.
-    private void WriteAtomic(string path, string json)
+    // The keys file holds the TMDb and Seerr keys, so only the account Jellyfin runs as can read it.
+    private void WriteAtomic(string path, string json, bool secret = false)
     {
         var tmp = path + ".tmp";
         lock (_lock)
         {
-            File.WriteAllText(tmp, json);
+            if (secret && !OperatingSystem.IsWindows())
+            {
+                File.Delete(tmp);
+                var options = new FileStreamOptions
+                {
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.Write,
+                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                };
+                using (var writer = new StreamWriter(tmp, options))
+                {
+                    writer.Write(json);
+                }
+            }
+            else
+            {
+                File.WriteAllText(tmp, json);
+            }
+
             File.Move(tmp, path, true);
+        }
+    }
+
+    // Keys files saved by earlier versions could be read by any account on the server. Tighten them when read.
+    private void KeepPrivate(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        try
+        {
+            if (File.GetUnixFileMode(path) != Private)
+            {
+                File.SetUnixFileMode(path, Private);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Medic Picks: could not make the keys file private");
         }
     }
 
@@ -104,6 +145,7 @@ public class PicksStore
         {
             if (File.Exists(SecretsPath))
             {
+                KeepPrivate(SecretsPath);
                 var secrets = JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
                 secrets.TmdbKey = string.IsNullOrWhiteSpace(secrets.TmdbKey) ? null : secrets.TmdbKey.Trim();
                 secrets.SeerrKey = string.IsNullOrWhiteSpace(secrets.SeerrKey) ? null : secrets.SeerrKey.Trim();
@@ -121,7 +163,7 @@ public class PicksStore
     private void WriteSecrets(Secrets secrets)
     {
         Directory.CreateDirectory(_root);
-        WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions));
+        WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions), secret: true);
     }
 
     // ---------- Each person's own choices on the My picks page ----------
