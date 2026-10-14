@@ -2,7 +2,29 @@
 // fixed data, and remembers what was sent to it.
 import http from 'node:http';
 
+// Only on the address Jellyfin's container reaches this machine by (run.sh passes it), not on every network.
+const HOST = process.env.FAKE_HOST || '127.0.0.1';
+
 export const received = [];
+
+// How many entries the download queue has; a test sets it and puts it back to 0.
+export const queue = { total: 0 };
+
+function queuePage(url) {
+    const page = Number(url.searchParams.get('page') || 1);
+    const size = Number(url.searchParams.get('pageSize') || 100);
+    const records = [];
+    for (let i = (page - 1) * size; i < Math.min(queue.total, page * size); i++) {
+        const episode = (i % 99) + 1;
+        records.push({
+            id: i + 1, downloadId: 'download-' + i, title: `Fake.Show.S01E${String(episode).padStart(2, '0')}.1080p`,
+            status: 'downloading', trackedDownloadState: 'downloading', size: 1000, sizeleft: 500,
+            added: new Date().toISOString(), seriesId: 1, series: { title: 'Fake Show' },
+            episode: { seasonNumber: 1, episodeNumber: episode, title: 'An Episode' }
+        });
+    }
+    return { page, pageSize: size, totalRecords: queue.total, records };
+}
 
 const indexers = [
     { id: 1, name: 'Good Indexer', protocol: 'torrent', enableRss: true, enableAutomaticSearch: true, enableInteractiveSearch: true },
@@ -15,7 +37,8 @@ const routes = {
     '/api/v3/indexer': () => indexers,
     '/api/v3/indexerstatus': () => [{ indexerId: 2, initialFailure: new Date(Date.now() - 3 * 3600e3).toISOString(), mostRecentFailure: new Date().toISOString(), disabledTill: new Date(Date.now() + 3600e3).toISOString() }],
     '/api/v3/health': () => [{ source: 'IndexerStatusCheck', type: 'warning', message: 'Indexers unavailable due to failures: Broken Indexer' }],
-    '/api/v3/queue': () => ({ page: 1, pageSize: 100, totalRecords: 0, records: [] }),
+    '/api/v3/queue': queuePage,
+    '/api/v3/queue/bulk': () => ({}),
     '/api/v3/blocklist': () => ({ page: 1, pageSize: 100, totalRecords: 0, records: [] }),
     '/api/v3/qualityprofile': () => [],
     '/api/v3/customformat': () => [],
@@ -27,19 +50,20 @@ export function start(port) {
         let body = '';
         req.on('data', (c) => { body += c; });
         req.on('end', () => {
-            const path = req.url.split('?')[0];
-            received.push({ method: req.method, path, body, key: req.headers['x-api-key'] });
+            const url = new URL(req.url, 'http://fake');
+            const path = url.pathname;
+            received.push({ method: req.method, path, query: url.search, body, key: req.headers['x-api-key'] });
             const route = routes[path];
             if (req.headers['x-api-key'] !== 'test-key') { res.writeHead(401); res.end(); return; }
             res.writeHead(route ? 200 : 404, { 'Content-Type': 'application/json' });
-            res.end(route ? JSON.stringify(route()) : '{}');
+            res.end(route ? JSON.stringify(route(url)) : '{}');
         });
     });
-    return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
+    return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
 }
 
 // A pretend qBittorrent Web UI: sign-in with admin/secret, and the "Excluded file names" preference.
-export const qbit = { prefs: { excluded_file_names_enabled: false, excluded_file_names: '*.nfo' }, sets: [] };
+export const qbit = { prefs: { excluded_file_names_enabled: false, excluded_file_names: '*.nfo' }, sets: [], logins: 0, failedLogins: 0 };
 
 export function startQbit(port) {
     const server = http.createServer((req, res) => {
@@ -50,14 +74,17 @@ export function startQbit(port) {
             const signedIn = /SID=good/.test(req.headers.cookie || '');
             if (path === '/api/v2/auth/login') {
                 const form = new URLSearchParams(body);
+                qbit.logins++;
                 if (form.get('username') === 'admin' && form.get('password') === 'secret') {
                     res.writeHead(200, { 'Set-Cookie': 'SID=good; HttpOnly; path=/' });
                     res.end('Ok.');
                 } else {
+                    qbit.failedLogins++;
                     res.writeHead(200); res.end('Fails.');
                 }
                 return;
             }
+            if (path === '/api/v2/auth/logout') { res.writeHead(200); res.end(); return; }
             if (!signedIn) { res.writeHead(403); res.end('Forbidden'); return; }
             if (path === '/api/v2/app/preferences') {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -74,7 +101,7 @@ export function startQbit(port) {
             res.writeHead(404); res.end();
         });
     });
-    return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
+    return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
 }
 
 // A pretend Seerr: every Jellyfin account is Seerr user 42, and it remembers which Seerr user each

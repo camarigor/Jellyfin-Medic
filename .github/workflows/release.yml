@@ -15,8 +15,24 @@ concurrency:
   group: manifest-update
   cancel-in-progress: false
 
+# What the plugin catalogue shows, written to manifest.json by scripts/update_manifest.py (the same
+# script the Picks and Profiles releases use).
+env:
+  GUID: '8d1f5c2e-6b4a-4f7e-9c3d-2a7b5e1f0c94'
+  NAME: 'Jellyfin Medic'
+  OWNER: 'P1zzm1ssile'
+  TARGET_ABI: '12.1.0.0'
+  DESCRIPTION: "Health checks, performance tests and usage-aware task scheduling for your Jellyfin server."
+  OVERVIEW: "Keeps a busy Jellyfin server healthy: checks, tests and smart scheduling."
+  IMAGE: 'https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png'
+
 jobs:
+  # Unit and end-to-end tests first: nothing is released or added to the manifest unless they pass.
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   release:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the tagged code
@@ -37,11 +53,16 @@ jobs:
           if [ "$IN_CODE" != "$VERSION.0" ]; then
             echo "::error::Tag $GITHUB_REF_NAME is on a commit whose code is version $IN_CODE. Merge the release first, then tag the merged commit (delete this tag with: git push origin :refs/tags/$GITHUB_REF_NAME)."; exit 1
           fi
+          # And it must be on main: a branch that already has the new version but isn't merged would pass the check above.
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME is on a commit that isn't on main. Merge first, then tag the merged commit."; exit 1
+          fi
+          # The release notes and the manifest's changelog are this version's CHANGELOG section.
+          if ! python3 scripts/changelog_section.py CHANGELOG.md "$VERSION" > CHANGES.md; then
+            echo "::error::CHANGELOG.md has no section for $VERSION. Add it, merge, then tag."; exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          # The commit's title, or the PR's title for a merge commit
-          TITLE="$(git log -1 --format=%s)"
-          case "$TITLE" in "Merge pull request"*) TITLE="$(git log -1 --format=%b | head -n1)";; esac
-          echo "changelog=$TITLE" >> "$GITHUB_OUTPUT"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -69,22 +90,14 @@ jobs:
 
       - name: Build release notes from CHANGELOG
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
           MD5: ${{ steps.package.outputs.md5 }}
-          COMMIT: ${{ steps.meta.outputs.changelog }}
         run: |
-          # Pull the section for this version out of CHANGELOG.md, if present.
-          awk -v v="## [$VERSION]" '
-            index($0, v)==1 {grab=1; next}
-            /^## \[/ && grab {exit}
-            grab {print}
-          ' CHANGELOG.md > RELEASE_NOTES.md || true
-          if [ ! -s RELEASE_NOTES.md ]; then echo "$COMMIT" > RELEASE_NOTES.md; fi
+          cp CHANGES.md RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
           echo "MD5 checksum: \`$MD5\`" >> RELEASE_NOTES.md
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: Jellyfin Medic ${{ steps.meta.outputs.version }}
           files: ${{ steps.package.outputs.zip }}
@@ -95,16 +108,28 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}.0
           SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.package.outputs.zip }}
           CHECKSUM: ${{ steps.package.outputs.md5 }}
-          CHANGELOG: ${{ steps.meta.outputs.changelog }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
           git checkout -B main origin/main
-          python3 .github/scripts/update_manifest.py
+          python3 scripts/update_manifest.py \
+            --guid "$GUID" \
+            --name "$NAME" \
+            --version "$VERSION" \
+            --abi "$TARGET_ABI" \
+            --url "$SOURCE_URL" \
+            --checksum "$CHECKSUM" \
+            --changelog-file CHANGES.md \
+            --owner "$OWNER" \
+            --description "$DESCRIPTION" \
+            --overview "$OVERVIEW" \
+            --image-url "$IMAGE"
           git add manifest.json
           git commit -m "chore: add $VERSION to manifest"
-          for attempt in 1 2 3; do
-            git push origin main && break
+          # Fail if no push gets through, instead of ending green on the last pull's status.
+          for _ in 1 2 3; do
+            if git push origin main; then exit 0; fi
             git pull --rebase origin main
           done
+          echo "::error::Couldn't push manifest.json to main after 3 tries; this release isn't in the manifest."; exit 1

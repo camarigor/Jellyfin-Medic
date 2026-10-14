@@ -175,12 +175,28 @@ public sealed class TaskLifecycleListener : IHostedService
     }
 
     /// <summary>
-    /// Puts back the schedule saved by ApplyBackoff once the task succeeds again.
+    /// Puts back the schedule saved by ApplyBackoff once the task succeeds again, but only while the
+    /// task still has the schedule the back-off gave it. If someone changed it since (in Jellyfin's
+    /// dashboard, say), that change stays and the back-off is simply over.
     /// </summary>
     private void RevertBackoff(IScheduledTaskWorker worker, ReliabilityRecord entry)
     {
         var original = entry.OriginalTriggers!;
         string before = ScheduleStorage.FormatTriggers(worker.Triggers);
+
+        if (!SameTriggers(worker.Triggers ?? Array.Empty<TaskTriggerInfo>(), original.Select(Shift)))
+        {
+            entry.OriginalTriggers = null;
+            entry.BackedOffSinceUtc = null;
+            ScheduleStorage.AppendAudit(
+                _appPaths,
+                worker.Name,
+                before,
+                before,
+                "Task succeeded after a back-off, but its schedule had been changed since, so the change was kept.");
+            _logger.LogInformation("Jellyfin Medic: '{TaskName}' succeeded. Its schedule was changed during the back-off, so it stays at {Current}.", worker.Name, before);
+            return;
+        }
 
         try
         {
@@ -205,6 +221,13 @@ public sealed class TaskLifecycleListener : IHostedService
 
         _logger.LogInformation("Jellyfin Medic: '{TaskName}' succeeded. Schedule returned to {After}.", worker.Name, after);
     }
+
+    // The same triggers, in any order.
+    private static bool SameTriggers(IEnumerable<TaskTriggerInfo> a, IEnumerable<TaskTriggerInfo> b) =>
+        a.Select(Describe).Order(StringComparer.Ordinal).SequenceEqual(b.Select(Describe).Order(StringComparer.Ordinal));
+
+    private static string Describe(TaskTriggerInfo t) =>
+        $"{t.Type}|{t.TimeOfDayTicks}|{t.IntervalTicks}|{t.DayOfWeek}|{t.MaxRuntimeTicks}";
 
     private static TaskTriggerInfo Shift(TaskTriggerInfo trigger)
     {

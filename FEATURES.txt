@@ -1,23 +1,26 @@
 ===============================================================================
-                  JELLYFIN MEDIC AND MEDIC PICKS: FULL FEATURE LIST
+         JELLYFIN MEDIC, MEDIC PICKS AND MEDIC PROFILES: FULL FEATURE LIST
 ===============================================================================
 
 This repository contains three Jellyfin plugins:
 
-  1. JELLYFIN MEDIC (version 1.0.12)
+  1. JELLYFIN MEDIC
      For the person who runs the server. Health checks, performance tests,
      usage-aware task scheduling, track cleanup and media reports.
      Needs Jellyfin 12.1 or later. Administrators only.
 
-  2. MEDIC PICKS (version 1.2.0)
+  2. MEDIC PICKS
      For everyone who uses the server. Personal viewing suggestions built
      from what each person actually watches.
      Needs Jellyfin 12.0 or later.
 
-  3. MEDIC PROFILES (version 1.0.0)
+  3. MEDIC PROFILES
      For the person who runs the server. Sonarr and Radarr from the Jellyfin
      dashboard: downloads, fixes, and quality profile advice.
      Needs Jellyfin 12.0 or later. Administrators only.
+
+Each plugin's current version and what changed are in its changelog (CHANGELOG.md,
+Jellyfin.Plugin.MedicPicks/CHANGELOG.md, Jellyfin.Plugin.MedicProfiles/CHANGELOG.md).
 
 All three are installed from the same plugin repository:
   https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/manifest.json

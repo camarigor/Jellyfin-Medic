@@ -1,7 +1,9 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace JellyfinMedic.Api;
 
@@ -16,9 +18,14 @@ public static class ScheduleStorage
     public static readonly object SyncRoot = new();
 
     private const int MaxRunHistory = 2000;
+    private const int MaxAuditEntries = 1000; // the page shows the newest 200
+    private const int MaxBackups = 50;
     private const int MaxErrorDetailsLength = 4000;
 
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    /// <summary>Set by the plugin when it starts, so problems with these files reach Jellyfin's log.</summary>
+    internal static ILogger? Logger { get; set; }
 
     // ---------- Paths ----------
 
@@ -78,8 +85,21 @@ public static class ScheduleStorage
         {
             return JsonSerializer.Deserialize<List<T>>(File.ReadAllText(path)) ?? new List<T>();
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            // Set it aside: the next write would otherwise replace it, and everything in it would be lost.
+            // If it can't be moved, the error goes up and nothing writes over it.
+            string aside = path + ".bad";
+            try
+            {
+                File.Move(path, aside, overwrite: true);
+                Logger?.LogWarning(ex, "Jellyfin Medic: {File} couldn't be read, so it was kept as {Aside} and a new one started", Path.GetFileName(path), Path.GetFileName(aside));
+            }
+            catch (FileNotFoundException)
+            {
+                // Another reader set it aside first.
+            }
+
             return new List<T>();
         }
     }
@@ -87,14 +107,20 @@ public static class ScheduleStorage
     public static void WriteJson<T>(string path, T value) => WriteText(path, JsonSerializer.Serialize(value, Indented));
 
     /// <summary>
-    /// Writes to a temporary file, then swaps it in. A crash or power cut mid-write leaves the old file
-    /// whole, instead of a broken one that reads back as empty and loses everything in it.
+    /// Writes to a temporary file, flushes it to disk, then swaps it in. A crash or power cut mid-write
+    /// leaves the old file whole, instead of a broken one that reads back as empty and loses everything in it.
     /// </summary>
     public static void WriteText(string path, string text)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         string tmp = path + ".tmp";
-        File.WriteAllText(tmp, text);
+        using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            byte[] bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(text);
+            stream.Write(bytes);
+            stream.Flush(flushToDisk: true); // without this the rename can reach the disk before the data does
+        }
+
         File.Move(tmp, path, overwrite: true);
     }
 
@@ -124,21 +150,64 @@ public static class ScheduleStorage
             .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
     }
 
-    public static void AppendAudit(IApplicationPaths paths, string taskName, string previous, string next, string rationale)
+    public static MovementAudit Audit(string taskName, string previous, string next, string rationale) => new()
     {
+        Timestamp = DateTime.UtcNow,
+        TaskName = taskName,
+        PreviousTime = previous,
+        NewTime = next,
+        Rationale = rationale
+    };
+
+    public static void AppendAudit(IApplicationPaths paths, string taskName, string previous, string next, string rationale) =>
+        AppendAudits(paths, new[] { Audit(taskName, previous, next, rationale) });
+
+    /// <summary>Adds entries to the schedule changes log in one write, keeping the newest ones.</summary>
+    public static void AppendAudits(IApplicationPaths paths, IReadOnlyCollection<MovementAudit> entries)
+    {
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
         lock (SyncRoot)
         {
             string path = AuditLogPath(paths);
             var logs = ReadList<MovementAudit>(path);
-            logs.Add(new MovementAudit
+            logs.AddRange(entries);
+
+            if (logs.Count > MaxAuditEntries)
             {
-                Timestamp = DateTime.UtcNow,
-                TaskName = taskName,
-                PreviousTime = previous,
-                NewTime = next,
-                Rationale = rationale
-            });
+                logs = logs.OrderBy(l => l.Timestamp).Skip(logs.Count - MaxAuditEntries).ToList();
+            }
+
             WriteJson(path, logs);
+        }
+    }
+
+    /// <summary>Deletes all but the newest schedule backups. <paramref name="keep"/> is never deleted.</summary>
+    public static void PruneBackups(IApplicationPaths paths, string? keep = null)
+    {
+        var dir = new DirectoryInfo(BackupDir(paths));
+        if (!dir.Exists)
+        {
+            return;
+        }
+
+        var old = dir.GetFiles("schedule_backup_*.json")
+            .OrderByDescending(f => f.LastWriteTimeUtc)
+            .Skip(MaxBackups)
+            .Where(f => !string.Equals(f.Name, keep, StringComparison.OrdinalIgnoreCase));
+        foreach (var file in old)
+        {
+            try
+            {
+                file.Delete();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Logger?.LogWarning(ex, "Jellyfin Medic: couldn't delete the old schedule backup {File}", file.Name);
+            }
         }
     }
 
@@ -233,6 +302,18 @@ public static class ScheduleStorage
         };
     }
 
+    // Jellyfin's own tasks by key, which is the same in every language (the name is translated).
+    private static readonly Dictionary<string, string> CategoryByKey = new(StringComparer.Ordinal)
+    {
+        ["RefreshLibrary"] = "library", ["RefreshGuide"] = "library", ["RefreshInternetChannels"] = "library",
+        ["RefreshChapterImages"] = "analysis", ["RefreshTrickplayImages"] = "analysis", ["MoveTrickplayImages"] = "analysis",
+        ["TaskExtractMediaSegments"] = "analysis", ["KeyframeExtraction"] = "analysis", ["AudioNormalization"] = "analysis",
+        ["DownloadSubtitles"] = "analysis", ["DownloadLyrics"] = "analysis",
+        ["OptimizeDatabaseTask"] = "upkeep", ["DeleteCacheFiles"] = "upkeep", ["CleanLogFiles"] = "upkeep",
+        ["PluginUpdates"] = "upkeep", ["DeleteTranscodeFiles"] = "upkeep", ["RefreshPeople"] = "upkeep",
+        ["CleanActivityLog"] = "upkeep", ["CleanupUserDataTask"] = "upkeep"
+    };
+
     /// <summary>Colour group on the timeline.</summary>
     public static string Category(IScheduledTaskWorker worker, bool managed)
     {
@@ -241,6 +322,12 @@ public static class ScheduleStorage
             return "monthly";
         }
 
+        if (CategoryByKey.TryGetValue(worker.ScheduledTask.Key, out var category))
+        {
+            return category;
+        }
+
+        // Tasks from plugins, by their (usually English) name.
         string name = worker.Name;
         bool Has(params string[] words) => words.Any(w => name.Contains(w, StringComparison.OrdinalIgnoreCase));
 

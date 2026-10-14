@@ -21,6 +21,14 @@ namespace JellyfinMedic.Services;
 public sealed class LoadGuard : IHostedService, IDisposable
 {
     private static readonly TimeSpan CheckEvery = TimeSpan.FromSeconds(20);
+    // Jellyfin's own heavy tasks by key (their names are translated into the server's language),
+    // and tasks from plugins by words in their names.
+    private static readonly HashSet<string> HeavyKeys = new(StringComparer.Ordinal)
+    {
+        "RefreshLibrary", "RefreshGuide", "RefreshInternetChannels", "RefreshChapterImages", "RefreshTrickplayImages",
+        "MoveTrickplayImages", "TaskExtractMediaSegments", "KeyframeExtraction", "AudioNormalization", "DownloadSubtitles", "RefreshPeople"
+    };
+
     private static readonly string[] HeavyWords =
     {
         "Scan Media Library", "Refresh Guide", "Refresh Channels", "Chapter", "Trickplay",
@@ -93,7 +101,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
             int clearMark = highMark - 12; // recover to comfortably below the ceiling before restarting
 
             var heavyRunning = _tasks.ScheduledTasks
-                .Where(t => t.State == TaskState.Running && IsHeavy(t.Name))
+                .Where(t => t.State == TaskState.Running && IsHeavy(t))
                 .OrderBy(t => StartedAt(t))
                 .ToList();
 
@@ -129,19 +137,25 @@ public sealed class LoadGuard : IHostedService, IDisposable
             if (_deferred.Count > 0 && quietEnough && settled)
             {
                 string id = _deferred[0];
-                _deferred.RemoveAt(0);
                 var worker = _tasks.ScheduledTasks.FirstOrDefault(t => t.Id.ToString() == id);
-                if (worker is not null && worker.State == TaskState.Idle)
+                if (worker is null)
                 {
+                    _deferred.RemoveAt(0); // the task is gone (its plugin was removed)
+                }
+                else if (worker.State == TaskState.Idle)
+                {
+                    // Only off the list once it has really been started again; while it's still cancelling, it waits its turn.
                     try
                     {
                         _tasks.Execute(worker, new TaskOptions());
+                        _deferred.RemoveAt(0);
                         Record("restarted", worker.Name, usedGb, limitGb);
                         _logger.LogInformation("Jellyfin Medic: memory back to {Used:0}%; restarted deferred task '{Task}'.", usedPercent, worker.Name);
                         _lastActionUtc = DateTime.UtcNow;
                     }
                     catch (Exception ex)
                     {
+                        _deferred.RemoveAt(0); // starting it fails, so trying again every round wouldn't help
                         _logger.LogError(ex, "Jellyfin Medic: couldn't restart deferred task '{Task}'.", worker.Name);
                     }
                 }
@@ -157,7 +171,8 @@ public sealed class LoadGuard : IHostedService, IDisposable
         }
     }
 
-    private static bool IsHeavy(string name) => HeavyWords.Any(w => name.Contains(w, StringComparison.OrdinalIgnoreCase));
+    private static bool IsHeavy(IScheduledTaskWorker task) =>
+        HeavyKeys.Contains(task.ScheduledTask.Key) || HeavyWords.Any(w => task.Name.Contains(w, StringComparison.OrdinalIgnoreCase));
 
     private DateTime StartedAt(IScheduledTaskWorker worker)
     {
@@ -179,25 +194,74 @@ public sealed class LoadGuard : IHostedService, IDisposable
         return limitBytes <= 0 ? 0 : Math.Clamp(usedBytes / limitBytes * 100, 0, 100);
     }
 
-    /// <summary>The container's memory limit in bytes, or null when there's none.</summary>
+    /// <summary>
+    /// The memory cgroup folders to read, Jellyfin's own first. In a container that's the container's (the root
+    /// as seen from inside); on a host it's the service's, as the root there is the whole machine.
+    /// </summary>
+    private static readonly Lazy<string[]> CgroupDirs = new(FindCgroupDirs);
+
+    private static string[] FindCgroupDirs()
+    {
+        var dirs = new List<string>();
+        try
+        {
+            // cgroup v2: "0::/path"; v1: "N:memory,...:/path".
+            foreach (var line in File.ReadLines("/proc/self/cgroup"))
+            {
+                var parts = line.Split(':', 3);
+                if (parts.Length < 3)
+                {
+                    continue;
+                }
+
+                string path = parts[2].Trim().TrimEnd('/');
+                if (parts[0] == "0" && parts[1].Length == 0)
+                {
+                    dirs.Add("/sys/fs/cgroup" + path);
+                }
+                else if (parts[1].Split(',').Contains("memory"))
+                {
+                    dirs.Add("/sys/fs/cgroup/memory" + path);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Not Linux, or no /proc: only the defaults below.
+        }
+
+        dirs.Add("/sys/fs/cgroup");
+        dirs.Add("/sys/fs/cgroup/memory");
+        return dirs.Distinct().Where(Directory.Exists).ToArray();
+    }
+
+    /// <summary>The memory limit on Jellyfin's cgroup in bytes, or null when there's none.</summary>
     internal static double? CgroupLimit()
     {
-        double? v = ReadNumber("/sys/fs/cgroup/memory.max") ?? ReadNumber("/sys/fs/cgroup/memory/memory.limit_in_bytes");
+        double? v = CgroupDirs.Value
+            .Select(d => ReadNumber(Path.Combine(d, "memory.max")) ?? ReadNumber(Path.Combine(d, "memory.limit_in_bytes")))
+            .FirstOrDefault(found => found is not null);
         // A "no limit" cgroup reports a huge sentinel value; treat that as unknown.
         return v is > 0 and < 1e15 ? v : null;
     }
 
     private static double? CgroupUsage()
     {
-        double? current = ReadNumber("/sys/fs/cgroup/memory.current") ?? ReadNumber("/sys/fs/cgroup/memory/memory.usage_in_bytes");
+        string? dir = CgroupDirs.Value.FirstOrDefault(d => File.Exists(Path.Combine(d, "memory.current")) || File.Exists(Path.Combine(d, "memory.usage_in_bytes")));
+        if (dir is null)
+        {
+            return null;
+        }
+
+        double? current = ReadNumber(Path.Combine(dir, "memory.current")) ?? ReadNumber(Path.Combine(dir, "memory.usage_in_bytes"));
         if (current is null)
         {
             return null;
         }
 
         // Subtract reclaimable file cache so we measure real pressure, not cache that frees on demand.
-        double inactive = ReadStatValue("/sys/fs/cgroup/memory.stat", "inactive_file")
-                          ?? ReadStatValue("/sys/fs/cgroup/memory/memory.stat", "total_inactive_file") ?? 0;
+        double inactive = ReadStatValue(Path.Combine(dir, "memory.stat"), "inactive_file")
+                          ?? ReadStatValue(Path.Combine(dir, "memory.stat"), "total_inactive_file") ?? 0;
         return Math.Max(0, current.Value - inactive);
     }
 

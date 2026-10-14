@@ -4,13 +4,15 @@
 #
 #   tests/e2e/run.sh            build, start, test, stop
 #   KEEP=1 tests/e2e/run.sh     leave Jellyfin running afterwards on http://127.0.0.1:8096
+#   JELLYFIN_IMAGE=jellyfin/jellyfin:12.1 tests/e2e/run.sh    test against another Jellyfin
 #
 # Needs: dotnet 10 SDK, docker, ffmpeg, node with playwright (PLAYWRIGHT_MODULE can point at it).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${WORK:-$ROOT/tests/e2e/.work}"
-IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:latest}"
+# A fixed image (Jellyfin 12.2.0), so a run only changes when the code or this line does.
+IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.2@sha256:357724bf0ae27a672c7cbaa899db2d9abeb13dbd8657ccce750258a4c059d037}"
 NAME=medic-e2e
 PORT="${PORT:-8096}"
 
@@ -63,11 +65,32 @@ mkdir -p "$WORK/media/livetv"
   done
 } > "$WORK/media/livetv/channels.m3u"
 
+# The tests reach Jellyfin through Docker's gateway. Trusting it as a proxy lets a test set the client's
+# address with X-Forwarded-For; Jellyfin only reads its known proxies when it starts, so it's set here.
+GATEWAY="$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)"
+if [ -n "$GATEWAY" ]; then
+  mkdir -p "$WORK/config/config"
+  cat > "$WORK/config/config/network.xml" <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<NetworkConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <KnownProxies>
+    <string>$GATEWAY</string>
+  </KnownProxies>
+</NetworkConfiguration>
+XML
+fi
+
 echo "== Starting Jellyfin ($IMAGE)"
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "$PORT:8096" --add-host=host.docker.internal:host-gateway \
   -v "$WORK/config:/config" -v "$WORK/cache:/cache" -v "$WORK/media:/media" "$IMAGE" >/dev/null
-cleanup() { [ "${KEEP:-0}" = 1 ] || docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+# Jellyfin runs as root in the container, so what it writes under $WORK belongs to root. It's handed back
+# before the container goes, or the next run couldn't delete $WORK and would stop before any test.
+cleanup() {
+  [ "${KEEP:-0}" = 1 ] && return
+  docker exec "$NAME" chown -R "$(id -u):$(id -g)" /config /cache /media >/dev/null 2>&1 || true
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 for i in $(seq 1 90); do
@@ -76,6 +99,7 @@ for i in $(seq 1 90); do
 done
 
 status=0
-JF="http://127.0.0.1:$PORT" WORK="$WORK" node "$ROOT/tests/e2e/e2e.mjs" || status=$?
+# The pretend Sonarr, qBittorrent and Seerr listen only where the container reaches this machine.
+JF="http://127.0.0.1:$PORT" WORK="$WORK" FAKE_HOST="${GATEWAY:-0.0.0.0}" node "$ROOT/tests/e2e/e2e.mjs" || status=$?
 docker logs "$NAME" 2>&1 | grep -E "\[ERR\]|\[FTL\]" | grep -iE "medic|picks|profiles" | head -20 || true
 exit $status

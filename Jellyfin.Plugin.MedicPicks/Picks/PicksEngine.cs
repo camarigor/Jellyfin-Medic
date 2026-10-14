@@ -158,7 +158,7 @@ public class PicksEngine
         {
             picks.Note = "Watch a few more things and your picks will appear here after the next nightly run.";
             await ReplacePlaylistAsync(userId, picks, Array.Empty<Guid>(), config.PlaylistName, false).ConfigureAwait(false);
-            _store.Save(userId, picks);
+            _store.SaveWithoutHidden(userId, picks);
             return;
         }
 
@@ -222,7 +222,7 @@ public class PicksEngine
         // Save the new playlist's ID straight away (keeping last run's Discover picks for now), so if the
         // TMDb step below fails or is stopped, the next run can still find this playlist and replace it.
         picks.Discover = previous?.Discover ?? picks.Discover;
-        _store.Save(userId, picks);
+        _store.SaveWithoutHidden(userId, picks);
 
         // 4. Discover picks from TMDb.
         var discoverAllowed = config.EnableDiscover
@@ -230,17 +230,34 @@ public class PicksEngine
             && !config.DiscoverDisabledUserIds.Any(id => Guid.TryParse(id, out var g) && g == userId);
 
         int discoverCount = prefs.Count > 0 ? prefs.Count : Math.Clamp(config.DiscoverPickCount, 1, 100);
-        picks.Discover = discoverAllowed
-            ? await BuildDiscoverPicksAsync(ranked, context, config.TmdbLanguage, discoverCount, prefs, cancellationToken).ConfigureAwait(false)
-            : new List<DiscoverPick>();
-        if (discoverAllowed && picks.Discover.Count == 0 && prefs.SeenTmdb.Count > 0)
+        if (!discoverAllowed)
         {
-            prefs.SeenTmdb.Clear();
-            ForgetSeen(userId, items: false);
-            picks.Discover = await BuildDiscoverPicksAsync(ranked, context, config.TmdbLanguage, discoverCount, prefs, cancellationToken).ConfigureAwait(false);
+            picks.Discover = new List<DiscoverPick>();
+        }
+        else if (!context.TmdbUnavailable)
+        {
+            // When TMDb can't answer (now or earlier in this run), last run's Discover picks, kept above, stay.
+            try
+            {
+                var discover = await BuildDiscoverPicksAsync(ranked, context, config.TmdbLanguage, discoverCount, prefs, cancellationToken).ConfigureAwait(false);
+                if (discover.Count == 0 && prefs.SeenTmdb.Count > 0)
+                {
+                    // Everything recommended has been shown before: start the "seen" list again.
+                    prefs.SeenTmdb.Clear();
+                    ForgetSeen(userId, items: false);
+                    discover = await BuildDiscoverPicksAsync(ranked, context, config.TmdbLanguage, discoverCount, prefs, cancellationToken).ConfigureAwait(false);
+                }
+
+                picks.Discover = discover;
+            }
+            catch (TmdbUnavailableException ex)
+            {
+                context.TmdbUnavailable = true;
+                _logger.LogWarning(ex, "Medic Picks: TMDb isn't answering, so Discover picks were left as they were");
+            }
         }
 
-        _store.Save(userId, picks);
+        _store.SaveWithoutHidden(userId, picks);
     }
 
     /// <summary>
@@ -265,6 +282,7 @@ public class PicksEngine
             var movies = userQuery();
             movies.IncludeItemTypes = new[] { BaseItemKind.Movie };
             movies.IsPlayed = false;
+            movies.IsResumable = false; // not finished is not enough: started ones are left out too
             movies.Recursive = true;
             movies.IsVirtualItem = false;
             pool.AddRange(_libraryManager.GetItemList(movies));
@@ -279,9 +297,21 @@ public class PicksEngine
             pool.AddRange(_libraryManager.GetItemList(series));
         }
 
+        // A series with an episode under way has been started, even if no episode is finished yet.
+        var started = new HashSet<Guid>();
+        if (prefs.Kind != "movies")
+        {
+            var underWay = userQuery();
+            underWay.IncludeItemTypes = new[] { BaseItemKind.Episode };
+            underWay.IsResumable = true;
+            underWay.Recursive = true;
+            underWay.IsVirtualItem = false;
+            started.UnionWith(_libraryManager.GetItemList(underWay).OfType<Episode>().Select(e => e.SeriesId));
+        }
+
         var hidden = new HashSet<Guid>(prefs.HiddenItems.Concat(prefs.SeenItems));
         var poolById = pool
-            .Where(c => !titles.ContainsKey(c.Id) && !hidden.Contains(c.Id) && !alreadyPicked.Contains(c.Id))
+            .Where(c => !titles.ContainsKey(c.Id) && !started.Contains(c.Id) && !hidden.Contains(c.Id) && !alreadyPicked.Contains(c.Id))
             .GroupBy(c => c.Id)
             .ToDictionary(g => g.Key, g => g.First());
         if (poolById.Count == 0)
@@ -469,21 +499,21 @@ public class PicksEngine
         }
     }
 
-    // Re-read before saving, so a title hidden while this run was going isn't lost.
-    private void ForgetSeen(Guid userId, bool items)
-    {
-        var fresh = _store.LoadPreferences(userId);
-        if (items)
+    // Changed under the store's lock, so a title hidden while this run was going isn't lost.
+    private void ForgetSeen(Guid userId, bool items) =>
+        _store.UpdatePreferences(userId, fresh =>
         {
-            fresh.SeenItems.Clear();
-        }
-        else
-        {
-            fresh.SeenTmdb.Clear();
-        }
+            if (items)
+            {
+                fresh.SeenItems.Clear();
+            }
+            else
+            {
+                fresh.SeenTmdb.Clear();
+            }
 
-        _store.SavePreferences(userId, fresh);
-    }
+            return fresh;
+        });
 
     private List<LibraryPick> BuildLibraryPicks(Func<InternalItemsQuery> userQuery, List<WatchedTitle> ranked, Dictionary<Guid, WatchedTitle> titles, int count, UserPreferences prefs, AudioLanguage language)
     {
@@ -573,7 +603,7 @@ public class PicksEngine
                 var itemGenres = c.Genres ?? Array.Empty<string>();
                 var genreScore = itemGenres.Sum(g => genres.GetValueOrDefault(g) / maxGenre) / Math.Sqrt(Math.Max(1, itemGenres.Length));
                 var rating = (c.CommunityRating ?? 6.5f) / 10.0;
-                return new Scored(c, genreScore + (0.1 * rating), genreScore);
+                return new Scored(c, genreScore + (0.1 * rating));
             })
             .OrderByDescending(s => s.Score)
             .Take(ShortlistSize)
@@ -904,18 +934,15 @@ public class PicksEngine
 
     private sealed class Scored
     {
-        public Scored(BaseItem item, double score, double genreScore)
+        public Scored(BaseItem item, double score)
         {
             Item = item;
             Score = score;
-            GenreScore = genreScore;
         }
 
         public BaseItem Item { get; }
 
         public double Score { get; set; }
-
-        public double GenreScore { get; }
 
         public double PeopleScore { get; set; }
 
