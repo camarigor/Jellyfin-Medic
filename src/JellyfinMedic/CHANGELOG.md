@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **The memory guard measures Jellyfin, not the whole machine.** It read memory use from the top of the cgroup tree, which inside a container is the container but on a server without one (or with the older cgroup v1) is the whole machine, so other programs' memory could make it stop Jellyfin's tasks. It now reads Jellyfin's own cgroup. A task it had paused was also forgotten if it wasn't quite stopped when the guard came back to it; it now waits its turn instead.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
