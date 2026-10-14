@@ -254,6 +254,7 @@ public static class TrackCleaner
     private static readonly TrackRunProgress Progress = new();
     private static CancellationTokenSource? _cancel;
     private static long _bytesFreed; // space freed by this run right away (not held in kept originals)
+    private static long _writing; // bytes the files being cleaned right now may still write
     private const string StrippedSuffix = ".medic-stripped";   // used by Medic 1.0.4–1.0.7; tidied up by TidyEarlierCopies
     private const string OriginalsFolder = ".medic-originals"; // hidden, and ignored by Jellyfin, Sonarr and Radarr
 
@@ -1049,20 +1050,42 @@ public static class TrackCleaner
         ProbedFile? source = ffprobe is null ? null : await ProbeFile(ffprobe, plan.Path, ct).ConfigureAwait(false);
         if (source is null)
         {
-            lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
-            Note($"Skipped {plan.Title}: FFprobe couldn't read the file, so it was left alone");
+            Skipped(plan, "FFprobe couldn't read the file, so it was left alone");
             return;
         }
 
         if (DescribeMismatch(plan, source) is { } mismatch)
         {
             item.ChangedExternally();
-            lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
-            Note($"Skipped {plan.Title}: Jellyfin's list of its tracks is out of date ({mismatch}). Jellyfin has been asked to read the file again; run track cleanup again once it has.");
+            Skipped(plan, $"Jellyfin's list of its tracks is out of date ({mismatch}). Jellyfin has been asked to read the file again; run track cleanup again once it has.");
             return;
         }
 
+        // A file with more than one link is shared, usually with a torrent client seeding it. The cleaned copy
+        // would be a new file beside the shared one, so the drive would fill up instead of gaining space.
+        var facts = await FileFacts(plan.Path, ct).ConfigureAwait(false);
+        if (facts is { Links: > 1 } shared)
+        {
+            Skipped(plan, $"it has {shared.Links} hard links (a torrent client is probably seeding it), so cleaning it would use more space, not less");
+            return;
+        }
+
+        // The cleaned copy is written beside the original: it needs about the original's size free, plus a margin,
+        // on top of what other files being cleaned right now are still writing.
+        long size = Size(plan.Path);
+        long needed = size + Math.Max(1L << 30, size / 20) + Interlocked.Read(ref _writing);
+        long free = FreeSpace(plan.Path);
+        if (free >= 0 && free < needed)
+        {
+            Skipped(plan, $"its drive has {Gb(free)} free and the new copy needs about {Gb(needed)}, so it was left alone");
+            return;
+        }
+
+        // To tell whether Sonarr or Radarr replaces the file while it's being cleaned.
+        var original = (Length: size, Written: File.GetLastWriteTimeUtc(plan.Path));
+
         string temp = TempPath(plan.Path);
+        Interlocked.Add(ref _writing, size);
         try
         {
             // Map only the kept streams: all video, plus the audio/subtitle tracks we keep, by type-relative index.
@@ -1115,14 +1138,23 @@ public static class TrackCleaner
             if (problem is not null)
             {
                 SafeDelete(temp);
-                lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
-                Note($"Skipped {plan.Title}: the new copy didn't come out right ({problem}), so the original was left alone");
+                Skipped(plan, $"the new copy didn't come out right ({problem}), so the original was left alone");
                 return;
             }
 
             long saved = Math.Max(0, before - Size(temp));
             long freedNow = 0;
             FlushToDisk(temp);
+            await KeepOwnership(plan.Path, temp, facts, ct).ConfigureAwait(false);
+
+            // If Sonarr or Radarr replaced the file meanwhile, this copy is of the old one: keep the new file.
+            if (Size(plan.Path) != original.Length || File.GetLastWriteTimeUtc(plan.Path) != original.Written)
+            {
+                SafeDelete(temp);
+                item.ChangedExternally();
+                Skipped(plan, "it changed while it was being cleaned (replaced by Sonarr or Radarr?), so the new file was kept as it is");
+                return;
+            }
 
             if (replaceInPlace)
             {
@@ -1179,6 +1211,117 @@ public static class TrackCleaner
             SafeDelete(temp);
             lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
             Note($"Problem with {plan.Title}: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Add(ref _writing, -size);
+        }
+    }
+
+    /// <summary>Counts a file as not done, with the reason in the run's notes.</summary>
+    private static void Skipped(FilePlan plan, string why)
+    {
+        lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
+        Note($"Skipped {plan.Title}: {why}");
+    }
+
+    /// <summary>How many hard links the file has and who owns it, or null where that can't be read (Windows, or no stat).</summary>
+    private static async Task<(int Links, int Uid, int Gid)?> FileFacts(string path, CancellationToken ct)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        var (exit, output) = await RunTool("stat", new[] { "-c", "%h %u %g", "--", path }, ct).ConfigureAwait(false);
+        var parts = output.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return exit == 0 && parts.Length == 3
+            && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int links)
+            && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int uid)
+            && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int gid)
+            ? (links, uid, gid)
+            : null;
+    }
+
+    /// <summary>
+    /// Gives the cleaned copy the original's permissions and, when Jellyfin is allowed to, its owner, so Sonarr or
+    /// Radarr running as another user can still replace or delete it. Best effort: the copy is fine without it.
+    /// </summary>
+    private static async Task KeepOwnership(string original, string copy, (int Links, int Uid, int Gid)? facts, CancellationToken ct)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(copy, File.GetUnixFileMode(original));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Keep the default permissions.
+        }
+
+        if (facts is { } f)
+        {
+            await RunTool("chown", new[] { $"{f.Uid}:{f.Gid}", "--", copy }, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Free space on the drive holding the file, or -1 when it can't be read.</summary>
+    private static long FreeSpace(string path)
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(path) ?? path;
+            return new DriveInfo(OperatingSystem.IsWindows() ? Path.GetPathRoot(dir) ?? dir : dir).AvailableFreeSpace;
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException)
+        {
+            return -1;
+        }
+    }
+
+    private static string Gb(long bytes) => (bytes / 1e9).ToString("0.0", CultureInfo.InvariantCulture) + " GB";
+
+    /// <summary>Runs a small system tool and returns its exit code and output; -1 if it couldn't run or took over 10 seconds.</summary>
+    private static async Task<(int Exit, string Output)> RunTool(string tool, IEnumerable<string> args, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo(tool) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        foreach (var a in args)
+        {
+            psi.ArgumentList.Add(a);
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        try
+        {
+            using var p = Process.Start(psi);
+            if (p is null)
+            {
+                return (-1, string.Empty);
+            }
+
+            var output = p.StandardOutput.ReadToEndAsync(timeout.Token);
+            _ = p.StandardError.ReadToEndAsync(timeout.Token); // drained so the tool can't stall on a full pipe
+            try
+            {
+                await p.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
+                ct.ThrowIfCancellationRequested();
+                return (-1, string.Empty);
+            }
+
+            return (p.ExitCode, (await output.ConfigureAwait(false)).Trim());
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return (-1, string.Empty); // the tool isn't installed
         }
     }
 

@@ -287,6 +287,24 @@ async function runTracks() {
     return p;
 }
 
+// Adds a film to the library and waits until Jellyfin has read its tracks. Returns its file.
+async function addFilm(name, languages, seconds) {
+    const dir = `${movies}/${name}`;
+    const file = `${dir}/${name}.mkv`;
+    fs.mkdirSync(dir, { recursive: true });
+    makeFilm(file, languages, seconds);
+    await api('POST', '/Library/Refresh');
+    const title = encodeURIComponent(name.replace(/ \(\d{4}\)$/, ''));
+    let audio = 0;
+    for (let i = 0; i < 45 && audio < languages.length; i++) {
+        await sleep(2000);
+        const item = (await ok(`/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=${title}&Fields=MediaStreams`)).Items[0];
+        audio = (item?.MediaStreams || []).filter((m) => m.Type === 'Audio').length;
+    }
+    expect(audio === languages.length, `Jellyfin did not pick up ${name}`);
+    return file;
+}
+
 // Runs fn with track cleanup settings changed, and puts them back after.
 async function withTrackSettings(changes, fn) {
     const s = await ok('/JellyfinMedic/MedicSettings');
@@ -353,18 +371,7 @@ await check('track cleanup puts back an original left out by an interrupted swap
 await check('track cleanup refuses a new copy that comes out shorter than the original', async () => {
     // A file whose end can't be read (cut short here) still says it is 60 s long. FFmpeg copies what it can
     // and exits 0, even with -xerror; the copy must not replace the original.
-    const dir = `${movies}/Cut Short (2018)`;
-    const file = `${dir}/Cut Short (2018).mkv`;
-    fs.mkdirSync(dir, { recursive: true });
-    makeFilm(file, ['eng', 'fre'], 60);
-    await api('POST', '/Library/Refresh');
-    let audio = 0;
-    for (let i = 0; i < 45 && audio < 2; i++) {
-        await sleep(2000);
-        const item = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Cut%20Short&Fields=MediaStreams')).Items[0];
-        audio = (item?.MediaStreams || []).filter((m) => m.Type === 'Audio').length;
-    }
-    expect(audio === 2, 'Jellyfin did not pick up the new film');
+    const file = await addFilm('Cut Short (2018)', ['eng', 'fre'], 60);
     fs.truncateSync(file, Math.floor(fs.statSync(file).size / 2));
     const size = fs.statSync(file).size;
 
@@ -376,6 +383,40 @@ await check('track cleanup refuses a new copy that comes out shorter than the or
         expect(fs.statSync(file).size === size && audioLanguages(file) === 'eng,fre', 'the original was changed');
         expect(!fs.existsSync(`${file}.medic-tmp.mkv`), 'the temp file was left behind');
         return 'short copy refused, original untouched';
+    });
+});
+
+await check('track cleanup leaves hardlinked files alone', async () => {
+    // A film a torrent client seeds through a hard link: a cleaned copy would be a second file, not a smaller one.
+    const file = await addFilm('Seeded (2019)', ['eng', 'fre'], 4);
+    const seed = `${process.env.WORK}/seeding-copy.mkv`;
+    fs.linkSync(file, seed);
+    try {
+        return await withTrackSettings({ TracksExclude: 'Cut Short' }, async () => {
+            const p = await runTracks();
+            const notes = JSON.stringify(p.Recent);
+            expect(p.Changed === 0 && p.Failed === 1 && /Seeded.*2 hard links/.test(notes), 'the hardlinked film was cleaned: ' + notes);
+            expect(audioLanguages(file) === 'eng,fre' && fs.statSync(file).nlink === 2, 'the film was changed');
+            return 'skipped, still shared with the seeding copy';
+        });
+    } finally {
+        fs.unlinkSync(seed);
+    }
+});
+
+await check('track cleanup keeps the file\'s owner and permissions', async () => {
+    // Jellyfin runs as root here and writes the new copy; Sonarr and Radarr, as another user, must still be able to manage it.
+    const file = await addFilm('Owned (2020)', ['eng', 'fre'], 4);
+    fs.chmodSync(file, 0o660);
+    const before = fs.statSync(file);
+    return withTrackSettings({ TracksExclude: 'Cut Short\nSeeded', TracksReplaceInPlace: true }, async () => {
+        const p = await runTracks();
+        expect(p.Changed === 1 && p.Failed === 0, 'not cleaned: ' + JSON.stringify(p.Recent));
+        const after = fs.statSync(file);
+        expect(audioLanguages(file) === 'eng', 'cleaned film: ' + audioLanguages(file));
+        expect((after.mode & 0o777) === 0o660 && after.uid === before.uid && after.gid === before.gid,
+            `now ${(after.mode & 0o777).toString(8)} ${after.uid}:${after.gid}, was 660 ${before.uid}:${before.gid}`);
+        return 'mode 660 and owner kept';
     });
 });
 
