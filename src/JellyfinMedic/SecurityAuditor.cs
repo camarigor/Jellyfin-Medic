@@ -45,6 +45,21 @@ public static class SecurityAuditor
     private static void LoginAttempts(object? activityManager, Dictionary<string, string> userNames, List<Finding> findings)
     {
         var entries = ActivityEntries(activityManager, DateTime.UtcNow.AddDays(-7));
+        if (entries is null)
+        {
+            findings.Add(new Finding
+            {
+                Area = Area,
+                Severity = Sev.Tip,
+                Title = "Sign-ins couldn't be checked this time",
+                Current = "The activity log didn't answer within 15 seconds",
+                Recommended = "Open Medic again later; if this keeps happening, the database may be busy or need optimising",
+                Why = "Failed sign-ins and sign-ins from new places are found in the activity log. Without it, this check can't say whether there were any.",
+                Where = "Dashboard → Activity"
+            });
+            return;
+        }
+
         if (entries.Count == 0)
         {
             return;
@@ -163,7 +178,8 @@ public static class SecurityAuditor
 
     // ---------- Reading the activity log ----------
 
-    private static List<object> ActivityEntries(object? activityManager, DateTime sinceUtc)
+    /// <summary>The activity log since a date; empty when there's no log to read, null when it didn't answer in time.</summary>
+    private static List<object>? ActivityEntries(object? activityManager, DateTime sinceUtc)
     {
         if (activityManager is null)
         {
@@ -180,9 +196,13 @@ public static class SecurityAuditor
                 object? query = Activator.CreateInstance(asyncMethod.GetParameters()[0].ParameterType);
                 SetIfPresent(query, "MinDate", sinceUtc);
                 SetIfPresent(query, "Limit", 500);
-                if (asyncMethod.Invoke(activityManager, new[] { query }) is System.Threading.Tasks.Task task
-                    && task.Wait(TimeSpan.FromSeconds(15)))
+                if (asyncMethod.Invoke(activityManager, new[] { query }) is System.Threading.Tasks.Task task)
                 {
+                    if (!task.Wait(TimeSpan.FromSeconds(15)))
+                    {
+                        return null; // too slow to answer: say so, rather than report a week with no failed sign-ins
+                    }
+
                     object? result = task.GetType().GetProperty("Result")?.GetValue(task);
                     if (SettingsReader.Get(result, "Items") is IEnumerable found && found is not string)
                     {
