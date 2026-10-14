@@ -1158,7 +1158,8 @@ public sealed class DiagnosticsEngine
     {
         var workers = _tasks.ScheduledTasks.ToList();
 
-        var scan = workers.FirstOrDefault(t => t.Name.Contains("Scan Media Library", StringComparison.OrdinalIgnoreCase));
+        // By key: the names are translated into the server's language.
+        var scan = workers.FirstOrDefault(t => t.ScheduledTask.Key == "RefreshLibrary");
         var fastScan = scan?.Triggers?
             .Where(t => t.Type == TaskTriggerInfoType.IntervalTrigger && t.IntervalTicks.HasValue)
             .Select(t => TimeSpan.FromTicks(t.IntervalTicks.GetValueOrDefault()))
@@ -1173,7 +1174,7 @@ public sealed class DiagnosticsEngine
                 WhereTasks);
         }
 
-        var optimise = workers.FirstOrDefault(t => t.Name.Contains("Optimize", StringComparison.OrdinalIgnoreCase));
+        var optimise = workers.FirstOrDefault(t => t.ScheduledTask.Key == "OptimizeDatabaseTask");
         if (optimise is not null)
         {
             if (optimise.Triggers is null || !optimise.Triggers.Any())
@@ -1510,6 +1511,12 @@ public sealed class DiagnosticsEngine
     /// <summary>Heavy maintenance scheduled during the day, when people are likely to be watching.</summary>
     private void CheckDaytimeTasks(List<IScheduledTaskWorker> workers)
     {
+        // Jellyfin's own heavy tasks by key (their names are translated); tasks from plugins by name.
+        string[] heavyKeys =
+        {
+            "RefreshLibrary", "OptimizeDatabaseTask", "RefreshChapterImages", "RefreshTrickplayImages", "MoveTrickplayImages",
+            "TaskExtractMediaSegments", "KeyframeExtraction", "RefreshPeople", "AudioNormalization", "DownloadSubtitles", "RefreshGuide"
+        };
         string[] heavy =
         {
             "Scan Media Library", "Optimize", "Optimise", "Chapter", "Trickplay", "Media Segment", "Keyframe",
@@ -1519,7 +1526,7 @@ public sealed class DiagnosticsEngine
         var daytime = new List<string>();
         foreach (var worker in workers.Where(IsVisibleTask))
         {
-            if (!heavy.Any(h => worker.Name.Contains(h, StringComparison.OrdinalIgnoreCase)))
+            if (!heavyKeys.Contains(worker.ScheduledTask.Key) && !heavy.Any(h => worker.Name.Contains(h, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
