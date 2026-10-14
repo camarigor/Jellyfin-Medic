@@ -48,7 +48,7 @@ public static class SystemProbe
         {
             CpuThreads = Environment.ProcessorCount,
             MemoryGb = Math.Round(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / GiB, 1),
-            InDocker = File.Exists("/.dockerenv") || FileContains("/proc/1/cgroup", "docker")
+            InDocker = HostPlatform.IsDockerLike // one detector, so the two can't disagree
         };
 
         info.CpuModel = ReadLines("/proc/cpuinfo")
@@ -357,7 +357,4 @@ public static class SystemProbe
     }
 
     private static string? ReadFirstLine(string path) => ReadLines(path).FirstOrDefault();
-
-    private static bool FileContains(string path, string text) =>
-        ReadLines(path).Any(l => l.Contains(text, StringComparison.OrdinalIgnoreCase));
 }
