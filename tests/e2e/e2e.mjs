@@ -258,6 +258,56 @@ await check('track cleanup leaves excluded films alone', async () => {
     await api('POST', '/JellyfinMedic/MedicSettings', { ...s, TracksExclude: '' });
 });
 
+await check('track cleanup checks the file itself before changing it', async () => {
+    // Replace a film the way Sonarr would, with the French track first. Jellyfin (real time monitor off)
+    // still lists English first, so a plan from its list alone would keep French and drop English.
+    const { execFileSync } = await import('node:child_process');
+    const fs = await import('node:fs');
+    const file = `${process.env.WORK}/media/movies/Two Tracks (2015)/Two Tracks (2015).mkv`;
+    const replacement = `${process.env.WORK}/reordered.mkv`;
+    execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=10:duration=4',
+        '-f', 'lavfi', '-i', 'sine=frequency=500:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=4',
+        '-map', '0', '-map', '1', '-map', '2', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac',
+        '-metadata:s:a:0', 'language=fre', '-metadata:s:a:1', 'language=eng', replacement]);
+    fs.renameSync(replacement, file);
+    const languages = () => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream_tags=language', '-of', 'json', file]).toString())
+        .streams.map((x) => x.tags?.language).join(',');
+    const run = async () => {
+        const started = await api('POST', '/JellyfinMedic/Tracks/Run?dryRun=false');
+        expect(started.status === 200, 'track run ' + started.status + ' ' + started.text);
+        let p = null;
+        for (let i = 0; i < 60 && (!p || p.Running); i++) {
+            await sleep(1000);
+            p = await ok('/JellyfinMedic/Tracks/Progress');
+        }
+        return p;
+    };
+
+    // In place, so the test leaves no folder owned by the container's user behind.
+    const s = await ok('/JellyfinMedic/MedicSettings');
+    await api('POST', '/JellyfinMedic/MedicSettings', { ...s, TracksExclude: 'Keep Me Too', TracksReplaceInPlace: true });
+    try {
+        const first = await run();
+        expect(first.Changed === 0 && first.Failed === 1, 'stale plan was not refused: ' + JSON.stringify(first.Recent));
+        expect(languages() === 'fre,eng', 'the file was changed anyway: ' + languages());
+
+        // Medic asked Jellyfin to read the file again; once it has, the run strips the French track.
+        let firstLanguage = '';
+        for (let i = 0; i < 30 && !firstLanguage.startsWith('fr'); i++) {
+            await sleep(2000);
+            const item = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Two%20Tracks&Fields=MediaStreams')).Items[0];
+            firstLanguage = item?.MediaStreams?.find((m) => m.Type === 'Audio')?.Language || '';
+        }
+        expect(firstLanguage.startsWith('fr'), 'Jellyfin did not read the file again');
+        const second = await run();
+        expect(second.Changed === 1 && second.Failed === 0, 'second run: ' + JSON.stringify(second.Recent));
+        expect(languages() === 'eng', 'English should be the only audio left: ' + languages());
+        return 'stale plan refused, then English kept';
+    } finally {
+        await api('POST', '/JellyfinMedic/MedicSettings', { ...s, TracksExclude: '', TracksReplaceInPlace: false });
+    }
+});
+
 await check('Medic Picks builds picks from watch history', async () => {
     const items = (await ok(`/Items?Recursive=true&IncludeItemTypes=Movie&SortBy=SortName&UserId=${ctx.userId}`)).Items;
     for (const item of items.slice(0, 4)) await api('POST', `/UserPlayedItems/${item.Id}?userId=${ctx.userId}`);
