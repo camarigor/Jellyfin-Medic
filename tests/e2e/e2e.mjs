@@ -927,6 +927,80 @@ await check('Medic stops polling while its browser tab is hidden and after you l
     }
 });
 
+// Opens Medic's page on a tab, closing "What's new" if it's showing. Fresh reloads it, so nothing the
+// page kept from an earlier visit (the films it found, say) is reused.
+async function medicTab(name, fresh) {
+    await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+    if (fresh) await page.reload();
+    await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+    const gotIt = page.locator('#md-whatsnew-close');
+    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+    await page.click(`#JellyfinMedicPage .so-tab[data-tab="${name}"]`);
+}
+
+await check('Medic page: Off/Suggest and the time range are separate buttons, and the arrow keys reach every tab', async () => {
+    await medicTab('settings');
+    const pressed = () => page.evaluate(() => Array.from(document.querySelectorAll('#JellyfinMedicPage .md-seg button[aria-pressed="true"]'))
+        .map((b) => b.dataset.range || b.dataset.mode).sort().join(','));
+    await page.click('#JellyfinMedicPage .md-seg button[data-mode="off"]');
+    expect(await pressed() === 'full,off', 'after Off: ' + await pressed());
+    await page.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
+    await page.click('#JellyfinMedicPage .md-seg button[data-range="night"]');
+    expect(await pressed() === 'night,off', 'after Night: ' + await pressed());
+    await page.click('#JellyfinMedicPage .md-seg button[data-range="full"]');
+
+    await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+    await page.keyboard.press('ArrowRight');
+    const now = await page.evaluate(() => document.querySelector('#JellyfinMedicPage .so-tab[aria-selected="true"]').dataset.tab);
+    expect(now === 'media', 'ArrowRight from Tracks went to ' + now);
+    const linked = await page.evaluate(() => {
+        const tab = document.querySelector('#JellyfinMedicPage .so-tab[data-tab="media"]');
+        const panel = document.getElementById(tab.getAttribute('aria-controls') || '-');
+        return !!panel && panel.dataset.panel === 'media' && panel.getAttribute('aria-labelledby') === tab.id;
+    });
+    expect(linked, 'the Media report tab and its panel don\'t point at each other');
+    return 'Off kept the range; Night kept Off; Tracks then Media report';
+});
+
+await check('"What\'s new" takes the focus, closes with Escape and gives the focus back', async () => {
+    await medicTab('settings');
+    await page.click('#md-changelog-all');
+    await page.waitForSelector('#md-whatsnew:not([hidden])', { timeout: 15000 });
+    const inside = await page.evaluate(() => document.activeElement?.id);
+    expect(inside === 'md-whatsnew-close', 'focus is on ' + inside);
+    await page.keyboard.press('Escape');
+    expect(await page.locator('#md-whatsnew').isHidden(), 'Escape left it open');
+    const back = await page.evaluate(() => document.activeElement?.id);
+    expect(back === 'md-changelog-all', 'focus went to ' + back);
+});
+
+await check('playback test sends its token in a header, not in the address', async () => {
+    // The samples have no 1080p film, so the page is shown the 720p one when it asks for 1080p.
+    const longFilm = (await ok(`/Items?Recursive=true&IncludeItemTypes=Movie&searchTerm=Long&Fields=MediaSources,Path&UserId=${ctx.userId}`)).Items[0];
+    expect(longFilm, 'Long Film not scanned');
+    await page.route(/\/Items\?.*MinWidth=1800/, (route) => route.fulfill({ json: { Items: [longFilm], TotalRecordCount: 1 } }));
+    const videoUrls = [];
+    const watch = (req) => { if (/\/Videos\//.test(req.url())) videoUrls.push(req.url()); };
+    const accept = (dialog) => dialog.accept();
+    page.on('request', watch);
+    page.on('dialog', accept);
+    try {
+        await medicTab('tests', true);
+        await page.click('#so-run-playback');
+        await page.waitForSelector('#so-playback-results .so-test-result', { timeout: 180000 });
+        const card = await page.locator('#so-playback-results .so-test-result').first().textContent();
+        expect(!/Transcoding failed/.test(card), 'the test failed: ' + card.slice(0, 300));
+        expect(videoUrls.length >= 3, `${videoUrls.length} video requests`);
+        const withKey = videoUrls.filter((u) => /[?&](api_key|ApiKey)=/i.test(u));
+        expect(withKey.length === 0, 'token in the address: ' + withKey[0]);
+        return `${videoUrls.length} requests, none with the token in the address`;
+    } finally {
+        page.off('request', watch);
+        page.off('dialog', accept);
+        await page.unroute(/\/Items\?.*MinWidth=1800/);
+    }
+});
+
 await check('admin banner on the home page for a serious error, and it can be dismissed', async () => {
     // Pretend the database reported damage, by adding the line to the newest log file.
     // Written from inside the container: the log belongs to Jellyfin's user, not the one running the tests.

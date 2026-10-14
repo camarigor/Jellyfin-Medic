@@ -46,6 +46,10 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 - **Home page banners stay with the admin they're for.** The banners were kept for five minutes without noting whose they were, and Jellyfin's web app doesn't reload when someone signs out and another person signs in, so the next person could see an admin's alerts (which can include a log line with paths). They're now only reused for the same person and cleared as soon as someone else signs in, and banners dismissed in this browser are remembered per person.
 - **The speed test measures slow uploads, and no longer advises 1 Mbps on a failed measurement.** Upload was only counted in whole 2 MB pieces finished within its 8 seconds, so below roughly 8 Mbps nothing finished, the result was 0 Mbps, and the advice was a 1 Mbps streaming limit. Upload is now counted as it's sent, and when nothing could be measured no limit is suggested.
 - **Cleanup no longer fails on a folder it can't read.** Finding leftover transcode files, logs or IPTV `.strm` files walked folders lazily, so a subfolder Jellyfin isn't allowed to read threw part way: the cleanup check failed with an error and cleaning stopped halfway. Such folders are now skipped.
+- **Off and Suggest no longer clear the Schedule's time range.** The time range buttons' handler also caught the Off and Suggest buttons in Settings, so choosing one cleared the range, and choosing a range unmarked Off and Suggest.
+- **The arrow keys reach the Media report tab.** The tab list they used left it out, so they skipped it.
+- **"What's new" behaves like a dialog.** It now takes the focus when it opens, closes with Escape, keeps Tab inside it, and gives the focus back when it closes. Each tab also says which panel it controls, for screen readers.
+- **The playback test no longer puts your access token in the address.** It sent the token as `api_key` in every playlist and segment address, which ends up in proxy and server logs; it now goes in a header.
 
 ## [1.0.17] – 2026-10-11
 
