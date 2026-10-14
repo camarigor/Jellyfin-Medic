@@ -11,6 +11,7 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
 ### Fixed
 - **Scheduling works on servers in other languages.** Medic recognised Jellyfin's tasks by their names, which Jellyfin translates into the server's language: on a server in Portuguese it planned 1 task out of 12 and left the rest as "Medic doesn't know what this task needs". Jellyfin's own tasks are now recognised by their key, which never changes; tasks from plugins are still recognised by name.
+- **The report and the memory guard recognise tasks in any language too.** The library scan and database checks, the "heavy tasks during the day" check and the memory guard's list of heavy tasks also went by translated names, so on non-English servers those checks found nothing and the guard never stepped in. They now use the same keys.
 
 ## [1.0.17] – 2026-10-11
 
