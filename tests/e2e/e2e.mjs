@@ -229,6 +229,53 @@ await check('avoid window saves in 15-minute steps', async () => {
     await api('POST', '/JellyfinMedic/MedicSettings', { ...s, AvoidEnabled: false });
 });
 
+const MEDIC_DATA = '/config/plugins/configurations/JellyfinMedic';
+
+await check('schedule apply changes nothing when Medic can\'t save its schedule, and a restore puts it back', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const triggers = async () => JSON.stringify((await ok('/ScheduledTasks'))
+        .map((t) => [t.Id, t.Triggers])
+        .sort((a, b) => a[0].localeCompare(b[0])));
+    const before = await triggers();
+    // A folder where Medic first writes its schedule file makes that write fail, as a full disk would.
+    execFileSync('docker', ['exec', 'medic-e2e', 'mkdir', '-p', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
+    try {
+        const blocked = await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
+        expect(blocked.json?.Success === false && /nothing was changed/.test(blocked.json.Message), `blocked apply: ${blocked.status} ${blocked.text.slice(0, 200)}`);
+        expect(await triggers() === before, 'triggers changed although the apply failed');
+    } finally {
+        execFileSync('docker', ['exec', 'medic-e2e', 'rmdir', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
+    }
+
+    const applied = (await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule')).json;
+    expect(applied?.Success && applied.AppliedTasks > 0 && await triggers() !== before, 'apply: ' + JSON.stringify(applied));
+    const restored = (await api('POST', `/JellyfinMedic/Schedule/RestorePreviousSchedule?backupFileName=${encodeURIComponent(applied.BackupFile)}`)).json;
+    expect(restored?.Success && await triggers() === before, 'restore: ' + JSON.stringify(restored));
+    return `${applied.AppliedTasks} tasks applied, then put back`;
+});
+
+await check('schedule backups each get their own name, and the newest 50 are kept', async () => {
+    for (let i = 0; i < 55; i++) {
+        const r = await api('POST', '/JellyfinMedic/Schedule/BackupCurrentSchedule');
+        expect(r.json?.Success, `backup ${i}: ${r.status} ${r.text.slice(0, 200)}`);
+    }
+    const list = await ok('/JellyfinMedic/Schedule/ListBackups');
+    expect(list.length === 50, `${list.length} backups kept`);
+    return '55 made in a row, 50 kept';
+});
+
+await check('a damaged Medic file is set aside instead of written over', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const file = `${MEDIC_DATA}/task_choices.json`;
+    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{"damaged": true' > ${file}`]);
+    const scan = (await ok('/ScheduledTasks')).find((t) => t.Key === 'RefreshLibrary');
+    const set = await api('POST', `/JellyfinMedic/Schedule/SetChoice?taskId=${scan.Id}&choice=medic`);
+    expect(set.status === 200, 'SetChoice ' + set.status);
+    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `cat ${file}.bad 2>/dev/null || echo missing`]).toString();
+    expect(kept.includes('"damaged"'), 'the damaged file was not kept: ' + kept.trim());
+    return 'kept as task_choices.json.bad';
+});
+
 await check('IPTV lists each duplicate channel and its copies', async () => {
     const added = await api('POST', '/LiveTv/TunerHosts', { Type: 'm3u', Url: '/media/livetv/channels.m3u', FriendlyName: 'e2e', TunerCount: 1 });
     expect(added.status === 200, 'adding the M3U tuner failed ' + added.status);
