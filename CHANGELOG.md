@@ -39,6 +39,7 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 - **No waiting on the Dashboard, and a sign-in check that says when it couldn't run.** Several Dashboards asking for the current figures within a second each waited half a second in turn for a CPU reading; they now share one. The 5-minute CPU line also measured only since the Dashboard's last poll, and now measures its own 5 minutes. When the activity log doesn't answer in time, the security check now says sign-ins couldn't be checked, rather than looking like a week with no failed sign-ins.
 ### Changed
 - **Less work on every request.** Each request to Medic searched every loaded assembly for the activity log's type, including the Dashboard's frequent refreshes. It's now found once.
+- **Plugin advice no longer says "remove it" when Medic couldn't count.** A count that failed, or asked about a kind of item this Jellyfin doesn't have, came back as 0, so advice such as "there are no books on this server, remove the book provider" could rest on a number nobody knew. Such counts are now unknown, and advice that depends on them is left out. The Intro Skipper advice also recommends the same limit it warns about (it warned above half the CPU threads but suggested a quarter).
 
 ## [1.0.17] – 2026-10-11
 
