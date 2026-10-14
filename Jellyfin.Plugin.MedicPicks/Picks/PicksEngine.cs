@@ -230,14 +230,31 @@ public class PicksEngine
             && !config.DiscoverDisabledUserIds.Any(id => Guid.TryParse(id, out var g) && g == userId);
 
         int discoverCount = prefs.Count > 0 ? prefs.Count : Math.Clamp(config.DiscoverPickCount, 1, 100);
-        picks.Discover = discoverAllowed
-            ? await BuildDiscoverPicksAsync(ranked, context, config.TmdbLanguage, discoverCount, prefs, cancellationToken).ConfigureAwait(false)
-            : new List<DiscoverPick>();
-        if (discoverAllowed && picks.Discover.Count == 0 && prefs.SeenTmdb.Count > 0)
+        if (!discoverAllowed)
         {
-            prefs.SeenTmdb.Clear();
-            ForgetSeen(userId, items: false);
-            picks.Discover = await BuildDiscoverPicksAsync(ranked, context, config.TmdbLanguage, discoverCount, prefs, cancellationToken).ConfigureAwait(false);
+            picks.Discover = new List<DiscoverPick>();
+        }
+        else if (!context.TmdbUnavailable)
+        {
+            // When TMDb can't answer (now or earlier in this run), last run's Discover picks, kept above, stay.
+            try
+            {
+                var discover = await BuildDiscoverPicksAsync(ranked, context, config.TmdbLanguage, discoverCount, prefs, cancellationToken).ConfigureAwait(false);
+                if (discover.Count == 0 && prefs.SeenTmdb.Count > 0)
+                {
+                    // Everything recommended has been shown before: start the "seen" list again.
+                    prefs.SeenTmdb.Clear();
+                    ForgetSeen(userId, items: false);
+                    discover = await BuildDiscoverPicksAsync(ranked, context, config.TmdbLanguage, discoverCount, prefs, cancellationToken).ConfigureAwait(false);
+                }
+
+                picks.Discover = discover;
+            }
+            catch (TmdbUnavailableException ex)
+            {
+                context.TmdbUnavailable = true;
+                _logger.LogWarning(ex, "Medic Picks: TMDb isn't answering, so Discover picks were left as they were");
+            }
         }
 
         _store.Save(userId, picks);
