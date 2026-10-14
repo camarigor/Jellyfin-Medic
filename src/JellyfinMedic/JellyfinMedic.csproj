@@ -30,7 +30,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="medic.html" />
-    <EmbeddedResource Include="CHANGELOG.md" />
+    <!-- The repository's CHANGELOG.md, kept once: the "What's new" panel reads it from here. -->
+    <EmbeddedResource Include="../../CHANGELOG.md" LogicalName="JellyfinMedic.CHANGELOG.md" />
     <EmbeddedResource Include="assist.js" />
     <EmbeddedResource Include="banner.js" />
     <None Remove="thumb.png" />
