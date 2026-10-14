@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Software RAID is no longer taken for Unraid, and Podman is recognised.** Any `/dev/mdN` device in the container's mounts made Medic think it ran on Unraid, which plain Linux software RAID also has, so those servers got Unraid instructions. Unraid is now recognised by its user shares. Podman containers were treated as plain Linux and are now given the container advice. The two places that worked out whether Jellyfin runs in a container now use the same check.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
