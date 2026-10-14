@@ -7,6 +7,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 
 ### Fixed
 - **The keys file is now private.** `medic-profiles/secrets.json`, which holds the Sonarr and Radarr API keys and the qBittorrent password, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **Custom format advice no longer points at the wrong format.** Each piece of advice named the first custom format whose name matched a broad pattern, and listed every profile that didn't penalise that one format. With TRaSH's formats it could tell you to refuse "DV HDR10" (which has the fallback) or "TrueHD ATMOS" (lossless audio you had scored up), even where "DV (w/o HDR fallback)" and "DTS" were already refused, and it suggested holding back HEVC in 4K profiles too. Advice now looks at every matching format: profiles that already score one down are fine, profiles that score one up made a choice it won't overrule, and the Dolby Vision advice only matches formats for Dolby Vision without a fallback. The HEVC advice leaves out profiles that allow 2160p.
 
 ## [1.1.1] – 2026-10-11
 
