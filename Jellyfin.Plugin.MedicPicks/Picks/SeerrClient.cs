@@ -73,7 +73,7 @@ public class SeerrClient
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, Url(baseUrl, "/api/v1/auth/me"));
             request.Headers.Add("X-Api-Key", key);
-            using var response = await Client().SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
             return response.IsSuccessStatusCode
                 ? (true, "Seerr answered and accepted the key.")
                 : (false, $"Seerr answered with {(int)response.StatusCode}. Check the API key (Seerr → Settings → General).");
@@ -124,7 +124,7 @@ public class SeerrClient
             request.Headers.Add("X-Api-Key", key);
             request.Headers.Add("X-API-User", seerrUserId.Value.ToString(CultureInfo.InvariantCulture));
 
-            using var response = await Client().SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
             string text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             string? seerrMessage = MessageFrom(text);
 
@@ -168,7 +168,10 @@ public class SeerrClient
         }
     }
 
-    /// <summary>This person's Seerr account id, or null if they've never signed in to Seerr.</summary>
+    /// <summary>
+    /// This person's Seerr account id, or null if they've never signed in to Seerr.
+    /// Throws HttpRequestException when Seerr can't be reached or refuses the key.
+    /// </summary>
     public async Task<int?> FindSeerrUserAsync(string baseUrl, Guid jellyfinUserId, CancellationToken ct)
     {
         string? key = _store.GetSeerrKey();
@@ -184,7 +187,17 @@ public class SeerrClient
             return cached.SeerrId;
         }
 
-        int? found = await FindSeerrUserAsync(baseUrl, key, jellyfinUserId, ct).ConfigureAwait(false);
+        int? found;
+        try
+        {
+            found = await FindSeerrUserAsync(baseUrl, key, jellyfinUserId, ct).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Medic Picks: couldn't look up a Seerr account");
+            throw;
+        }
+
         _accounts[jellyfinUserId] = (found, DateTime.UtcNow);
         return found;
     }
@@ -209,7 +222,7 @@ public class SeerrClient
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, Url(baseUrl, path));
             request.Headers.Add("X-Api-Key", key);
-            using var response = await Client().SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Medic Picks: Seerr returned {Status} for the requests list", (int)response.StatusCode);
@@ -239,7 +252,7 @@ public class SeerrClient
             string path = "/api/v1/request/" + requestId.ToString(CultureInfo.InvariantCulture) + (approve ? "/approve" : "/decline");
             using var request = new HttpRequestMessage(HttpMethod.Post, Url(baseUrl, path));
             request.Headers.Add("X-Api-Key", key);
-            using var response = await Client().SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
                 return (true, approve ? "Approved." : "Declined.");
@@ -280,7 +293,7 @@ public class SeerrClient
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, Url(baseUrl, "/api/v1/" + type + "/" + tmdbId.ToString(CultureInfo.InvariantCulture)));
             request.Headers.Add("X-Api-Key", key);
-            using var response = await Client().SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return null;
@@ -316,10 +329,16 @@ public class SeerrClient
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, Url(baseUrl, "/api/v1/user/jellyfin/" + id));
             request.Headers.Add("X-Api-Key", key);
-            using var response = await Client().SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
+            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.BadRequest)
+            {
+                continue; // no Seerr account for this id form
+            }
+
             if (!response.IsSuccessStatusCode)
             {
-                continue;
+                // A refused key or a broken Seerr isn't the same as "never signed in to Seerr".
+                throw new HttpRequestException($"Seerr answered {(int)response.StatusCode} when looking up an account");
             }
 
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
@@ -350,6 +369,24 @@ public class SeerrClient
     }
 
     private HttpClient Client() => _httpClientFactory.CreateClient(NamedClient.Default);
+
+    // Each call to Seerr gives up after this long, so a Seerr that hangs can't hold a page open for minutes.
+    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>Sends a request to Seerr. A call that runs out of time fails like an unreachable Seerr, not like a cancelled page.</summary>
+    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(CallTimeout);
+        try
+        {
+            return await Client().SendAsync(request, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new HttpRequestException($"Seerr didn't answer within {CallTimeout.TotalSeconds:0} seconds");
+        }
+    }
 
     private static string Url(string baseUrl, string path) => baseUrl.TrimEnd('/') + path;
 
