@@ -1,5 +1,7 @@
 using System;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MediaBrowser.Common.Configuration;
@@ -193,6 +195,52 @@ public class PicksStore
         Directory.CreateDirectory(PrefsDir);
         WriteAtomic(Path.Combine(PrefsDir, userId.ToString("N") + ".json"), JsonSerializer.Serialize(prefs, JsonOptions));
     }
+
+    /// <summary>
+    /// Reads, changes and saves one person's choices under the store's lock, so two changes at the same
+    /// time (a Hide while a rebuild forgets what was seen, say) can't undo each other.
+    /// </summary>
+    public UserPreferences UpdatePreferences(Guid userId, Func<UserPreferences, UserPreferences> change)
+    {
+        lock (_lock)
+        {
+            var updated = change(LoadPreferences(userId)).Normalise();
+            SavePreferences(userId, updated);
+            return updated;
+        }
+    }
+
+    /// <summary>
+    /// Saves picks without anything the person has hidden, as their choices stand at the moment of saving:
+    /// a title hidden while these picks were being built (by the nightly run, say) would otherwise come back.
+    /// </summary>
+    public void SaveWithoutHidden(Guid userId, UserPicks picks)
+    {
+        lock (_lock)
+        {
+            var prefs = LoadPreferences(userId);
+            picks.InLibrary.RemoveAll(p => prefs.HiddenItems.Contains(p.ItemId));
+            picks.Linked.RemoveAll(p => prefs.HiddenItems.Contains(p.ItemId));
+            picks.Discover.RemoveAll(p => prefs.HiddenTmdb.Contains(TmdbKey(p.MediaType, p.TmdbId)));
+            Save(userId, picks);
+        }
+    }
+
+    /// <summary>Takes anything the person has hidden out of their saved picks.</summary>
+    public void RemoveHidden(Guid userId)
+    {
+        lock (_lock)
+        {
+            if (Load(userId) is { } picks)
+            {
+                SaveWithoutHidden(userId, picks);
+            }
+        }
+    }
+
+    /// <summary>How a Discover title appears in the hidden and seen lists: "movie:123" or "tv:123".</summary>
+    public static string TmdbKey(string? mediaType, int tmdbId) =>
+        (mediaType == "tv" ? "tv:" : "movie:") + tmdbId.ToString(CultureInfo.InvariantCulture);
 
     private sealed class Secrets
     {
