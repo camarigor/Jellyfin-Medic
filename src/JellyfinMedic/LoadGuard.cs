@@ -21,6 +21,14 @@ namespace JellyfinMedic.Services;
 public sealed class LoadGuard : IHostedService, IDisposable
 {
     private static readonly TimeSpan CheckEvery = TimeSpan.FromSeconds(20);
+    // Jellyfin's own heavy tasks by key (their names are translated into the server's language),
+    // and tasks from plugins by words in their names.
+    private static readonly HashSet<string> HeavyKeys = new(StringComparer.Ordinal)
+    {
+        "RefreshLibrary", "RefreshGuide", "RefreshInternetChannels", "RefreshChapterImages", "RefreshTrickplayImages",
+        "MoveTrickplayImages", "TaskExtractMediaSegments", "KeyframeExtraction", "AudioNormalization", "DownloadSubtitles", "RefreshPeople"
+    };
+
     private static readonly string[] HeavyWords =
     {
         "Scan Media Library", "Refresh Guide", "Refresh Channels", "Chapter", "Trickplay",
@@ -93,7 +101,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
             int clearMark = highMark - 12; // recover to comfortably below the ceiling before restarting
 
             var heavyRunning = _tasks.ScheduledTasks
-                .Where(t => t.State == TaskState.Running && IsHeavy(t.Name))
+                .Where(t => t.State == TaskState.Running && IsHeavy(t))
                 .OrderBy(t => StartedAt(t))
                 .ToList();
 
@@ -157,7 +165,8 @@ public sealed class LoadGuard : IHostedService, IDisposable
         }
     }
 
-    private static bool IsHeavy(string name) => HeavyWords.Any(w => name.Contains(w, StringComparison.OrdinalIgnoreCase));
+    private static bool IsHeavy(IScheduledTaskWorker task) =>
+        HeavyKeys.Contains(task.ScheduledTask.Key) || HeavyWords.Any(w => task.Name.Contains(w, StringComparison.OrdinalIgnoreCase));
 
     private DateTime StartedAt(IScheduledTaskWorker worker)
     {
