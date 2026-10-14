@@ -9,10 +9,19 @@ public sealed class DriveStatus
 {
     public string Key { get; set; } = string.Empty;
 
+    // The drive's mount point, when Medic could read it.
+    public string? MountPoint { get; set; }
+
     // What it holds, e.g. "Films, Series" or "Config & database".
     public string Holds { get; set; } = string.Empty;
 
     public string ExamplePath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// What its warnings are remembered by when ignored: the mount point, which tells apart two drives that hold the
+    /// same libraries, or what it holds when the mount point couldn't be read (Key then changes with free space).
+    /// </summary>
+    public string StableName => MountPoint ?? Holds;
 
     public double FreeGb { get; set; }
 
@@ -67,8 +76,8 @@ public static class StorageWatch
             }
 
             // The mount point when it can be read; otherwise drives with the same size and free space are one.
-            string key = SystemProbe.Mount(path)?.MountPoint
-                ?? string.Create(CultureInfo.InvariantCulture, $"{space.TotalGb:0.0}/{space.FreeGb:0.0}");
+            string? mount = SystemProbe.Mount(path)?.MountPoint;
+            string key = mount ?? string.Create(CultureInfo.InvariantCulture, $"{space.TotalGb:0.0}/{space.FreeGb:0.0}");
             if (byKey.TryGetValue(key, out var existing))
             {
                 if (!existing.Holds.Split(", ").Contains(holds, StringComparer.OrdinalIgnoreCase))
@@ -79,7 +88,7 @@ public static class StorageWatch
                 continue;
             }
 
-            byKey[key] = new DriveStatus { Key = key, Holds = holds, ExamplePath = path, FreeGb = space.FreeGb, TotalGb = space.TotalGb };
+            byKey[key] = new DriveStatus { Key = key, MountPoint = mount, Holds = holds, ExamplePath = path, FreeGb = space.FreeGb, TotalGb = space.TotalGb };
         }
 
         return byKey.Values.ToList();
