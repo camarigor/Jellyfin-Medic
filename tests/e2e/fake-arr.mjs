@@ -4,6 +4,25 @@ import http from 'node:http';
 
 export const received = [];
 
+// How many entries the download queue has; a test sets it and puts it back to 0.
+export const queue = { total: 0 };
+
+function queuePage(url) {
+    const page = Number(url.searchParams.get('page') || 1);
+    const size = Number(url.searchParams.get('pageSize') || 100);
+    const records = [];
+    for (let i = (page - 1) * size; i < Math.min(queue.total, page * size); i++) {
+        const episode = (i % 99) + 1;
+        records.push({
+            id: i + 1, downloadId: 'download-' + i, title: `Fake.Show.S01E${String(episode).padStart(2, '0')}.1080p`,
+            status: 'downloading', trackedDownloadState: 'downloading', size: 1000, sizeleft: 500,
+            added: new Date().toISOString(), seriesId: 1, series: { title: 'Fake Show' },
+            episode: { seasonNumber: 1, episodeNumber: episode, title: 'An Episode' }
+        });
+    }
+    return { page, pageSize: size, totalRecords: queue.total, records };
+}
+
 const indexers = [
     { id: 1, name: 'Good Indexer', protocol: 'torrent', enableRss: true, enableAutomaticSearch: true, enableInteractiveSearch: true },
     { id: 2, name: 'Broken Indexer', protocol: 'usenet', enableRss: true, enableAutomaticSearch: true, enableInteractiveSearch: true },
@@ -15,7 +34,8 @@ const routes = {
     '/api/v3/indexer': () => indexers,
     '/api/v3/indexerstatus': () => [{ indexerId: 2, initialFailure: new Date(Date.now() - 3 * 3600e3).toISOString(), mostRecentFailure: new Date().toISOString(), disabledTill: new Date(Date.now() + 3600e3).toISOString() }],
     '/api/v3/health': () => [{ source: 'IndexerStatusCheck', type: 'warning', message: 'Indexers unavailable due to failures: Broken Indexer' }],
-    '/api/v3/queue': () => ({ page: 1, pageSize: 100, totalRecords: 0, records: [] }),
+    '/api/v3/queue': queuePage,
+    '/api/v3/queue/bulk': () => ({}),
     '/api/v3/blocklist': () => ({ page: 1, pageSize: 100, totalRecords: 0, records: [] }),
     '/api/v3/qualityprofile': () => [],
     '/api/v3/customformat': () => [],
@@ -27,12 +47,13 @@ export function start(port) {
         let body = '';
         req.on('data', (c) => { body += c; });
         req.on('end', () => {
-            const path = req.url.split('?')[0];
-            received.push({ method: req.method, path, body, key: req.headers['x-api-key'] });
+            const url = new URL(req.url, 'http://fake');
+            const path = url.pathname;
+            received.push({ method: req.method, path, query: url.search, body, key: req.headers['x-api-key'] });
             const route = routes[path];
             if (req.headers['x-api-key'] !== 'test-key') { res.writeHead(401); res.end(); return; }
             res.writeHead(route ? 200 : 404, { 'Content-Type': 'application/json' });
-            res.end(route ? JSON.stringify(route()) : '{}');
+            res.end(route ? JSON.stringify(route(url)) : '{}');
         });
     });
     return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
