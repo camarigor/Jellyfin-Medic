@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Home page banners stay with the admin they're for.** The banners were kept for five minutes without noting whose they were, and Jellyfin's web app doesn't reload when someone signs out and another person signs in, so the next person could see an admin's alerts (which can include a log line with paths). They're now only reused for the same person and cleared as soon as someone else signs in, and banners dismissed in this browser are remembered per person.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
