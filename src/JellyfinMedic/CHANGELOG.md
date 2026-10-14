@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **The Medic page stops checking the server when you're not looking at it.** While a track scan or run was going, the page kept asking for its progress every few seconds after you went to another Jellyfin page, and the Dashboard's live tiles kept refreshing in a browser tab in the background. Clicking between tabs during a run could also start the same check twice over. All of these now stop when you leave the page or hide its tab, start again when you come back, and never run twice at once.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
