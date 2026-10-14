@@ -133,17 +133,31 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
 /// Brings data over from Task Advisor and Setup Optimiser the first time Medic starts:
 /// schedule backups, run history, monthly tasks, the viewing pattern, speed test and ignored
 /// findings. Files are copied, never moved, and nothing already in Medic's folder is replaced.
+/// It happens once: a file the admin deletes later (to reset ignored findings, say) stays deleted.
 /// </summary>
 public static class DataMigration
 {
+    // Written once the data has been brought over, so it isn't again on the next start.
+    private const string DoneMarker = ".migrated";
+
     public static void Run(IApplicationPaths paths)
     {
         try
         {
             string target = Path.Combine(paths.PluginConfigurationsPath, "JellyfinMedic");
+            string marker = Path.Combine(target, DoneMarker);
+            if (File.Exists(marker))
+            {
+                return;
+            }
+
+            // Anything already in Medic's folder means it has started before and brought over what
+            // there was then, before this marker existed: copying again would only bring back what
+            // the admin has deleted since.
+            bool firstStart = !Directory.Exists(target) || !Directory.EnumerateFileSystemEntries(target).Any();
             Directory.CreateDirectory(target);
 
-            foreach (var source in new[] { "TaskAdvisor", "SetupOptimiser" })
+            foreach (var source in firstStart ? new[] { "TaskAdvisor", "SetupOptimiser" } : Array.Empty<string>())
             {
                 string from = Path.Combine(paths.PluginConfigurationsPath, source);
                 if (!Directory.Exists(from))
@@ -164,6 +178,8 @@ public static class DataMigration
                     File.Copy(file, destination);
                 }
             }
+
+            File.WriteAllText(marker, DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
         }
         catch
         {
