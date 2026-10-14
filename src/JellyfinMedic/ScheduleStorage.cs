@@ -250,7 +250,6 @@ public static class ScheduleStorage
             foreach (var record in records.Where(r => r.OriginalTriggers is not null && ids.Contains(r.TaskKey)))
             {
                 record.OriginalTriggers = null;
-                record.BackedOffSinceUtc = null;
                 changed = true;
             }
 

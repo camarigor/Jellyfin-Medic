@@ -208,14 +208,9 @@ public class UsageSummary
 
     public string? QuietWindow { get; set; }
 
-    public int QuietStartHour { get; set; } = 1;
-
     public double? TranscodeShare { get; set; }
 
     public int MaxStreams { get; set; }
 
     public int MaxTranscodes { get; set; }
-
-    // Average streams between 01:00 and 06:00, when Medic runs heavy tasks.
-    public double NightAverage { get; set; }
 }

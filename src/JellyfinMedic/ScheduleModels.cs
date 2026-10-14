@@ -45,12 +45,8 @@ public class ReliabilityRecord
 
     public double AverageDurationSeconds { get; set; }
 
-    public bool RequiresExclusiveExecution { get; set; }
-
     // Set only while a back-off is in effect: the schedule to put back after the next successful run.
     public TaskTriggerInfo[]? OriginalTriggers { get; set; }
-
-    public DateTime? BackedOffSinceUtc { get; set; }
 }
 
 public class MovementAudit
