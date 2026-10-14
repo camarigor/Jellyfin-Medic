@@ -7,6 +7,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 ### Fixed
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
+- **"My requests" no longer fails when Seerr is down.** With Seerr unreachable, looking up the person's Seerr account wasn't caught, so the page got an error instead of "can't reach Seerr" (and only now and then, as a found account is remembered for 10 minutes). A refused key or a broken Seerr is now also told apart from "never signed in to Seerr". Every call to Seerr gives up after 10 seconds, so a Seerr that hangs can't hold the page open, and a picks rebuild that fails is now written to the log.
 
 ## [1.2.3] – 2026-10-11
 
