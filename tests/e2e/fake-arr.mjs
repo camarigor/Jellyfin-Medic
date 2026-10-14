@@ -77,9 +77,18 @@ export function startQbit(port) {
     return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
 }
 
-// A pretend Seerr for approving requests: every Jellyfin account is Seerr user 42, and it
-// remembers which Seerr user each approve or decline was made as (X-API-User).
+// A pretend Seerr: every Jellyfin account is Seerr user 42, and it remembers which Seerr user each
+// approve or decline was made as (X-API-User). Its request list ignores ?requestedBy= on purpose and
+// always holds one request by user 42 and one by user 7.
 export const seerr = { decisions: [] };
+
+const requestList = {
+    pageInfo: { results: 2 },
+    results: [
+        { id: 11, status: 1, type: 'movie', createdAt: '2026-10-01T10:00:00.000Z', media: { tmdbId: 550, mediaType: 'movie', status: 2 }, requestedBy: { id: 42 } },
+        { id: 12, status: 1, type: 'movie', createdAt: '2026-10-02T10:00:00.000Z', media: { tmdbId: 551, mediaType: 'movie', status: 2 }, requestedBy: { id: 7 } }
+    ]
+};
 
 export function startSeerr(port) {
     const server = http.createServer((req, res) => {
@@ -88,6 +97,15 @@ export function startSeerr(port) {
         res.setHeader('Content-Type', 'application/json');
         if (req.method === 'GET' && path.startsWith('/api/v1/user/jellyfin/')) {
             res.end(JSON.stringify({ id: 42, displayName: 'admin' }));
+            return;
+        }
+        if (req.method === 'GET' && path === '/api/v1/request') {
+            res.end(JSON.stringify(requestList));
+            return;
+        }
+        const title = path.match(/^\/api\/v1\/movie\/(\d+)$/);
+        if (req.method === 'GET' && title) {
+            res.end(JSON.stringify({ id: Number(title[1]), title: 'Film ' + title[1], releaseDate: '2000-01-01' }));
             return;
         }
         const decision = path.match(/^\/api\/v1\/request\/(\d+)\/(approve|decline)$/);

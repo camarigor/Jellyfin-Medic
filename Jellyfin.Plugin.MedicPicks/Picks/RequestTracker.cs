@@ -52,8 +52,9 @@ public class RequestRow
 /// <summary>
 /// Where each Seerr request has got to: waiting for approval, looking for a download, downloading
 /// (with progress and an ETA from Sonarr or Radarr, through Seerr), or ready to watch.
-/// Seerr is read with the admin's key, so people only ever see their own requests, filtered here
-/// by their own Seerr account; nothing is sent to anyone's browser but the rows themselves.
+/// Seerr is read with the admin's key, so people must only ever see their own requests: Seerr is asked for
+/// one account's requests, and each row is checked here against that account too, in case a Seerr version
+/// ignores the filter. Nothing is sent to anyone's browser but the rows themselves.
 /// </summary>
 public class RequestTracker
 {
@@ -100,7 +101,7 @@ public class RequestTracker
         }
 
         var rows = new List<RequestRow>();
-        foreach (var request in Results(doc))
+        foreach (var request in Results(doc).Where(r => RequestedBy(r) == seerrUserId))
         {
             var row = await ToRowAsync(baseUrl, request, jellyfinUserId, includeRequester: false, ct).ConfigureAwait(false);
             if (row is not null && !FinishedLongAgo(row, request))
@@ -111,6 +112,10 @@ public class RequestTracker
 
         return (Ordered(rows), true);
     }
+
+    // The Seerr account that made a request; null when Seerr didn't say, so such a row is never shown as someone's own.
+    private static int? RequestedBy(JsonElement request) =>
+        request.TryGetProperty("requestedBy", out var by) && by.ValueKind == JsonValueKind.Object ? Int(by, "id") : null;
 
     /// <summary>Everyone's requests waiting for approval, for admins. Null when Seerr couldn't be reached.</summary>
     public async Task<List<RequestRow>?> PendingAsync(string baseUrl, Guid adminUserId, CancellationToken ct)
