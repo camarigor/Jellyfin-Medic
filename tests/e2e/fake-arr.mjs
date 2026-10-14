@@ -2,6 +2,9 @@
 // fixed data, and remembers what was sent to it.
 import http from 'node:http';
 
+// Only on the address Jellyfin's container reaches this machine by (run.sh passes it), not on every network.
+const HOST = process.env.FAKE_HOST || '127.0.0.1';
+
 export const received = [];
 
 const indexers = [
@@ -35,7 +38,7 @@ export function start(port) {
             res.end(route ? JSON.stringify(route()) : '{}');
         });
     });
-    return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
+    return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
 }
 
 // A pretend qBittorrent Web UI: sign-in with admin/secret, and the "Excluded file names" preference.
@@ -77,7 +80,7 @@ export function startQbit(port) {
             res.writeHead(404); res.end();
         });
     });
-    return new Promise((resolve) => server.listen(port, '0.0.0.0', () => resolve(server)));
+    return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
 }
 
 // A pretend Seerr: every Jellyfin account is Seerr user 42, and it remembers which Seerr user each
