@@ -9,16 +9,22 @@
     var DISMISSED = 'jellyfin-medic-dismissed-alerts';
     var lastCheck = 0;
     var cached = [];
+    var cachedFor = null; // the person the cached alerts belong to: they're never shown to anyone else
+
+    // Kept per person, as people can share a browser.
+    function dismissedKey() {
+        return DISMISSED + ':' + (cachedFor || '');
+    }
 
     function dismissed() {
-        try { return JSON.parse(localStorage.getItem(DISMISSED) || '[]'); } catch (e) { return []; }
+        try { return JSON.parse(localStorage.getItem(dismissedKey()) || '[]'); } catch (e) { return []; }
     }
 
     function dismiss(id) {
         try {
             var list = dismissed().filter(function (x) { return x !== id; });
             list.push(id);
-            localStorage.setItem(DISMISSED, JSON.stringify(list.slice(-50)));
+            localStorage.setItem(dismissedKey(), JSON.stringify(list.slice(-50)));
         } catch (e) { /* private window: it'll show again next time */ }
     }
 
@@ -79,8 +85,13 @@
     function check() {
         var api = window.ApiClient;
         if (!api || !api.accessToken || !api.accessToken()) return;
-        if (Date.now() - lastCheck < 5 * 60 * 1000) { render(cached); return; }
+        var userId = typeof api.getCurrentUserId === 'function' ? api.getCurrentUserId() : null;
+        if (userId && userId === cachedFor && Date.now() - lastCheck < 5 * 60 * 1000) { render(cached); return; }
+        // Someone else signed in (Jellyfin's web app doesn't reload for that): drop the previous person's banners now.
         lastCheck = Date.now();
+        cachedFor = userId;
+        cached = [];
+        render(cached);
         api.getCurrentUser().then(function (user) {
             if (!user || !user.Policy || !user.Policy.IsAdministrator) { cached = []; return; }
             return api.getJSON(api.getUrl('JellyfinMedic/Alerts')).then(function (alerts) {
