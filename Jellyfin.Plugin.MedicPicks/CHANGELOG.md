@@ -6,6 +6,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 ## Unreleased
 
 ### Fixed
+- **The settings page says when saving or removing a key fails.** Saving or removing the Seerr or TMDb key, and Build picks now, showed nothing when the server didn't take it. Each now says so, and a TMDb key that isn't saved no longer leaves Discover picks switched on.
 - **The keys file is now private.** `medic-picks/secrets.json`, which holds the TMDb and Seerr keys, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
 
 ## [1.2.3] – 2026-10-11
