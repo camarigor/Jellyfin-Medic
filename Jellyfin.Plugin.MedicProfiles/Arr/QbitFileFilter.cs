@@ -95,9 +95,14 @@ public class QbitFileFilter
         }
     }
 
-    /// <summary>Adds (or, with block false, removes) Medic Profiles' patterns, keeping anything else in the list.</summary>
+    /// <summary>
+    /// Adds (or, with block false, removes) Medic Profiles' patterns. Only patterns it added itself are ever
+    /// removed, so entries the owner had (even the same ones) stay, and unblocking switches the list back
+    /// on or off as it was before.
+    /// </summary>
     public async Task<(bool Ok, string Message)> ApplyAsync(bool block, bool archives, CancellationToken ct)
     {
+        var config = Plugin.Instance!.Configuration;
         var (client, error) = await SignInAsync(ct).ConfigureAwait(false);
         using (client)
         {
@@ -112,18 +117,34 @@ public class QbitFileFilter
                 return (false, "This qBittorrent can't exclude file names. Update it to 4.6 or later.");
             }
 
-            var ours = new HashSet<string>(Programs.Concat(Archives), StringComparer.OrdinalIgnoreCase);
-            var list = Split(current.GetString()).Where(p => !ours.Contains(p)).ToList(); // keep the owner's own entries
-            if (block)
+            var list = Split(current.GetString());
+            bool wasOn = prefs.Value.TryGetProperty("excluded_file_names_enabled", out var enabled) && enabled.ValueKind == JsonValueKind.True;
+            var added = new HashSet<string>(config.QbitPatternsAdded ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            if (config.QbitListWasOn is null && added.Count == 0)
             {
-                list.AddRange(Programs);
-                if (archives)
+                // Medic Profiles 1.1.0 and 1.1.1 didn't record what they added: their full set counts as theirs.
+                var present = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);
+                if (Programs.All(present.Contains))
                 {
-                    list.AddRange(Archives);
+                    added.UnionWith(Programs);
+                    if (Archives.All(present.Contains))
+                    {
+                        added.UnionWith(Archives);
+                    }
                 }
             }
 
-            bool on = block || list.Count > 0;
+            var wanted = new HashSet<string>(block ? (archives ? Programs.Concat(Archives) : Programs) : Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            list = list.Where(p => !added.Contains(p) || wanted.Contains(p)).ToList();
+            added.IntersectWith(wanted);
+            foreach (var pattern in wanted.Where(p => !list.Contains(p, StringComparer.OrdinalIgnoreCase)))
+            {
+                list.Add(pattern);
+                added.Add(pattern);
+            }
+
+            bool listWasOn = config.QbitListWasOn ?? wasOn;
+            bool on = block || (listWasOn && list.Count > 0);
             string json = JsonSerializer.Serialize(new Dictionary<string, object>
             {
                 ["excluded_file_names_enabled"] = on,
@@ -136,9 +157,13 @@ public class QbitFileFilter
                 return (false, $"qBittorrent refused the change (HTTP {(int)response.StatusCode}).");
             }
 
+            config.QbitPatternsAdded = block ? added.ToArray() : Array.Empty<string>();
+            config.QbitListWasOn = block ? listWasOn : null;
+            Plugin.Instance.SaveConfiguration();
+
             return (true, block
-                ? "Done. qBittorrent now skips " + (archives ? "program files and archives" : "program files") + " in new downloads. Anything you'd already added to the list is kept."
-                : "Done. Medic Profiles' entries are gone from qBittorrent's list; anything you'd added yourself is kept.");
+                ? "Done. qBittorrent now skips " + (archives ? "program files and archives" : "program files") + " in every new download, not only films and series. Anything that was already in the list is kept."
+                : "Done. Only the entries Medic Profiles added are gone, and the list is switched " + (on ? "on" : "off") + " as it was before.");
         }
     }
 

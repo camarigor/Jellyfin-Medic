@@ -8,6 +8,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 ### Fixed
 - **The keys file is now private.** `medic-profiles/secrets.json`, which holds the Sonarr and Radarr API keys and the qBittorrent password, could be read by any account on the server. It's now only readable by the account Jellyfin runs as, and an existing file is tightened the next time it's read. Windows is unchanged, as it uses its own folder permissions.
 - **Saved keys stay with their server.** Changing Sonarr's, Radarr's or qBittorrent's address kept the saved key or password, and the next test or list sent it to the new address. When the address now points at a different server, the saved key or password is cleared and has to be typed again. A keys file that can't be read is also kept as `secrets.json.bad` instead of being replaced by one holding only the newest key (the other keys used to vanish without a word).
+- **Blocking files in qBittorrent keeps your own list as it was.** Block removed any of Medic Profiles' patterns you had added yourself (`*.zip`, say, with archives left unticked) while saying your entries were kept, and Unblock left the list switched on even if you had it off. Medic Profiles now remembers what it added and whether the list was on: Block only adds what's missing, and Unblock removes only what it added and switches the list back on or off as it was. The settings page now also says that qBittorrent applies the list to every torrent, not only films and series.
 
 ## [1.1.1] – 2026-10-11
 
