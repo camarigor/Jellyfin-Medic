@@ -31,6 +31,10 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 - **A plugin repository that's down no longer slows every report.** Medic only remembered addresses that answered, so one that didn't was tried again, twice, each time the report opened, which could add about 14 seconds. A failure is now remembered for 2 minutes.
 - **A hung nvidia-smi is no longer started again every 15 seconds.** When nvidia-smi took more than 3 seconds or answered with something that isn't a number, Medic tried again at the next reading; it now waits 5 minutes. Finding the processes Jellyfin started also goes through the process list once, not once for each process found.
 - **A problem reading this machine's hardware no longer takes the whole report down.** If Medic couldn't read the hardware or list the specs, the report failed with an error; now everything else still comes back, with a note under Hardware. Checks that couldn't run are also written to the Jellyfin log with the reason, and so is a recommended schedule that couldn't be worked out.
+- **The exposure check says where it tested from.** For a domain, or an address over http, the check connects from this server itself, but the result said "from the internet". It now says when a result is only this server's view, and a domain that doesn't answer from here is no longer shown in green as closed: a router that can't reach its own public address from inside, or a domain that points inside your network, looked the same. A certificate this server doesn't trust now counts as something answering, redirects are no longer followed, and an address with a path in it, or an IPv6 address over http, no longer breaks the check.
+
+### Changed
+- **Your public IP is looked up only when you press "Use my IP + 8096".** Opening the Dashboard asked a service on the internet for it every time. It's now asked for on that button only, and kept for an hour.
 
 ## [1.0.17] – 2026-10-11
 
