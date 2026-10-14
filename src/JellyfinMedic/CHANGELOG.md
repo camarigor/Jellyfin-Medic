@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Plugin advice no longer says "remove it" when Medic couldn't count.** A count that failed, or asked about a kind of item this Jellyfin doesn't have, came back as 0, so advice such as "there are no books on this server, remove the book provider" could rest on a number nobody knew. Such counts are now unknown, and advice that depends on them is left out. The Intro Skipper advice also recommends the same limit it warns about (it warned above half the CPU threads but suggested a quarter).
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
