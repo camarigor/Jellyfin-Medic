@@ -340,6 +340,13 @@
                     });
                 }
 
+                // When Medic Profiles itself didn't answer, so it isn't Sonarr's or Radarr's problem.
+                function showFailure(what) {
+                    const box = $('mp-errors');
+                    box.textContent = '';
+                    box.appendChild(el('div', 'mp-banner error', 'Medic Profiles couldn’t load ' + what + '. Reload the page and try again.'));
+                }
+
                 // ---------- Downloads ----------
                 page.querySelectorAll('.mp-filter').forEach(function (b) {
                     b.addEventListener('click', function () {
@@ -359,7 +366,7 @@
                         queueNotes = data.notes || {};
                         renderQueue();
                     }).catch(function () {
-                        showErrors({ radarr: 'Medic Profiles couldn’t load the queue. Reload the page and try again.' });
+                        showFailure('the queue');
                     }).then(scheduleQueue);
                 }
 
@@ -725,7 +732,7 @@
                             list.appendChild(li);
                         });
                         $('mp-blocked-empty').hidden = list.children.length > 0;
-                    });
+                    }).catch(function () { showFailure('the blocked list'); });
                 }
 
                 // ---------- Indexers ----------
@@ -749,7 +756,7 @@
                             list.appendChild(li);
                         });
                         $('mp-indexers-empty').hidden = list.children.length > 0;
-                    });
+                    }).catch(function () { showFailure('the indexers'); });
                 }
 
                 // ---------- Profiles ----------
@@ -836,7 +843,7 @@
                             list.appendChild(li);
                         });
                         $('mp-history-empty').hidden = list.children.length > 0;
-                    });
+                    }).catch(function () { showFailure('the history'); });
                 }
 
                 // ---------- Settings ----------
@@ -857,7 +864,11 @@
                         $('mp-qbit-pass').value = '';
                         $('mp-qbit-pass').placeholder = q.passwordSet ? 'Saved. Type a new one to replace it.' : '';
                         if (q.url) loadFileFilter();
-                    });
+                    }).catch(function () { settingsNote('Medic Profiles couldn’t load its settings. Reload the page and try again.'); });
+                }
+
+                function settingsNote(text) {
+                    $('mp-settings-note').textContent = text;
                 }
 
                 function loadFileFilter() {
@@ -922,7 +933,8 @@
                     b.addEventListener('click', function () {
                         const app = b.getAttribute('data-clear');
                         const extra = app === 'sonarr' ? { clearSonarrKey: true, sonarrKey: '' } : { clearRadarrKey: true, radarrKey: '' };
-                        post('Settings', settingsBody(extra), false).then(loadSettings);
+                        post('Settings', settingsBody(extra), false).then(loadSettings)
+                            .catch(function () { settingsNote('The key wasn’t removed. Try again.'); });
                     });
                 });
 
