@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Scheduling works on servers in other languages.** Medic recognised Jellyfin's tasks by their names, which Jellyfin translates into the server's language: on a server in Portuguese it planned 1 task out of 12 and left the rest as "Medic doesn't know what this task needs". Jellyfin's own tasks are now recognised by their key, which never changes; tasks from plugins are still recognised by name.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
