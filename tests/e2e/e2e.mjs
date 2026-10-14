@@ -308,6 +308,30 @@ await check('Medic Picks approves and declines requests as the admin\'s own Seer
     }
 });
 
+await check('Medic Picks shows only your own requests and keeps Discover-off accounts from requesting', async () => {
+    // This Seerr ignores ?requestedBy= and lists someone else's request too; Medic Picks must drop it.
+    const seerrServer = await fakeArr.startSeerr(18993);
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    const setCfg = (changes) => api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18993', ShowRequests: true, SeerrDirectRequests: true, ...changes });
+    await setCfg({});
+    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+    try {
+        const mine = await ok('/MedicPicks/Me/Requests');
+        const ids = (mine.requests || []).map((r) => r.id).join(',');
+        expect(ids === '11', 'requests shown: ' + ids);
+
+        await setCfg({ DiscoverDisabledUserIds: [ctx.userId] });
+        const refused = await api('POST', '/MedicPicks/Request', { TmdbId: 552, MediaType: 'movie' });
+        expect(refused.status === 403, `a Discover-off account could request: ${refused.status} ${refused.text.slice(0, 200)}`);
+        return 'only request 11 shown; request refused with 403';
+    } finally {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        seerrServer.close();
+    }
+});
+
 await check('Medic Profiles connects to Sonarr', async () => {
     const saved = await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
     expect(saved.status === 200 || saved.status === 204, 'saving settings ' + saved.status);
