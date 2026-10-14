@@ -68,7 +68,7 @@ public class PicksController : ControllerBase
             note = picks is null
                 ? "Your picks haven't been built yet. They're made overnight, so check back tomorrow."
                 : picks.Note,
-            seerrUrl = string.IsNullOrWhiteSpace(config.JellyseerrUrl) ? null : config.JellyseerrUrl.TrimEnd('/'),
+            seerrUrl = SeerrLink(config),
             // "direct": the button makes the request; "link": it opens Seerr; "none": it opens TMDb.
             requestMode = RequestMode(config),
             preferences = _store.LoadPreferences(userId),
@@ -470,6 +470,24 @@ public class PicksController : ControllerBase
             return "none";
         }
 
-        return config.SeerrDirectRequests && _store.GetSeerrKey() is not null ? "direct" : "link";
+        if (config.SeerrDirectRequests && _store.GetSeerrKey() is not null)
+        {
+            return "direct";
+        }
+
+        // A link is only offered with an address people can open.
+        return SeerrLink(config) is null ? "none" : "link";
+    }
+
+    /// <summary>
+    /// The Seerr address people's browsers open: the one for viewers when it's set, otherwise the one this
+    /// server uses. Only http and https addresses become links (never javascript:, say).
+    /// </summary>
+    private static string? SeerrLink(Configuration.PluginConfiguration config)
+    {
+        string url = (string.IsNullOrWhiteSpace(config.SeerrLinkUrl) ? config.JellyseerrUrl ?? string.Empty : config.SeerrLinkUrl).Trim();
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            ? url.TrimEnd('/')
+            : null;
     }
 }
