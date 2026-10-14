@@ -159,7 +159,7 @@ public static class WeeklyLedger
         }
     }
 
-    private static string KeyOf(Finding f) => string.IsNullOrEmpty(f.Key) ? f.Area + "|" + f.Title : f.Key;
+    private static string KeyOf(Finding f) => string.IsNullOrEmpty(f.Key) ? IgnoreStore.KeyFor(f) : f.Key;
 
     private static void Save()
     {

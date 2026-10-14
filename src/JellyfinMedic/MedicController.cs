@@ -96,6 +96,7 @@ public class MedicController : ControllerBase
                 Area = "Plugins",
                 Severity = Sev.Tip,
                 Title = updates.Count == 1 ? "A plugin update is available" : $"{updates.Count} plugin updates are available",
+                Id = "plugins.updates",
                 Current = string.Join(", ", updates),
                 Recommended = "Install them, then restart Jellyfin",
                 Why = "Updates often fix bugs and keep plugins working with new Jellyfin versions.",

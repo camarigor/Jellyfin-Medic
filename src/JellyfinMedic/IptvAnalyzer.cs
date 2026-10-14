@@ -139,6 +139,7 @@ public static class IptvAnalyzer
                 Area = "IPTV",
                 Severity = Sev.Tip,
                 Title = $"{report.Channels.ExtraCopies:N0} live channels are extra copies of others",
+                Id = "iptv.extra-copies",
                 Current = $"{report.Channels.DuplicateGroups:N0} channels appear in several qualities or versions, e.g. {string.Join(", ", report.Channels.Examples.Take(3))}",
                 Recommended = "Keep one version of each channel (usually the best quality you can play) and hide or remove the rest",
                 Why = "Duplicates make the guide long and slow to refresh, and make channels harder to find. Medic → IPTV lists every channel with copies and the name of each one, so you can see which to drop.",

@@ -640,7 +640,8 @@ public sealed class DiagnosticsEngine
                 Add(AreaStorage, days < 7 ? Sev.Problem : Sev.Improve, $"The drive for {d.Holds} will be full in {Weeks(days)}",
                     $"{SystemProbe.Gb(d.FreeGb)} free, using about {SystemProbe.Gb(d.GbPerDay!.Value)} a day",
                     "Free some space, add a drive, or find what's filling it (for example trickplay images or old downloads)",
-                    "At this rate the drive runs out soon, and Jellyfin, downloads and track cleanup all need room to write.", d.ExamplePath);
+                    "At this rate the drive runs out soon, and Jellyfin, downloads and track cleanup all need room to write.", d.ExamplePath,
+                    id: "storage.filling-up:" + d.Holds);
             }
         }
 
@@ -814,7 +815,7 @@ public sealed class DiagnosticsEngine
             string.Join(", ", kinds) + ". Most often running: " + string.Join("; ", top),
             "Move the tasks named here to quieter times (Schedule), or let the GPU take the transcodes",
             "Each time, Jellyfin and its FFmpeg processes used nearly all of a resource for at least 45 seconds, which is when playback buffers and pages load slowly. Medic → Dashboard lists each one and what was running.",
-            "Medic → Dashboard");
+            "Medic → Dashboard", id: "server.flat-out");
     }
 
     // ---------- General performance ----------
@@ -1361,7 +1362,7 @@ public sealed class DiagnosticsEngine
                 hwOn ? "Check app quality settings and the remote bitrate limit" : "Turn on hardware acceleration (see Hardware & transcoding)",
                 hwOn ? "Lots of transcoding usually comes from apps set to a lower quality, subtitles that need burning in, or a low bitrate cap."
                      : $"Transcoding this much on {hw.CpuThreads} CPU threads is the most likely cause of buffering at busy times.",
-                WhereTranscoding);
+                WhereTranscoding, id: "usage.transcode-share");
         }
     }
 
@@ -1561,7 +1562,7 @@ public sealed class DiagnosticsEngine
             Add(AreaTasks, Sev.Tip, daytime.Count == 1 ? "A heavy task runs during the day" : $"{daytime.Count} heavy tasks run during the day",
                 string.Join(", ", daytime), "Fine if nobody watches then. Medic will check against your real viewing pattern",
                 "These tasks work through the whole library or database. Medic is still learning when people watch; after a few days it checks these times against your real viewing instead.",
-                "Medic → Schedule");
+                "Medic → Schedule", id: "tasks.heavy-daytime");
         }
     }
 
@@ -1644,12 +1645,14 @@ public sealed class DiagnosticsEngine
     private void Spec(string group, string label, string value) =>
         _report.Specs.Add(new SpecItem { Group = group, Label = label, Value = value });
 
-    private void Add(string area, string severity, string title, string current, string recommended, string why, string where) =>
+    // id: a stable name for findings whose title changes between checks (counts, times, percentages); see Finding.Id.
+    private void Add(string area, string severity, string title, string current, string recommended, string why, string where, string id = "") =>
         _report.Findings.Add(new Finding
         {
             Area = area,
             Severity = severity,
             Title = title,
+            Id = id,
             Current = current,
             Recommended = recommended,
             Why = why,

@@ -174,6 +174,7 @@ public static class UserAuditor
                 Area = Area,
                 Severity = risky ? Sev.Problem : Sev.Improve,
                 Title = summary.NoPassword.Count == 1 ? "An account has no password" : $"{summary.NoPassword.Count} accounts have no password",
+                Id = "users.no-password",
                 Current = string.Join(", ", summary.NoPassword),
                 Recommended = "Set a password, or disable the account if nobody uses it",
                 Why = risky
@@ -190,6 +191,7 @@ public static class UserAuditor
                 Area = Area,
                 Severity = Sev.Tip,
                 Title = summary.Inactive.Count == 1 ? $"An account hasn't been used in over {inactiveDays} days" : $"{summary.Inactive.Count} accounts haven't been used in over {inactiveDays} days",
+                Id = "users.inactive",
                 Current = string.Join(", ", summary.Inactive),
                 Recommended = "Disable accounts nobody uses",
                 Why = "Unused accounts are easy to forget about, and their old passwords still work. Disabling keeps their watch history in case they come back.",
@@ -204,6 +206,7 @@ public static class UserAuditor
                 Area = Area,
                 Severity = Sev.Tip,
                 Title = $"{summary.Admins} accounts are administrators",
+                Id = "users.admins",
                 Current = string.Join(", ", summary.AdminNames),
                 Recommended = "Keep admin rights to the people who manage the server",
                 Why = "Administrators can change every setting and see every library. Everyday watching is safer from a normal account.",
