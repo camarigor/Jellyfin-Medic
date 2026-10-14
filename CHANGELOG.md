@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **The schedule planner sees tasks that run past midnight.** Its day stopped at midnight, so a task you keep at 23:30 that takes an hour only blocked 23:30 to midnight, and a planned task could be put at 00:00 on top of it. A planned task also had to end by midnight, so it couldn't start at, say, 23:00 and run on into a quiet night. The planner now plans on the whole week, and a run carries on into the next day (Saturday night into Sunday). A kept task that Medic runs once a month now keeps that time free too, and a kept task that starts between quarter hours (23:50, say) blocks out all of its run.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
