@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **The support export no longer lets some secrets through.** In lists of names and values, such as custom HTTP headers, the secret is in the value under a harmless name (`<Key>Authorization</Key><Value>Bearer ...</Value>`), and the export hid the name and showed the value. Such values (also when written as `name`/`value` attributes) are now hidden when their name looks secret, and the name is shown. Credentials after Bearer, Basic or Digest, web tokens (JWT), API keys written as 32 characters without dashes, and settings named like cookies or ending in "key" (ServerKey, AuthKey) are hidden too. The same patterns now also hide these in log lines Medic shows.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
