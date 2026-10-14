@@ -4,13 +4,15 @@
 #
 #   tests/e2e/run.sh            build, start, test, stop
 #   KEEP=1 tests/e2e/run.sh     leave Jellyfin running afterwards on http://127.0.0.1:8096
+#   JELLYFIN_IMAGE=jellyfin/jellyfin:12.1 tests/e2e/run.sh    test against another Jellyfin
 #
 # Needs: dotnet 10 SDK, docker, ffmpeg, node with playwright (PLAYWRIGHT_MODULE can point at it).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${WORK:-$ROOT/tests/e2e/.work}"
-IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:latest}"
+# A fixed image (Jellyfin 12.2.0), so a run only changes when the code or this line does.
+IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.2@sha256:357724bf0ae27a672c7cbaa899db2d9abeb13dbd8657ccce750258a4c059d037}"
 NAME=medic-e2e
 PORT="${PORT:-8096}"
 
