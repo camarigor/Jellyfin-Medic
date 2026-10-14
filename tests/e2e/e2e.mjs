@@ -324,9 +324,17 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
         const after = fakeArr.qbit.prefs;
         expect(after.excluded_file_names === '*.nfo\n*.zip' && after.excluded_file_names_enabled === false,
             `unblock left: ${JSON.stringify(after.excluded_file_names)}, switched ${after.excluded_file_names_enabled ? 'on' : 'off'}`);
+        // One session for all of the above: opening the tab again doesn't sign in again.
+        await ok('/MedicProfiles/FileFilter');
+        expect(fakeArr.qbit.logins === 1, `signed in ${fakeArr.qbit.logins} times`);
+
+        // A wrong password is tried once, not each time the tab opens: each failure counts towards qBittorrent's ban.
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'wrong' });
         state = await ok('/MedicProfiles/FileFilter');
         expect(!state.reachable && /user name and password/.test(state.message), 'wrong password: ' + JSON.stringify(state));
+        await ok('/MedicProfiles/FileFilter');
+        expect(fakeArr.qbit.failedLogins === 1, `the wrong password was tried ${fakeArr.qbit.failedLogins} times`);
+        return 'one sign-in for the session, one try for a wrong password';
     } finally {
         qbitServer.close();
     }
