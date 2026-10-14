@@ -508,26 +508,30 @@ public class ProfileAdvisor
         int Sig(string k) => s.GetValueOrDefault(k);
         var active = data.Profiles.Where(p => p.InUse is null or > 0).ToList();
 
-        // Profiles where a custom format matching the pattern is missing or scored 0 or higher.
-        List<string> NotPenalised(Regex pattern, out string? format)
+        int Score(ProfileSummary p, string format) => data.Scores.GetValueOrDefault(p.Id)?.GetValueOrDefault(format) ?? 0;
+
+        // Profiles (among those the advice applies to) where every custom format matching the pattern is scored 0
+        // or missing. A negative score already holds them back; a positive one is a choice the owner made (lossless
+        // audio, say), which the advice shouldn't overrule. All matching formats are scored 0 in these profiles.
+        List<string> NotPenalised(Regex pattern, Func<ProfileSummary, bool>? applies, out List<string> formats)
         {
-            format = data.CustomFormats.FirstOrDefault(f => pattern.IsMatch(f));
-            string? name = format;
-            return active.Where(p => name is null || data.Scores.GetValueOrDefault(p.Id)?.GetValueOrDefault(name) >= 0)
+            var matching = data.CustomFormats.Where(f => pattern.IsMatch(f)).ToList();
+            formats = matching;
+            return active.Where(p => applies?.Invoke(p) != false && matching.All(f => Score(p, f) == 0))
                 .Select(p => p.Name).ToList();
         }
 
-        Suggestion Penalise(string title, Regex pattern, string formatHint, string why, string evidenceText, string severity)
+        Suggestion Penalise(string title, Regex pattern, string formatHint, string why, string evidenceText, string severity, Func<ProfileSummary, bool>? applies = null)
         {
-            var profiles = NotPenalised(pattern, out string? format);
+            var profiles = NotPenalised(pattern, applies, out var formats);
             return new Suggestion
             {
                 App = appKey,
                 Severity = severity,
                 Title = title,
                 Profiles = profiles,
-                Change = format is not null
-                    ? $"In {appName} → Settings → Profiles, give the custom format \"{format}\" a negative score (for example −10000 to refuse it, or −100 to only prefer others) in these profiles."
+                Change = formats.Count > 0
+                    ? $"In {appName} → Settings → Profiles, give the custom format{(formats.Count > 1 ? "s" : string.Empty)} {Names(formats)} a negative score (for example −10000 to refuse, or −100 to only prefer others) in these profiles."
                     : $"{appName} has no custom format for this. Add one (TRaSH Guides has \"{formatHint}\": Settings → Custom Formats → +, or import its JSON), then give it a negative score in these profiles.",
                 Why = why,
                 Evidence = evidenceText
@@ -550,16 +554,18 @@ public class ProfileAdvisor
             }
         }
 
-        var hevcPattern = new Regex(@"(x265|hevc|h\.?265)", RegexOptions.IgnoreCase);
+        var hevcPattern = new Regex(@"\b(x265|hevc|h\.?265)\b", RegexOptions.IgnoreCase);
         if (Sig("hevc") >= MinFiles)
         {
+            // Not for 4K profiles: nearly every 2160p release is HEVC, so holding it back there means no 4K at all.
             var sug = Penalise(
                 "Prefer H.264 over HEVC (x265)",
                 hevcPattern,
                 "x265 (HD)",
                 "Some of your devices can't play HEVC, so those files are converted on the fly. That costs CPU or GPU time and can buffer.",
                 Files(Sig("hevc")) + " transcoded because the device couldn't play HEVC.",
-                "improve");
+                "improve",
+                p => !p.Allowed.Any(q => q.Contains("2160", StringComparison.Ordinal)));
             if (sug.Profiles.Count > 0)
             {
                 list.Add(sug);
@@ -605,7 +611,8 @@ public class ProfileAdvisor
         {
             var sug = Penalise(
                 "Avoid Dolby Vision without an HDR10 fallback",
-                new Regex(@"(\bdv\b|dolby ?vision|dovi)", RegexOptions.IgnoreCase),
+                // Only formats for Dolby Vision with no fallback, such as TRaSH's "DV (w/o HDR fallback)", not "DV HDR10".
+                new Regex(@"\b(dv|dovi|dolby ?vision)\b.*\b(w/o|without|no)\b.*\bfallback\b|\b(dv|dovi|dolby ?vision)[ -]?only\b", RegexOptions.IgnoreCase),
                 "DV (w/o HDR fallback)",
                 "Dolby Vision files with no HDR10 layer only look right on Dolby Vision screens. Everywhere else Jellyfin has to tone-map them, which is heavy work.",
                 Files(Sig("dvonly")) + " transcoded because they're Dolby Vision only.",
