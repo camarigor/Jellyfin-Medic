@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Cleanup no longer fails on a folder it can't read.** Finding leftover transcode files, logs or IPTV `.strm` files walked folders lazily, so a subfolder Jellyfin isn't allowed to read threw part way: the cleanup check failed with an error and cleaning stopped halfway. Such folders are now skipped.
+
 ## [1.0.17] – 2026-10-11
 
 ### Added
