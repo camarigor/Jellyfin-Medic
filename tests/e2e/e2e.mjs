@@ -404,6 +404,44 @@ await check('schedule Preview: choosing per task updates the plan', async () => 
     expect(ours.length === 0, ours.join(' | '));
 });
 
+await check('Medic stops polling while its browser tab is hidden and after you leave the page', async () => {
+    await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+    await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+    const gotIt = page.locator('#md-whatsnew-close');
+    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+    await page.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+    // The dashboard's live tiles ask for /JellyfinMedic/Now every 15 seconds.
+    let polls = 0;
+    const count = (req) => { if (/\/JellyfinMedic\/Now(\?|$)/.test(req.url())) polls++; };
+    page.on('request', count);
+    try {
+        await page.evaluate(() => {
+            Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+            document.dispatchEvent(new Event('visibilitychange'));
+        });
+        polls = 0;
+        await sleep(17000);
+        const whileHidden = polls;
+        await page.evaluate(() => {
+            delete document.hidden;
+            document.dispatchEvent(new Event('visibilitychange'));
+        });
+        await sleep(2000);
+        expect(whileHidden === 0, `${whileHidden} polls while the tab was hidden`);
+        expect(polls > 0, 'no poll after the tab was shown again');
+
+        await page.goto(JF + '/web/index.html#/home');
+        await page.waitForURL(/#\/home/, { timeout: 30000 });
+        await sleep(1000);
+        polls = 0;
+        await sleep(17000);
+        expect(polls === 0, `${polls} polls after leaving the page`);
+        return 'none while hidden or away';
+    } finally {
+        page.off('request', count);
+    }
+});
+
 await check('admin banner on the home page for a serious error, and it can be dismissed', async () => {
     // Pretend the database reported damage, by adding the line to the newest log file.
     // Written from inside the container: the log belongs to Jellyfin's user, not the one running the tests.

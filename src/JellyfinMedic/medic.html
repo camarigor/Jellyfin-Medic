@@ -972,6 +972,11 @@
                 let iptv = null;
                 let exportText = '';
 
+                // False once the admin has left this page; polls only run while it's shown (see Polling below).
+                let pageShown = true;
+
+                function shown() { return pageShown && !document.hidden; }
+
                 function showStatus(text, type) {
                     status.className = 'so-status ' + type;
                     status.textContent = text;
@@ -2951,7 +2956,9 @@
                         box.hidden = !text || activeTab === 'tracks';
                         if (text) {
                             $('md-activity-text').textContent = text;
-                            activityTimer = setTimeout(updateActivity, 4000);
+                            // Cleared right before it's set, so two calls that overlap leave one timer, not two.
+                            clearTimeout(activityTimer);
+                            if (shown()) activityTimer = setTimeout(updateActivity, 4000);
                         }
                     } catch (e) {
                         box.hidden = true;
@@ -3302,7 +3309,8 @@
                             $('md-tracks-summary').appendChild(el('p', 'so-muted', total
                                 ? 'Scanning ' + done.toLocaleString('en-GB') + ' of ' + total.toLocaleString('en-GB') + ' files… You can leave this tab; the scan carries on.'
                                 : 'Gathering your local files…'));
-                            scanTimer = setTimeout(function () { if (activeTab === 'tracks') pollScan(); }, 1500);
+                            clearTimeout(scanTimer);
+                            if (shown()) scanTimer = setTimeout(function () { if (activeTab === 'tracks') pollScan(); }, 1500);
                             return;
                         }
 
@@ -3796,7 +3804,8 @@
                         mediaStatus = await getJson('/JellyfinMedic/MediaReport');
                         renderMedia();
                         if (pick(mediaStatus, 'Running')) {
-                            mediaTimer = setTimeout(function () { if (activeTab === 'media') loadMedia(); }, 2000);
+                            clearTimeout(mediaTimer);
+                            if (shown()) mediaTimer = setTimeout(function () { if (activeTab === 'media') loadMedia(); }, 2000);
                         }
                     } catch (e) {
                         $('md-media-status').textContent = 'Couldn\'t load the media report. Check the Jellyfin log for Jellyfin Medic errors.';
@@ -3892,7 +3901,7 @@
                         }
                         if (running) {
                             clearTimeout(tracksTimer);
-                            tracksTimer = setTimeout(function () { if (activeTab === 'tracks') pollTracks(); }, 1500);
+                            if (shown()) tracksTimer = setTimeout(function () { if (activeTab === 'tracks') pollTracks(); }, 1500);
                         }
                     } catch (e) { /* ignore */ }
                 }
@@ -3985,7 +3994,7 @@
                     stopNowTimer();
                     loadNow();
                     nowTimer = setInterval(function () {
-                        if (!document.body.contains(page) || activeTab !== 'dashboard') { stopNowTimer(); return; }
+                        if (!shown() || !document.body.contains(page) || activeTab !== 'dashboard') { stopNowTimer(); return; }
                         loadNow();
                     }, 15000);
                 }
@@ -3993,6 +4002,35 @@
                 function stopNowTimer() {
                     if (nowTimer) { clearInterval(nowTimer); nowTimer = null; }
                 }
+
+                // ---------- Polling ----------
+
+                // Every poll stops when the admin leaves this page or the browser tab is hidden, and the
+                // open tab's polls start again when they come back.
+                function stopPolling() {
+                    clearTimeout(activityTimer);
+                    clearTimeout(scanTimer);
+                    clearTimeout(tracksTimer);
+                    clearTimeout(mediaTimer);
+                    stopNowTimer();
+                }
+
+                function resumePolling() {
+                    updateActivity();
+                    if (activeTab === 'dashboard') startNowTimer();
+                    else if (activeTab === 'tracks') { pollTracks(); pollScan(); }
+                    else if (activeTab === 'media') loadMedia();
+                }
+
+                page.addEventListener('pagehide', function () {
+                    pageShown = false;
+                    stopPolling();
+                });
+
+                document.addEventListener('visibilitychange', function () {
+                    if (document.hidden) stopPolling();
+                    else if (pageShown) resumePolling();
+                });
 
                 async function loadTab(name) {
                     try {
@@ -4130,6 +4168,7 @@
                 // Checked on every visit, not just the first: Jellyfin's web app keeps this page loaded,
                 // and doesn't reload after a restart, so an update can arrive while it's still open.
                 return function refresh() {
+                    pageShown = true;
                     maybeShowWhatsNew();
                     loadReport();
                     loadTab(activeTab);
