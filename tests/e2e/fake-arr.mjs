@@ -39,7 +39,7 @@ export function start(port) {
 }
 
 // A pretend qBittorrent Web UI: sign-in with admin/secret, and the "Excluded file names" preference.
-export const qbit = { prefs: { excluded_file_names_enabled: false, excluded_file_names: '*.nfo' }, sets: [] };
+export const qbit = { prefs: { excluded_file_names_enabled: false, excluded_file_names: '*.nfo' }, sets: [], logins: 0, failedLogins: 0 };
 
 export function startQbit(port) {
     const server = http.createServer((req, res) => {
@@ -50,14 +50,17 @@ export function startQbit(port) {
             const signedIn = /SID=good/.test(req.headers.cookie || '');
             if (path === '/api/v2/auth/login') {
                 const form = new URLSearchParams(body);
+                qbit.logins++;
                 if (form.get('username') === 'admin' && form.get('password') === 'secret') {
                     res.writeHead(200, { 'Set-Cookie': 'SID=good; HttpOnly; path=/' });
                     res.end('Ok.');
                 } else {
+                    qbit.failedLogins++;
                     res.writeHead(200); res.end('Fails.');
                 }
                 return;
             }
+            if (path === '/api/v2/auth/logout') { res.writeHead(200); res.end(); return; }
             if (!signedIn) { res.writeHead(403); res.end('Forbidden'); return; }
             if (path === '/api/v2/app/preferences') {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
