@@ -225,8 +225,12 @@ public class SeerrClient
         }
     }
 
-    /// <summary>Approves or declines a request waiting for approval. Admins only (checked by the caller).</summary>
-    public async Task<(bool Ok, string Message)> SetRequestStatusAsync(string baseUrl, int requestId, bool approve, CancellationToken ct)
+    /// <summary>
+    /// Approves or declines a request waiting for approval, as the admin who pressed the button: Seerr then
+    /// checks that their own Seerr account may manage requests, and records them as the one who did it.
+    /// Admins only (checked by the caller).
+    /// </summary>
+    public async Task<(bool Ok, string Message)> SetRequestStatusAsync(string baseUrl, int requestId, bool approve, Guid adminJellyfinUserId, CancellationToken ct)
     {
         string? key = _store.GetSeerrKey();
         if (string.IsNullOrWhiteSpace(baseUrl) || key is null)
@@ -236,9 +240,17 @@ public class SeerrClient
 
         try
         {
+            // Without X-API-User, Seerr treats a request made with the API key as its owner account.
+            int? seerrUserId = await FindSeerrUserAsync(baseUrl, adminJellyfinUserId, ct).ConfigureAwait(false);
+            if (seerrUserId is null)
+            {
+                return (false, "Your account isn't in Seerr yet, so Seerr can't check you may approve requests. Sign in to Seerr once with your Jellyfin login, then try again.");
+            }
+
             string path = "/api/v1/request/" + requestId.ToString(CultureInfo.InvariantCulture) + (approve ? "/approve" : "/decline");
             using var request = new HttpRequestMessage(HttpMethod.Post, Url(baseUrl, path));
             request.Headers.Add("X-Api-Key", key);
+            request.Headers.Add("X-API-User", seerrUserId.Value.ToString(CultureInfo.InvariantCulture));
             using var response = await Client().SendAsync(request, ct).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
