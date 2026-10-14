@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Ignoring a repeated error in the log keeps working when it repeats again.** Its title says how many times the error has repeated, so it came back after being ignored, and two different errors with the same count shared one ignore. It's now named by the error itself. A repeated error you ignored before needs ignoring once more.
+
 ## [1.0.19] – 2026-10-14
 
 ### Fixed
