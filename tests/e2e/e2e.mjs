@@ -303,6 +303,22 @@ await check('Medic Profiles shows indexer status', async () => {
     expect((r.warnings || []).some((w) => /Broken Indexer/.test(w)), 'no health warning');
 });
 
+await check('Medic Profiles says when the queue is cut short, and can remove a download but leave it in the client', async () => {
+    fakeArr.queue.total = 1234;
+    try {
+        const r = await ok('/MedicProfiles/Queue');
+        expect(/first 1,000 of Sonarr's 1,234 queue entries/.test(r.notes?.sonarr || ''), 'note: ' + JSON.stringify(r.notes));
+        const row = r.rows[0];
+        const removed = await api('POST', '/MedicProfiles/Queue/Remove', { app: 'sonarr', queueIds: row.queueIds, block: false, keepInClient: true, title: row.mediaTitle });
+        expect(removed.json?.ok, 'remove: ' + removed.text);
+        const sent = fakeArr.received.filter((x) => x.method === 'DELETE' && x.path === '/api/v3/queue/bulk').at(-1);
+        expect(/removeFromClient=false/.test(sent?.query || ''), 'sent: ' + JSON.stringify(sent));
+        return `${r.rows.length} rows; removeFromClient=false sent`;
+    } finally {
+        fakeArr.queue.total = 0;
+    }
+});
+
 await check('Medic Profiles blocks program files in qBittorrent, keeping the owner\'s own entries', async () => {
     const qbitServer = await fakeArr.startQbit(18080);
     try {
