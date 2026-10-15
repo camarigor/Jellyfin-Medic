@@ -63,7 +63,9 @@ export function start(port) {
 }
 
 // A pretend qBittorrent Web UI: sign-in with admin/secret, and the "Excluded file names" preference.
-export const qbit = { prefs: { excluded_file_names_enabled: false, excluded_file_names: '*.nfo' }, sets: [], logins: 0, failedLogins: 0 };
+// v52 answers sign-ins the way qBittorrent 5.2 does (204 with no text, 401 for a wrong password, a
+// QBT_SID_<port> cookie); banned answers 403, as qBittorrent does after too many wrong passwords.
+export const qbit = { prefs: { excluded_file_names_enabled: false, excluded_file_names: '*.nfo' }, sets: [], logins: 0, failedLogins: 0, v52: false, banned: false };
 
 export function startQbit(port) {
     const server = http.createServer((req, res) => {
@@ -71,16 +73,23 @@ export function startQbit(port) {
         req.on('data', (c) => { body += c; });
         req.on('end', () => {
             const path = req.url.split('?')[0];
-            const signedIn = /SID=good/.test(req.headers.cookie || '');
+            const signedIn = /SID(_\d+)?=good/.test(req.headers.cookie || '');
             if (path === '/api/v2/auth/login') {
                 const form = new URLSearchParams(body);
                 qbit.logins++;
-                if (form.get('username') === 'admin' && form.get('password') === 'secret') {
-                    res.writeHead(200, { 'Set-Cookie': 'SID=good; HttpOnly; path=/' });
-                    res.end('Ok.');
+                if (qbit.banned) {
+                    res.writeHead(403); res.end('Your IP address has been banned after too many failed authentication attempts.');
+                } else if (form.get('username') === 'admin' && form.get('password') === 'secret') {
+                    if (qbit.v52) {
+                        res.writeHead(204, { 'Set-Cookie': `QBT_SID_${port}=good; HttpOnly; SameSite=Strict; path=/` });
+                        res.end();
+                    } else {
+                        res.writeHead(200, { 'Set-Cookie': 'SID=good; HttpOnly; path=/' });
+                        res.end('Ok.');
+                    }
                 } else {
                     qbit.failedLogins++;
-                    res.writeHead(200); res.end('Fails.');
+                    if (qbit.v52) { res.writeHead(401); res.end('Unauthorized'); } else { res.writeHead(200); res.end('Fails.'); }
                 }
                 return;
             }

@@ -806,6 +806,35 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
     }
 });
 
+await check('Medic Profiles signs in to qBittorrent 5.2, and saving the settings retries a refused sign-in at once', async () => {
+    const qbitServer = await fakeArr.startQbit(18080);
+    Object.assign(fakeArr.qbit, { v52: true, banned: true, logins: 0, failedLogins: 0 });
+    try {
+        const QB = ARR.replace('18989', '18080');
+        const save = () => api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'secret' });
+        // Banned: the page says so, and opening it again doesn't knock on qBittorrent's door.
+        await save();
+        let state = await ok('/MedicProfiles/FileFilter');
+        expect(!state.reachable && /blocked sign-ins/.test(state.message), 'banned: ' + JSON.stringify(state));
+        await ok('/MedicProfiles/FileFilter');
+        expect(fakeArr.qbit.logins === 1, `tried ${fakeArr.qbit.logins} times while banned`);
+        // The ban ends; saving the same settings again signs in straight away, with 5.2's empty 204 answer.
+        fakeArr.qbit.banned = false;
+        await save();
+        state = await ok('/MedicProfiles/FileFilter');
+        expect(state.reachable, 'after the ban: ' + JSON.stringify(state));
+        expect(fakeArr.qbit.logins === 2, `signed in ${fakeArr.qbit.logins} times`);
+        // 5.2 answers a wrong password with 401.
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'wrong' });
+        state = await ok('/MedicProfiles/FileFilter');
+        expect(!state.reachable && /user name and password/.test(state.message), 'wrong password: ' + JSON.stringify(state));
+        return 'ban reported, retried on save, 204 sign-in accepted, 401 refused';
+    } finally {
+        Object.assign(fakeArr.qbit, { v52: false, banned: false });
+        qbitServer.close();
+    }
+});
+
 // ---------- Exposure check, without asking any outside service ----------
 
 await check('exposure check says it tested from this server, and a failed TLS handshake counts as an answer', async () => {

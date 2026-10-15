@@ -205,7 +205,7 @@ public class QbitFileFilter
 
     // One signed-in session is kept and reused, so opening the page doesn't sign in each time: every failed
     // sign-in counts towards qBittorrent's ban on this server's address. A refused password isn't tried again
-    // for a while, unless the address, user name or password change.
+    // for a while, unless the address, user name or password change, or the settings are saved again.
     private static readonly TimeSpan SessionLife = TimeSpan.FromMinutes(20);
     private static readonly TimeSpan RefusedPause = TimeSpan.FromMinutes(5);
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -215,6 +215,7 @@ public class QbitFileFilter
     private DateTime _sessionUntil;
     private string? _refusal;
     private DateTime _refusedUntil;
+    private volatile bool _retryNow;
 
     /// <summary>qBittorrent answered 403 to a call after signing in: the session has ended on its side.</summary>
     private sealed class SessionExpiredException : Exception
@@ -278,6 +279,12 @@ public class QbitFileFilter
                 return (_session, string.Empty);
             }
 
+            if (_retryNow)
+            {
+                _retryNow = false;
+                _refusal = null;
+            }
+
             if (who == _signedInAs && _refusal is not null && now < _refusedUntil)
             {
                 return (null, _refusal);
@@ -306,6 +313,12 @@ public class QbitFileFilter
             _gate.Release();
         }
     }
+
+    /// <summary>
+    /// Lets the next call sign in again straight away, even with the same user name and password. Called when the
+    /// settings are saved, so fixing the password in qBittorrent (or waiting out its ban) and saving retries at once.
+    /// </summary>
+    public void ForgetRefusal() => _retryNow = true;
 
     private async Task ForgetSessionAsync()
     {
@@ -360,18 +373,18 @@ public class QbitFileFilter
             });
             using var response = await client.PostAsync(baseUrl + "/api/v2/auth/login", form, ct).ConfigureAwait(false);
             string body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            // qBittorrent says "Ok." and sets its session cookie when signed in, "Fails." for a wrong password,
-            // and 403 after too many tries.
+            // Up to qBittorrent 5.1 a sign-in answers 200 with "Ok." or "Fails.". From 5.2 it answers 204 with no
+            // text when signed in and 401 for a wrong password. Both answer 403 while this address is banned.
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 client.Dispose();
-                return (null, "qBittorrent has blocked sign-ins for now after too many wrong passwords. Wait a while, then try again.", true);
+                return (null, "qBittorrent has blocked sign-ins from this server after too many wrong passwords. Wait for the ban to end (an hour by default) or restart qBittorrent, then save the settings again.", true);
             }
 
-            if (!response.IsSuccessStatusCode || !body.Contains("Ok", StringComparison.OrdinalIgnoreCase) || cookies.GetCookies(new Uri(baseUrl)).Count == 0)
+            if (!response.IsSuccessStatusCode || body.Contains("Fails", StringComparison.OrdinalIgnoreCase))
             {
                 client.Dispose();
-                return (null, "qBittorrent didn't accept the user name and password. Medic Profiles won't try them again for 5 minutes, so qBittorrent doesn't block this server.", true);
+                return (null, "qBittorrent didn't accept the user name and password. Medic Profiles won't try them again for 5 minutes, so qBittorrent doesn't block this server. Saving the settings tries again straight away.", true);
             }
 
             return (client, string.Empty, false);
