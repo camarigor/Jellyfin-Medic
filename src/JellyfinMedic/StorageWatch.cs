@@ -42,6 +42,9 @@ public sealed class DiskSample
 
     public double FreeGb { get; set; }
 
+    // What the drive holds, e.g. "Films, Series". Empty in readings saved before it was recorded.
+    public string Holds { get; set; } = string.Empty;
+
     // A folder on that drive, so the background sampler can read it again tomorrow.
     public string Path { get; set; } = string.Empty;
 }
