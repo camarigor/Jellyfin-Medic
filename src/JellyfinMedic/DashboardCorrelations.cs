@@ -21,6 +21,9 @@ internal static class DashboardCorrelations
 
     private const int MinutesInDay = 24 * 60;
 
+    // An actual run that hasn't finished yet: Jellyfin's statuses have no word for it.
+    private const string RunningStatus = "Running";
+
     // A run that starts up to this much before its planned time still belongs to it.
     private const int EarlyMinutes = 15;
 
@@ -29,6 +32,9 @@ internal static class DashboardCorrelations
 
     // No run this long after its planned time: not run.
     private const int NotRunMinutes = 60;
+
+    // A drive with no reading for this long is gone, or its readings sit under a key no longer used.
+    private const int StaleDriveDays = 7;
 
     // Each transcode reason the library can explain: the media report's count that causes it.
     private static readonly Dictionary<string, (string Cause, Func<CompatibilityCounts, int> Count)> Causes = new(StringComparer.Ordinal)
@@ -91,10 +97,18 @@ internal static class DashboardCorrelations
 
     /// <summary>
     /// Today's planned runs next to the runs that happened (see <see cref="Match"/>), with the day's resource
-    /// spikes and LoadGuard actions, each placed by server local minute. Tasks that run many times a day have
+    /// spikes and LoadGuard actions, each placed by server local minute. A task still running has no run record
+    /// yet, so <paramref name="running"/> adds it as a run that ends now. Tasks that run many times a day have
     /// no planned time and stay out of the plan.
     /// </summary>
-    internal static TodaySection Today(DateTime nowUtc, TimeZoneInfo zone, IEnumerable<CalendarRun> planned, IEnumerable<RunRecord> runs, IEnumerable<ResourceEvent> spikes, IEnumerable<LoadGuardEvent> guard)
+    internal static TodaySection Today(
+        DateTime nowUtc,
+        TimeZoneInfo zone,
+        IEnumerable<CalendarRun> planned,
+        IEnumerable<RunRecord> runs,
+        IEnumerable<(string TaskId, string TaskName, DateTime StartUtc)> running,
+        IEnumerable<ResourceEvent> spikes,
+        IEnumerable<LoadGuardEvent> guard)
     {
         var now = TimeZoneInfo.ConvertTimeFromUtc(ScheduleStorage.AsUtc(nowUtc), zone);
         var today = now.Date;
@@ -112,17 +126,18 @@ internal static class DashboardCorrelations
                 .Select(p => new PlannedRun { TaskId = p.TaskId, TaskName = p.TaskName, StartMinutes = p.StartMinutes, DurationMinutes = p.DurationMinutes, Category = p.Category, Kind = p.Kind })
                 .ToList(),
             Actual = runs
-                .Select(r => (Run: r, Start: MinuteOf(r.StartUtc)))
+                .Select(r => (r.TaskId, r.TaskName, Start: MinuteOf(r.StartUtc), End: MinuteOf(r.EndUtc), r.Status, r.ErrorMessage))
+                .Concat(running.Select(r => (r.TaskId, r.TaskName, Start: MinuteOf(r.StartUtc), End: (int)now.TimeOfDay.TotalMinutes, Status: RunningStatus, ErrorMessage: (string?)null)))
                 .Where(r => IsToday(r.Start))
                 .OrderBy(r => r.Start)
                 .Select(r => new ActualRun
                 {
-                    TaskId = r.Run.TaskId,
-                    TaskName = r.Run.TaskName,
+                    TaskId = r.TaskId,
+                    TaskName = r.TaskName,
                     StartMinutes = r.Start,
-                    EndMinutes = Math.Clamp(MinuteOf(r.Run.EndUtc), r.Start, MinutesInDay),
-                    Status = r.Run.Status,
-                    ErrorMessage = r.Run.ErrorMessage
+                    EndMinutes = Math.Clamp(r.End, r.Start, MinutesInDay),
+                    Status = r.Status,
+                    ErrorMessage = r.ErrorMessage
                 })
                 .ToList(),
             Spikes = spikes
@@ -143,7 +158,8 @@ internal static class DashboardCorrelations
         section.Summary = new TodaySummary
         {
             Planned = section.Planned.Count,
-            Ran = section.Actual.Count,
+            Runs = section.Actual.Count,
+            Running = section.Actual.Count(r => r.Status == RunningStatus),
             Completed = section.Actual.Count(r => r.Status == nameof(TaskCompletionStatus.Completed)),
             Failed = section.Actual.Count(r => r.Status == nameof(TaskCompletionStatus.Failed)),
             Stopped = section.Actual.Count(r => r.Status == nameof(TaskCompletionStatus.Aborted)),
@@ -156,9 +172,10 @@ internal static class DashboardCorrelations
 
     /// <summary>
     /// Gives each planned run its status. A planned run takes the first unclaimed run of the same task that
-    /// started from 15 minutes before it until 15 minutes before that task's next planned run (or the end of
-    /// the day): late when that run started more than 30 minutes after the planned time, ran otherwise.
-    /// Without a run it's not run once an hour has passed, and waiting until then.
+    /// started from 15 minutes before it until 15 minutes before that task's next planned run, or halfway to it
+    /// when the two are closer (or until the end of the day): late when that run started more than 30 minutes
+    /// after the planned time, ran otherwise. Without a run it's not run once an hour has passed, and waiting
+    /// until then.
     /// </summary>
     private static void Match(List<PlannedRun> planned, List<ActualRun> actual, int nowMinutes)
     {
@@ -170,7 +187,9 @@ internal static class DashboardCorrelations
             {
                 var plan = times[i];
                 int from = plan.StartMinutes - EarlyMinutes;
-                int until = i + 1 < times.Count ? times[i + 1].StartMinutes - EarlyMinutes : MinutesInDay;
+                int until = i + 1 < times.Count
+                    ? Math.Max(times[i + 1].StartMinutes - EarlyMinutes, (plan.StartMinutes + times[i + 1].StartMinutes + 1) / 2)
+                    : MinutesInDay;
                 var run = actual.FirstOrDefault(a => a.TaskId == plan.TaskId && !claimed.Contains(a) && a.StartMinutes >= from && a.StartMinutes < until);
                 if (run is not null)
                 {
@@ -199,7 +218,7 @@ internal static class DashboardCorrelations
             .Select(r =>
             {
                 bool known = Causes.TryGetValue(r.Key, out var cause);
-                return new TranscodeReason
+                return new TranscodeReasonShare
                 {
                     Reason = r.Key,
                     Share = log.Samples > 0 ? Math.Round(r.Value * 100.0 / log.Samples, 1) : 0,
@@ -221,15 +240,22 @@ internal static class DashboardCorrelations
     /// Each drive in the disk history: free and total space now (<paramref name="space"/> reads a folder's
     /// drive; the last reading stands in when it can't), how fast it's filling and when it will be full (the
     /// rules StorageWatch and DriveStatus use), what it holds from its latest reading that recorded it, and its
-    /// daily readings. Soonest full first, with the days Medic freed space.
+    /// daily readings. Soonest full first, with the days Medic freed space. A drive not read for a week (by
+    /// <paramref name="today"/>, server local) is left out.
     /// </summary>
-    internal static DisksSection Disks(IEnumerable<DiskSample> history, Func<string, (double FreeGb, double TotalGb)?> space, IEnumerable<FreedDay> freed)
+    internal static DisksSection Disks(IEnumerable<DiskSample> history, Func<string, (double FreeGb, double TotalGb)?> space, IEnumerable<FreedDay> freed, DateTime today)
     {
+        string stale = today.AddDays(-StaleDriveDays).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var drives = new List<DiskOutlook>();
         foreach (var drive in history.GroupBy(h => h.Key, StringComparer.Ordinal))
         {
             var days = drive.OrderBy(h => h.Day, StringComparer.Ordinal).ToList();
             var latest = days[^1];
+            if (string.CompareOrdinal(latest.Day, stale) < 0)
+            {
+                continue;
+            }
+
             var now = space(latest.Path);
             var status = new DriveStatus { FreeGb = now?.FreeGb ?? latest.FreeGb, TotalGb = now?.TotalGb ?? 0, GbPerDay = StorageWatch.FillRate(days) };
             drives.Add(new DiskOutlook

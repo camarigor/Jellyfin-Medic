@@ -133,8 +133,10 @@ public sealed class TodayTests
         Kind = "normal"
     };
 
+    private static readonly (string TaskId, string TaskName, DateTime StartUtc)[] NoneRunning = Array.Empty<(string, string, DateTime)>();
+
     private static TodaySection At(IEnumerable<CalendarRun> planned, IEnumerable<RunRecord> runs) =>
-        DashboardCorrelations.Today(Noon, Dash.Zone(0), planned, runs, Array.Empty<ResourceEvent>(), Array.Empty<LoadGuardEvent>());
+        DashboardCorrelations.Today(Noon, Dash.Zone(0), planned, runs, NoneRunning, Array.Empty<ResourceEvent>(), Array.Empty<LoadGuardEvent>());
 
     [Fact]
     public void A_run_that_started_more_than_30_minutes_after_its_planned_time_is_late()
@@ -145,7 +147,7 @@ public sealed class TodayTests
 
         Assert.Equal(new[] { "late", "ran" }, today.Planned.Select(p => p.Status));
         Assert.Equal(1, today.Summary.Late);
-        Assert.Equal(2, today.Summary.Ran);
+        Assert.Equal(2, today.Summary.Runs);
     }
 
     [Fact]
@@ -204,7 +206,7 @@ public sealed class TodayTests
         var spikes = new[] { new ResourceEvent { TimeUtc = Dash.Utc(2026, 10, 14, 4, 10), Resource = "CPU", Level = "95% of all CPU threads" } };
         var guard = new[] { new LoadGuardEvent { TimestampUtc = Dash.Utc(2026, 10, 14, 4, 12), Action = "stopped", TaskName = "Trickplay" } };
 
-        var today = DashboardCorrelations.Today(Noon, Dash.Zone(-3), Array.Empty<CalendarRun>(), runs, spikes, guard);
+        var today = DashboardCorrelations.Today(Noon, Dash.Zone(-3), Array.Empty<CalendarRun>(), runs, NoneRunning, spikes, guard);
 
         Assert.Equal("2026-10-14", today.Date);
         Assert.Equal(540, today.NowMinutes);
@@ -223,6 +225,35 @@ public sealed class TodayTests
 
         Assert.Empty(today.Planned);
         Assert.Equal(0, today.Summary.Planned);
+    }
+
+    [Fact]
+    public void A_task_still_running_counts_for_its_planned_time_and_shows_as_running()
+    {
+        // Planned at 10:00, started at 10:05 and still going at 12:00: its run has no record yet.
+        var running = new[] { (TaskId: "a", TaskName: "Scan", StartUtc: Dash.Utc(2026, 10, 14, 10, 5)) };
+
+        var today = DashboardCorrelations.Today(Noon, Dash.Zone(0), new[] { Planned("a", "Scan", 600) }, Array.Empty<RunRecord>(), running, Array.Empty<ResourceEvent>(), Array.Empty<LoadGuardEvent>());
+
+        Assert.Equal("ran", Assert.Single(today.Planned).Status);
+        var run = Assert.Single(today.Actual);
+        Assert.Equal("Running", run.Status);
+        Assert.Equal(605, run.StartMinutes);
+        Assert.Equal(720, run.EndMinutes);
+        Assert.Equal(1, today.Summary.Running);
+        Assert.Equal(1, today.Summary.Runs);
+        Assert.Equal(0, today.Summary.NotRun);
+    }
+
+    [Fact]
+    public void Two_planned_runs_15_minutes_apart_each_take_their_own_run()
+    {
+        // Planned at 03:00 and 03:15; it ran at 03:00 and at 03:25.
+        var today = At(
+            new[] { Planned("a", "Scan", 180), Planned("a", "Scan", 195) },
+            new[] { Dash.Run("a", "Scan", Dash.Utc(2026, 10, 14, 3, 0)), Dash.Run("a", "Scan", Dash.Utc(2026, 10, 14, 3, 25)) });
+
+        Assert.Equal(new[] { "ran", "ran" }, today.Planned.Select(p => p.Status));
     }
 }
 
@@ -278,6 +309,8 @@ public sealed class TranscodeReasonsTests
 
 public sealed class DiskOutlookTests
 {
+    private static readonly DateTime Today = new(2026, 10, 14);
+
     private static DiskSample Reading(string key, string day, double freeGb, string holds = "") =>
         new() { Key = key, Day = day, FreeGb = freeGb, Holds = holds, Path = key + "/media" };
 
@@ -288,7 +321,7 @@ public sealed class DiskOutlookTests
     {
         var history = new[] { Reading("/mnt/a", "2026-10-13", 500), Reading("/mnt/a", "2026-10-14", 498) };
 
-        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (480.0, 1000.0), Array.Empty<FreedDay>()).Drives);
+        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (480.0, 1000.0), Array.Empty<FreedDay>(), Today).Drives);
 
         Assert.Null(drive.GbPerDay);
         Assert.Null(drive.DaysToFull);
@@ -303,7 +336,7 @@ public sealed class DiskOutlookTests
         // 30 GB used over 10 days is 3 GB a day, so 300 GB free now lasts 100 days.
         var history = new[] { Reading("/mnt/a", "2026-10-04", 330, "Films"), Reading("/mnt/a", "2026-10-14", 300) };
 
-        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (300.0, 2000.0), Array.Empty<FreedDay>()).Drives);
+        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (300.0, 2000.0), Array.Empty<FreedDay>(), Today).Drives);
 
         Assert.Equal(3.0, drive.GbPerDay);
         Assert.Equal(100.0, drive.DaysToFull);
@@ -315,7 +348,7 @@ public sealed class DiskOutlookTests
     {
         var history = new[] { Reading("/mnt/usb", "2026-10-14", 120, "Backups") };
 
-        var drive = Assert.Single(DashboardCorrelations.Disks(history, Unreadable, Array.Empty<FreedDay>()).Drives);
+        var drive = Assert.Single(DashboardCorrelations.Disks(history, Unreadable, Array.Empty<FreedDay>(), Today).Drives);
 
         Assert.Equal(120.0, drive.FreeGb);
         Assert.Equal(0.0, drive.TotalGb);
@@ -332,10 +365,21 @@ public sealed class DiskOutlookTests
         };
         var freed = new[] { new FreedDay { Day = "2026-10-12", Bytes = 5 }, new FreedDay { Day = "2026-10-03", Bytes = 7 } };
 
-        var section = DashboardCorrelations.Disks(history, path => path.StartsWith("/mnt/b", StringComparison.Ordinal) ? (50.0, 100.0) : (100.0, 100.0), freed);
+        var section = DashboardCorrelations.Disks(history, path => path.StartsWith("/mnt/b", StringComparison.Ordinal) ? (50.0, 100.0) : (100.0, 100.0), freed, Today);
 
         Assert.Equal(new[] { "/mnt/b", "/mnt/a" }, section.Drives.Select(d => d.Key));
         Assert.Equal(new[] { "2026-10-03", "2026-10-12" }, section.Freed.Select(f => f.Day));
+    }
+
+    [Fact]
+    public void A_drive_not_read_for_a_week_is_left_out()
+    {
+        // A drive that's gone, or a key no longer used, keeps its old readings for 30 days.
+        var history = new[] { Reading("/mnt/a", "2026-10-14", 100), Reading("931.5/500.0", "2026-10-06", 500) };
+
+        var section = DashboardCorrelations.Disks(history, _ => (100.0, 200.0), Array.Empty<FreedDay>(), Today);
+
+        Assert.Equal("/mnt/a", Assert.Single(section.Drives).Key);
     }
 }
 

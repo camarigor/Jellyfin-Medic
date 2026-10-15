@@ -14,16 +14,17 @@ namespace JellyfinMedic.Api;
 
 /// <summary>
 /// The data behind the Dashboard's panels. Kept apart from MedicController, so splitting that one up
-/// (issue #62) doesn't touch these routes.
+/// (issue #62) doesn't touch these routes. Not "DashboardController": Jellyfin has one, and the API
+/// document would list these routes under its "Dashboard".
 /// </summary>
 [ApiController]
 [Route("JellyfinMedic/Dashboard")]
 [Authorize(Policy = Policies.RequiresElevation)] // Admins only: it lists accounts and the server's state.
-public class DashboardController : ControllerBase
+public class MedicDashboardController : ControllerBase
 {
     private readonly DashboardBuilder _builder;
 
-    public DashboardController(
+    public MedicDashboardController(
         IServerConfigurationManager config,
         IApplicationPaths paths,
         ITaskManager tasks,
@@ -31,7 +32,7 @@ public class DashboardController : ControllerBase
         IUserManager users,
         IInstallationManager installs,
         IServiceProvider services,
-        ILogger<DashboardController> logger)
+        ILogger<MedicDashboardController> logger)
     {
         WeeklyLedger.Init(paths.PluginConfigurationsPath);
         _builder = new DashboardBuilder(config, paths, tasks, sessions, users, installs, services, logger);

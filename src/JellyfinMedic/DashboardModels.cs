@@ -151,7 +151,7 @@ public sealed class ActualRun
 
     public int EndMinutes { get; set; }
 
-    // Completed, Failed, Cancelled or Aborted, as Jellyfin reports it.
+    // Completed, Failed, Cancelled or Aborted, as Jellyfin reports it, or Running for a run that hasn't finished.
     public string Status { get; set; } = string.Empty;
 
     public string? ErrorMessage { get; set; }
@@ -181,7 +181,10 @@ public sealed class TodaySummary
 {
     public int Planned { get; set; }
 
-    public int Ran { get; set; }
+    // Every run that started today, finished or still going.
+    public int Runs { get; set; }
+
+    public int Running { get; set; }
 
     public int Completed { get; set; }
 
@@ -203,7 +206,7 @@ public sealed class TranscodesSection
 
     public int Samples { get; set; }
 
-    public List<TranscodeReason> Reasons { get; set; } = new();
+    public List<TranscodeReasonShare> Reasons { get; set; } = new();
 
     // Up to 5 titles, most transcoded first.
     public List<TranscodeTitle> Top { get; set; } = new();
@@ -212,7 +215,8 @@ public sealed class TranscodesSection
     public DateTime? MediaReportUtc { get; set; }
 }
 
-public sealed class TranscodeReason
+// Not "TranscodeReason": Jellyfin has a type of that name, and its API document names schemas by short name.
+public sealed class TranscodeReasonShare
 {
     // As Jellyfin reports it, e.g. AudioCodecNotSupported.
     public string Reason { get; set; } = string.Empty;

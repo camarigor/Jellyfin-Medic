@@ -117,16 +117,22 @@ internal sealed class DashboardBuilder
         var now = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone);
         var data = new DashboardData { GeneratedUtc = nowUtc, UtcOffsetMinutes = (int)zone.GetUtcOffset(nowUtc).TotalMinutes };
         var runs = new Lazy<List<RunRecord>>(ReadRuns);
-
-        Section(data, nameof(DashboardData.BusyHours), _logger, () =>
+        var usage = new Lazy<(UsageProfile Profile, UsageSummary Summary)>(() =>
         {
             var profile = UsageStore.Load(_paths);
-            data.BusyHours = DashboardCorrelations.BusyHours(UsageAnalyzer.Summarise(profile), profile, runs.Value, nowUtc, zone);
+            return (profile, UsageAnalyzer.Summarise(profile));
         });
+
+        Section(data, nameof(DashboardData.BusyHours), _logger, () =>
+            data.BusyHours = DashboardCorrelations.BusyHours(usage.Value.Summary, usage.Value.Profile, runs.Value, nowUtc, zone));
         Section(data, nameof(DashboardData.Today), _logger, () =>
         {
             var planned = ScheduleCalendar.PlannedRuns(_tasks.ScheduledTasks.Where(ScheduleStorage.IsVisible), ScheduleStorage.LoadProfile(_paths), ScheduleStorage.LoadManaged(_paths), now.Date, now);
-            data.Today = DashboardCorrelations.Today(nowUtc, zone, planned, runs.Value, ResourceLog.Load(_paths), LoadGuardLog.Load(_paths));
+            var running = _tasks.ScheduledTasks
+                .Where(t => t.State == TaskState.Running)
+                .Select(t => (TaskId: t.Id.ToString(), TaskName: t.Name, StartUtc: ServerNow.RunningSinceUtc(t.Id.ToString())))
+                .ToList();
+            data.Today = DashboardCorrelations.Today(nowUtc, zone, planned, runs.Value, running, ResourceLog.Load(_paths), LoadGuardLog.Load(_paths));
         });
         Section(data, nameof(DashboardData.Transcodes), _logger, () =>
         {
@@ -134,9 +140,9 @@ internal sealed class DashboardBuilder
             data.Transcodes = DashboardCorrelations.Transcodes(media.Transcodes, media.Report);
         });
         Section(data, nameof(DashboardData.Disks), _logger, () =>
-            data.Disks = DashboardCorrelations.Disks(StorageWatch.History(_paths.PluginConfigurationsPath), SystemProbe.Space, WeeklyLedger.FreedDays(now.Date.AddDays(-30))));
+            data.Disks = DashboardCorrelations.Disks(StorageWatch.History(_paths.PluginConfigurationsPath), SystemProbe.Space, WeeklyLedger.FreedDays(now.Date.AddDays(-30)), now.Date));
         Section(data, nameof(DashboardData.Network), _logger, () =>
-            data.Network = DashboardCorrelations.Network(SpeedStore.Load(_paths), _config.Configuration.RemoteClientBitrateLimit, UsageAnalyzer.Summarise(UsageStore.Load(_paths)).MaxStreams));
+            data.Network = DashboardCorrelations.Network(SpeedStore.Load(_paths), _config.Configuration.RemoteClientBitrateLimit, usage.Value.Summary.MaxStreams));
         Section(data, nameof(DashboardData.RepeatedErrors), _logger, () =>
             data.RepeatedErrors = LogScanner.Scan(_paths.LogDirectoryPath, _paths.PluginConfigurationsPath).Take(5).ToList());
         Section(data, nameof(DashboardData.People), _logger, () => data.People = People());

@@ -92,12 +92,34 @@ public sealed class DiskReadingsTests : IDisposable
             Path.Combine(dir, "JellyfinMedic", "disk_history.json"),
             JsonSerializer.Serialize(new[] { new DiskSample { Key = "/mnt/a", Day = yesterday, FreeGb = 50, Holds = "Films", Path = _paths.Root } }));
 
-        StorageWatch.RecordKnown(dir);
+        StorageWatch.RecordKnownNow(dir);
 
         Assert.Equal("Films", StorageWatch.History(dir).Single(h => h.Day != yesterday).Holds);
     }
 
-    public void Dispose() => Directory.Delete(_paths.Root, recursive: true);
+[Fact]
+    public void Readings_kept_under_keys_that_moved_with_free_space_come_back_under_the_drives_own_key()
+    {
+        // Where mount points couldn't be read, a drive's key was its size and free space, so it changed every day.
+        string dir = _paths.PluginConfigurationsPath;
+        string DaysAgo(int days) => DateTime.Now.AddDays(-days).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        Directory.CreateDirectory(Path.Combine(dir, "JellyfinMedic"));
+        File.WriteAllText(
+            Path.Combine(dir, "JellyfinMedic", "disk_history.json"),
+            JsonSerializer.Serialize(new[]
+            {
+                new DiskSample { Key = "931.5/500.0", Day = DaysAgo(2), FreeGb = 500, Holds = "Films", Path = _paths.Root },
+                new DiskSample { Key = "931.5/499.0", Day = DaysAgo(1), FreeGb = 499, Holds = "Films", Path = _paths.Root }
+            }));
+
+        StorageWatch.RecordKnownNow(dir);
+
+        var reading = Assert.Single(StorageWatch.History(dir), h => h.Day == DaysAgo(0));
+        Assert.Equal(StorageWatch.Drives(new[] { ("Films", _paths.Root) }).Single().Key, reading.Key);
+        Assert.Equal("Films", reading.Holds);
+    }
+
+        public void Dispose() => Directory.Delete(_paths.Root, recursive: true);
 }
 
 public sealed class FreedDaysTests
@@ -173,5 +195,18 @@ public sealed class DashboardBuilderTests
         Assert.Equal(new[] { "Disks" }, data.Errors.Keys);
         Assert.Contains("IOException", data.Errors["Disks"], StringComparison.Ordinal);
         Assert.Equal(2, data.Network!.MostStreams);
+    }
+}
+
+public sealed class DriveKeyTests
+{
+    [Theory]
+    [InlineData("/Volumes/Media/Films", "/Volumes/Media")]
+    [InlineData("/Volumes/MediaBackup/Films", "/")]
+    [InlineData("D:\\Media\\Films", "D:\\")]
+    [InlineData("E:\\Films", null)]
+    public void A_drive_whose_mount_point_cant_be_read_is_known_by_the_volume_that_holds_it(string path, string? root)
+    {
+        Assert.Equal(root, StorageWatch.VolumeRoot(path, new[] { "/", "/Volumes/Media", "C:\\", "D:\\" }));
     }
 }
