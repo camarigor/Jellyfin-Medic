@@ -158,3 +158,20 @@ public sealed class SignInTests
         Assert.Empty(SecurityAuditor.RoamingAccounts(null, new List<object>())!);
     }
 }
+
+public sealed class DashboardBuilderTests
+{
+    [Fact]
+    public void A_section_that_fails_is_left_out_with_a_message_and_the_rest_still_arrive()
+    {
+        var data = new DashboardData();
+
+        DashboardBuilder.Section(data, "Disks", NullLogger.Instance, () => throw new IOException("disk_history.json is locked"));
+        DashboardBuilder.Section(data, "Network", NullLogger.Instance, () => data.Network = new NetworkSection { MostStreams = 2 });
+
+        Assert.Null(data.Disks);
+        Assert.Equal(new[] { "Disks" }, data.Errors.Keys);
+        Assert.Contains("IOException", data.Errors["Disks"], StringComparison.Ordinal);
+        Assert.Equal(2, data.Network!.MostStreams);
+    }
+}

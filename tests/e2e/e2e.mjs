@@ -289,6 +289,54 @@ await check('resource monitor measures Jellyfin and its FFmpeg processes', async
     return `CPU ${res.CpuPercent}%, ${res.MemoryGb} GB, disk ${res.DiskMBps} MB/s, GPU ${res.GpuPercent ?? 'n/a'}`;
 });
 
+await check('Dashboard data: both routes answer an admin with every section, and refuse other accounts', async () => {
+    // /Report saves today's disk readings, which the Disks section reads.
+    await ok('/JellyfinMedic/Report');
+    const data = await ok('/JellyfinMedic/Dashboard');
+    expect(Object.keys(data.Errors || {}).length === 0, 'sections that failed: ' + JSON.stringify(data.Errors));
+    const fields = ['GeneratedUtc', 'UtcOffsetMinutes', 'BusyHours', 'Today', 'Transcodes', 'Disks', 'Network', 'RepeatedErrors', 'People', 'Updates'];
+    const missing = fields.filter((k) => data[k] === undefined || data[k] === null);
+    expect(missing.length === 0, 'missing or empty: ' + missing.join(', '));
+    expect(data.BusyHours.Days.length === 7 && data.BusyHours.Days.every((d) => d.length === 24), 'the busy grid is not 7 by 24');
+    expect(/^\d{4}-\d{2}-\d{2}$/.test(data.Today.Date) && data.Today.Summary, 'Today: ' + JSON.stringify(data.Today).slice(0, 200));
+    expect(data.Disks.Drives.length > 0, 'no drives, though /Report has just read them');
+    expect(Array.isArray(data.People.Roaming), 'roaming accounts: ' + JSON.stringify(data.People));
+
+    let live = await ok('/JellyfinMedic/Dashboard/Live');
+    for (let i = 0; i < 9 && live.Resources.length === 0; i++) {
+        await sleep(5000); // the monitor's first reading comes about 30 seconds after Jellyfin starts
+        live = await ok('/JellyfinMedic/Dashboard/Live');
+    }
+    expect(live.Now && Array.isArray(live.Now.RunningTasks), 'Now: ' + JSON.stringify(live.Now).slice(0, 200));
+    expect(live.Resources.length > 0 && 'CpuPercent' in live.Resources[0], 'no resource readings');
+    expect(JSON.stringify(live.Limits) === JSON.stringify({ CpuPercent: 90, MemoryPercent: 90, DiskMBps: 150, GpuPercent: 95 }), 'limits: ' + JSON.stringify(live.Limits));
+    expect(Array.isArray(live.Paused), 'paused: ' + JSON.stringify(live.Paused));
+
+    // An account that isn't an administrator, on its own device so the admin's session stays signed in.
+    const name = 'e2e-not-admin';
+    const device = AUTH.replace('medic-e2e', name);
+    const made = await api('POST', '/Users/New', { Name: name, Password: 'e2e-pass' });
+    expect(made.status === 200, 'user not created: ' + made.text);
+    try {
+        const signIn = await fetch(JF + '/Users/AuthenticateByName', {
+            method: 'POST',
+            headers: { Authorization: device, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ Username: name, Pw: 'e2e-pass' })
+        });
+        expect(signIn.status === 200, 'sign-in: ' + signIn.status);
+        const userToken = (await signIn.json()).AccessToken;
+        for (const path of ['/JellyfinMedic/Dashboard', '/JellyfinMedic/Dashboard/Live']) {
+            const asUser = await fetch(JF + path, { headers: { Authorization: `${device}, Token="${userToken}"` } });
+            expect(asUser.status === 403, `${path} answered an account that isn't an administrator: ${asUser.status}`);
+            const anonymous = await fetch(JF + path);
+            expect(anonymous.status === 401, `${path} answered a request with no sign-in: ${anonymous.status}`);
+        }
+    } finally {
+        await api('DELETE', `/Users/${made.json.Id}`);
+    }
+    return `${fields.length} fields, ${data.Disks.Drives.length} drives, ${live.Resources.length} readings; 403 and 401 for the others`;
+});
+
 await check('schedule plan uses quarter-hour slots', async () => {
     const cal = await ok('/JellyfinMedic/Schedule/GetCalendar');
     expect(cal.AvoidedSlots?.length === 96, 'expected 96 avoided slots, got ' + cal.AvoidedSlots?.length);

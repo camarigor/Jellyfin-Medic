@@ -9,6 +9,9 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
 ## Unreleased
 
+### Added
+- **Groundwork for a fuller Dashboard.** Medic now puts side by side, for the Dashboard panels to come, what it already records: busy hours next to the week's task runs, today's planned runs next to the ones that ran, why files are transcoded next to what in the library causes it, each drive's last 30 days, your connection next to the most people watching at once, repeated log errors, accounts and updates. Nothing new is collected or sent anywhere; the daily disk reading now also notes what each drive holds.
+
 ### Fixed
 - **Ignoring a repeated error in the log keeps working when it repeats again.** Its title says how many times the error has repeated, so it came back after being ignored, and two different errors with the same count shared one ignore. It's now named by the error itself. A repeated error you ignored before needs ignoring once more.
 - **Two drives that hold the same library each keep their own "will be full" warning.** When one library is spread over two drives that hold nothing else, both warnings had the same name, so ignoring one also hid the other. The name now uses the drive's mount point when Medic can read it. A "will be full" warning you ignored in 1.0.19 needs ignoring once more.
