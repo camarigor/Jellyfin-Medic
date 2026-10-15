@@ -4,6 +4,7 @@
 #
 #   tests/e2e/run.sh            build, start, test, stop
 #   KEEP=1 tests/e2e/run.sh     leave Jellyfin running afterwards on http://127.0.0.1:8096
+#   tests/e2e/run.sh "dashboard" "memory"    run only the checks whose names contain one of these
 #   JELLYFIN_IMAGE=jellyfin/jellyfin:12.1 tests/e2e/run.sh    test against another Jellyfin
 #
 # Needs: dotnet 10 SDK, docker, ffmpeg, node with playwright (PLAYWRIGHT_MODULE can point at it).
@@ -100,6 +101,6 @@ done
 
 status=0
 # The pretend Sonarr, qBittorrent and Seerr listen only where the container reaches this machine.
-JF="http://127.0.0.1:$PORT" WORK="$WORK" FAKE_HOST="${GATEWAY:-0.0.0.0}" node "$ROOT/tests/e2e/e2e.mjs" || status=$?
+JF="http://127.0.0.1:$PORT" WORK="$WORK" FAKE_HOST="${GATEWAY:-0.0.0.0}" node "$ROOT/tests/e2e/e2e.mjs" "$@" || status=$?
 docker logs "$NAME" 2>&1 | grep -E "\[ERR\]|\[FTL\]" | grep -iE "medic|picks|profiles" | head -20 || true
 exit $status
