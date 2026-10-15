@@ -17,6 +17,9 @@ public class NowSnapshot
 
     public double MemoryLimitGb { get; set; }
 
+    // MemoryGb as a share of MemoryLimitGb, for the Dashboard's warning colours.
+    public double MemoryPercent { get; set; }
+
     public int Watching { get; set; }
 
     public int Transcoding { get; set; }
@@ -151,8 +154,10 @@ public static class ServerNow
         }
 
         var process = Process.GetCurrentProcess();
+        long available = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
         snap.MemoryGb = Math.Round(process.WorkingSet64 / 1073741824d, 1);
-        snap.MemoryLimitGb = Math.Round(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1073741824d, 1);
+        snap.MemoryLimitGb = Math.Round(available / 1073741824d, 1);
+        snap.MemoryPercent = available > 0 ? Math.Round(Math.Clamp(process.WorkingSet64 * 100d / available, 0, 100), 1) : 0;
 
         try
         {

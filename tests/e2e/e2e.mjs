@@ -1161,6 +1161,16 @@ await check('Medic dashboard: Details on a top issue opens Checks at that findin
     }
 });
 
+await check('Medic dashboard: memory shows its real share, not 0%', async () => {
+    const now = await ok('/JellyfinMedic/Now');
+    expect(typeof now.MemoryPercent === 'number' && now.MemoryPercent > 0, 'MemoryPercent is ' + now.MemoryPercent);
+    const expected = now.MemoryGb / now.MemoryLimitGb * 100;
+    expect(Math.abs(now.MemoryPercent - expected) <= 1, `MemoryPercent ${now.MemoryPercent}, expected about ${expected.toFixed(1)}`);
+    await medicTab('dashboard');
+    await page.waitForFunction(() => /\((?!0%\))[\d.]+%\)/.test(document.getElementById('md-now')?.textContent || ''), null, { timeout: 20000 });
+    return now.MemoryPercent + '%';
+});
+
 await check('Medic page: Off/Suggest and the time range are separate buttons, and the arrow keys reach every tab', async () => {
     await medicTab('settings');
     const pressed = () => page.evaluate(() => Array.from(document.querySelectorAll('#JellyfinMedicPage .md-seg button[aria-pressed="true"]'))
