@@ -58,6 +58,15 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
     private static readonly object Sync = new();
     private static readonly Queue<ResourceSample> Recent = new();
 
+    // About 10 minutes of readings, one every 15 seconds.
+    private const int KeptReadings = 40;
+
+    // Heavy use, once it lasts 45 seconds. The Dashboard draws these as its alert lines.
+    internal const double CpuAlertPercent = 90;
+    internal const double MemoryAlertPercent = 90;
+    internal const double DiskAlertMBps = 150;
+    internal const double GpuAlertPercent = 95;
+
     private readonly ITaskManager _tasks;
     private readonly ISessionManager _sessions;
     private readonly IApplicationPaths _paths;
@@ -85,6 +94,28 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
             {
                 return Recent.LastOrDefault();
             }
+        }
+    }
+
+    /// <summary>Adds a reading, keeping the last 40.</summary>
+    internal static void Remember(ResourceSample sample)
+    {
+        lock (Sync)
+        {
+            Recent.Enqueue(sample);
+            while (Recent.Count > KeptReadings)
+            {
+                Recent.Dequeue();
+            }
+        }
+    }
+
+    /// <summary>The readings of about the last 10 minutes, oldest first. A reading isn't changed once taken.</summary>
+    internal static List<ResourceSample> RecentReadings()
+    {
+        lock (Sync)
+        {
+            return Recent.ToList();
         }
     }
 
@@ -117,19 +148,12 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
                 return;
             }
 
-            lock (Sync)
-            {
-                Recent.Enqueue(sample);
-                while (Recent.Count > 40)
-                {
-                    Recent.Dequeue();
-                }
-            }
+            Remember(sample);
 
-            Watch("CPU", sample.CpuPercent >= 90, $"{sample.CpuPercent:0}% of all CPU threads", ffmpeg);
-            Watch("Memory", sample.MemoryPercent >= 90, $"{sample.MemoryGb:0.#} GB ({sample.MemoryPercent:0}% of what Jellyfin may use)", ffmpeg);
-            Watch("Disk", sample.DiskMBps >= 150, $"{sample.DiskMBps:0} MB/s of reads and writes", ffmpeg);
-            Watch("GPU", sample.GpuPercent >= 95, $"{sample.GpuPercent:0}% GPU", ffmpeg);
+            Watch("CPU", sample.CpuPercent >= CpuAlertPercent, $"{sample.CpuPercent:0}% of all CPU threads", ffmpeg);
+            Watch("Memory", sample.MemoryPercent >= MemoryAlertPercent, $"{sample.MemoryGb:0.#} GB ({sample.MemoryPercent:0}% of what Jellyfin may use)", ffmpeg);
+            Watch("Disk", sample.DiskMBps >= DiskAlertMBps, $"{sample.DiskMBps:0} MB/s of reads and writes", ffmpeg);
+            Watch("GPU", sample.GpuPercent >= GpuAlertPercent, $"{sample.GpuPercent:0}% GPU", ffmpeg);
         }
         catch (Exception ex)
         {
