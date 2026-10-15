@@ -16,6 +16,7 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 - **An old LoadGuard stop no longer shows as a warning.** The Dashboard showed the latest LoadGuard event however old it was. It now shows only the last day, and a stop stays a warning only until that task restarts.
 - **"Today's tasks" stays current.** "Next at" and the line for now stayed where they were when the schedule was first loaded. They now move with the clock, and the schedule is fetched again every 15 minutes and when the day changes.
 - **Details opens Checks at the issue.** It opened Checks at the top of the list. It now scrolls to the issue, focuses it and marks it.
+- **Ignoring an issue doesn't count it as fixed.** "This week" counted an issue you ignored as fixed, because ignored issues were left out of each day's record. Medic now records them, and "This week" says how many you ignored.
 
 ## [1.0.19] – 2026-10-14
 

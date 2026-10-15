@@ -3051,21 +3051,23 @@
                         const box = $('md-week');
                         box.innerHTML = '';
                         const fixedList = pick(w, 'FixedIssues') || [], newList = pick(w, 'NewIssues') || [];
+                        const ignoredList = pick(w, 'IgnoredIssues') || [];
                         const freed = pick(w, 'FreedTotal') || 0;
                         big.textContent = freed > 0 ? tracksSize(freed) + ' freed' : (fixedList.length ? fixedList.length + ' fixed' : 'Quiet week');
                         const since = pick(w, 'Since') ? new Date(pick(w, 'Since')).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : null;
                         const line = function (t) { box.appendChild(el('p', null, t)); };
                         if (since) line('Since ' + since + ':');
-                        line(fixedList.length + ' issue' + (fixedList.length === 1 ? '' : 's') + ' fixed, ' + newList.length + ' new.');
+                        line(fixedList.length + ' issue' + (fixedList.length === 1 ? '' : 's') + ' fixed, ' + newList.length + ' new' + (ignoredList.length ? ', ' + ignoredList.length + ' ignored' : '') + '.');
                         const by = pick(w, 'FreedBy') || {};
                         Object.keys(by).forEach(function (k) { line(k + ': ' + tracksSize(by[k]) + ' freed.'); });
                         if (pick(w, 'Restarts')) line('Medic restarted Jellyfin ' + pick(w, 'Restarts') + ' time' + (pick(w, 'Restarts') === 1 ? '' : 's') + '.');
                         line('Now: ' + (pick(w, 'NeedChanging') || 0) + ' need changing, ' + (pick(w, 'CouldBeBetter') || 0) + ' could be better.');
-                        if (newList.length || fixedList.length) {
+                        if (newList.length || fixedList.length || ignoredList.length) {
                             const d = el('details');
                             d.appendChild(el('summary', null, 'What changed'));
                             newList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'New: ' + fmtTimes(t))); });
                             fixedList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'Fixed: ' + fmtTimes(t))); });
+                            ignoredList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'Ignored: ' + fmtTimes(t))); });
                             box.appendChild(d);
                         }
                     } catch (e) {
