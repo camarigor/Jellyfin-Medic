@@ -48,10 +48,7 @@
                         </section>
                         <section class="md-tile" aria-labelledby="md-t-now">
                             <h3 id="md-t-now" class="md-tile-head">Right now</h3>
-                            <div class="md-now-top">
-                                <div><p id="md-cpu" class="md-big">…</p><span class="so-muted so-small">Jellyfin CPU</span></div>
-                                <svg id="md-spark" width="150" height="46" viewBox="0 0 150 46" aria-hidden="true"><polyline id="md-spark-line" points="" fill="none" stroke="#5fd0b3" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline></svg>
-                            </div>
+                            <div><p id="md-cpu" class="md-big">…</p><span class="so-muted so-small">Jellyfin CPU</span></div>
                             <dl id="md-now" class="so-kv"></dl>
                         </section>
                         <section class="md-tile" aria-labelledby="md-t-disks">
@@ -919,7 +916,6 @@
         #JellyfinMedicPage .md-line-freed { stroke: #8cc8ff; stroke-width: 1; vector-effect: non-scaling-stroke; }
         #JellyfinMedicPage .md-errors li, #JellyfinMedicPage .md-people-group { display: flex; flex-direction: column; gap: 2px; }
         #JellyfinMedicPage .md-people { display: flex; flex-direction: column; gap: 8px; }
-        #JellyfinMedicPage .md-now-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
         #JellyfinMedicPage .md-issues { list-style: none; margin: 0; padding: 0; }
         #JellyfinMedicPage .md-issues li { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid #262930; flex-wrap: wrap; }
         #JellyfinMedicPage .md-issue-text { flex: 1 1 340px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -1759,38 +1755,21 @@
                     });
                 }
 
+                // CPU, memory and who is watching; the Load panel charts the rest.
                 function renderNow() {
                     if (!nowData) return;
                     $('md-cpu').textContent = Math.round(pick(nowData, 'CpuPercent') || 0) + '%';
-                    const hist = (pick(nowData, 'CpuHistory') || []).concat([pick(nowData, 'CpuPercent') || 0]);
-                    const points = hist.map(function (v, i) {
-                        const x = hist.length < 2 ? 0 : (i / (hist.length - 1)) * 148 + 1;
-                        const y = 44 - Math.min(100, v) / 100 * 40;
-                        return x.toFixed(1) + ',' + y.toFixed(1);
-                    }).join(' ');
-                    $('md-spark-line').setAttribute('points', points);
                     const dl = $('md-now');
                     dl.innerHTML = '';
-                    function row(k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); }
-                    var memPct = pick(nowData, 'MemoryPercent') || 0;
-                    var memText = (pick(nowData, 'MemoryGb') || 0) + ' GB of ' + (pick(nowData, 'MemoryLimitGb') || '?') + ' GB (' + memPct + '%)';
+                    const memPct = pick(nowData, 'MemoryPercent') || 0;
                     dl.appendChild(el('dt', null, 'Memory'));
-                    dl.appendChild(el('dd', memPct >= 85 ? 'md-bad-text' : (memPct >= 70 ? 'md-warn-text' : null), memText));
+                    dl.appendChild(el('dd', memPct >= 85 ? 'md-bad-text' : (memPct >= 70 ? 'md-warn-text' : null),
+                        (pick(nowData, 'MemoryGb') || 0) + ' GB of ' + (pick(nowData, 'MemoryLimitGb') || '?') + ' GB (' + memPct + '%)'));
                     const watching = pick(nowData, 'Watching') || 0;
                     const transcoding = pick(nowData, 'Transcoding') || 0;
-                    row('Watching', watching === 0 ? 'Nobody' : watching + (watching === 1 ? ' person' : ' people') + (transcoding ? ', ' + transcoding + ' transcoding' : ''));
-                    const tasks = pick(nowData, 'RunningTasks') || [];
-                    row('Running tasks', tasks.length ? tasks.join(', ') : 'None');
-                    // Jellyfin plus the FFmpeg processes it started (not the rest of the machine).
-                    const res = pick(nowData, 'Resources');
-                    if (res) {
-                        const parts = ['CPU ' + pick(res, 'CpuPercent') + '%', pick(res, 'MemoryGb') + ' GB'];
-                        if (pick(res, 'DiskMBps') !== null && pick(res, 'DiskMBps') !== undefined) parts.push('disk ' + pick(res, 'DiskMBps') + ' MB/s');
-                        if (pick(res, 'GpuPercent') !== null && pick(res, 'GpuPercent') !== undefined) parts.push('GPU ' + pick(res, 'GpuPercent') + '%');
-                        const ff = pick(res, 'FfmpegProcesses') || 0;
-                        row('With FFmpeg', parts.join(' · ') + (ff ? ' (' + ff + ' FFmpeg process' + (ff === 1 ? '' : 'es') + ')' : ''));
-                    }
-                    row('Active devices', String(pick(nowData, 'ActiveDevices') || 0));
+                    dl.appendChild(el('dt', null, 'Watching'));
+                    dl.appendChild(el('dd', null, watching === 0 ? 'Nobody'
+                        : watching + (watching === 1 ? ' person' : ' people') + (transcoding ? ', ' + transcoding + ' transcoding' : '')));
                     const running = pick(nowData, 'RunningTasks') || [];
                     const rt = $('md-running-text');
                     if (rt) rt.textContent = running.length ? running.join(', ') : 'None running.';
@@ -1999,13 +1978,33 @@
                     return pick(r, 'TaskName') + ': ' + when + (pick(r, 'ErrorMessage') ? '. ' + pick(r, 'ErrorMessage') : '');
                 }
 
+                const DAY_HINT = 'Choose a run or a mark to see its details.';
+                const BUSY_HINT = 'Choose an hour with a dot to see its runs.';
+                let dayDetailKey = null;
+                let busyDetailKey = null;
+
+                // After a panel is rebuilt: focus the new copy of the run or hour the keyboard was on, and put the hint back
+                // when the one the detail line describes is gone. Returns the key the detail line still describes.
+                function keepPlace(box, focused, described, detail, hint) {
+                    if (focused) {
+                        const again = box.querySelector('[data-key="' + CSS.escape(focused) + '"]');
+                        if (again) again.focus({ preventScroll: true });
+                    }
+                    if (described && !box.querySelector('[data-key="' + CSS.escape(described) + '"]')) {
+                        $(detail).textContent = hint;
+                        return null;
+                    }
+                    return described;
+                }
+
                 // A focusable block or mark on the 24-hour axis; focusing or clicking it shows its details under the panel.
-                function onDay(node, startMinutes, label) {
+                function onDay(node, startMinutes, label, key) {
                     node.type = 'button';
+                    node.dataset.key = key;
                     node.style.left = (startMinutes / 1440 * 100) + '%';
                     node.setAttribute('aria-label', label);
                     node.title = label;
-                    const show = function () { $('md-day-detail').textContent = label; };
+                    const show = function () { dayDetailKey = key; $('md-day-detail').textContent = label; };
                     node.addEventListener('click', show);
                     node.addEventListener('focus', show);
                     return node;
@@ -2027,6 +2026,7 @@
                     const box = $('md-day');
                     const axis = $('md-day-axis');
                     const summary = $('md-today-summary');
+                    const focused = box.contains(document.activeElement) ? document.activeElement.dataset.key : null;
                     box.innerHTML = '';
                     axis.innerHTML = '';
                     const day = pick(dash, 'Today');
@@ -2048,7 +2048,8 @@
                         category[pick(p, 'TaskId')] = pick(p, 'Category');
                         if (pick(p, 'Kind') === 'backoff') backedOff[pick(p, 'TaskId')] = true;
                         const b = onDay(el('button', 'md-day-block md-planned'), pick(p, 'StartMinutes'),
-                            pick(p, 'TaskName') + ', planned at ' + hm(pick(p, 'StartMinutes')) + ': ' + (PLAN_WORD[pick(p, 'Status')] || pick(p, 'Status')));
+                            pick(p, 'TaskName') + ', planned at ' + hm(pick(p, 'StartMinutes')) + ': ' + (PLAN_WORD[pick(p, 'Status')] || pick(p, 'Status')),
+                            'p|' + pick(p, 'TaskId') + '|' + pick(p, 'StartMinutes'));
                         b.style.width = (Math.max(pick(p, 'DurationMinutes') || 0, 1) / 1440 * 100) + '%';
                         b.style.borderColor = (CATEGORY[pick(p, 'Category')] || CATEGORY.upkeep).bg;
                         if (pick(p, 'Status') === 'not run') b.classList.add('md-plan-missed');
@@ -2057,7 +2058,7 @@
                     (pick(day, 'Actual') || []).forEach(function (r) {
                         const status = pick(r, 'Status');
                         const start = pick(r, 'StartMinutes');
-                        const b = onDay(el('button', 'md-day-block md-actual'), start, runText(r));
+                        const b = onDay(el('button', 'md-day-block md-actual'), start, runText(r), 'a|' + pick(r, 'TaskId') + '|' + start);
                         b.style.width = (Math.max(pick(r, 'EndMinutes') - start, 1) / 1440 * 100) + '%';
                         if (status === 'Failed') {
                             b.classList.add('md-run-failed');
@@ -2072,10 +2073,12 @@
                         box.appendChild(b);
                     });
                     (pick(day, 'Spikes') || []).forEach(function (m) {
-                        box.appendChild(onDay(el('button', 'md-day-mark md-spike'), pick(m, 'Minute'), pick(m, 'Resource') + ' high at ' + hm(pick(m, 'Minute')) + ': ' + pick(m, 'Level')));
+                        box.appendChild(onDay(el('button', 'md-day-mark md-spike'), pick(m, 'Minute'), pick(m, 'Resource') + ' high at ' + hm(pick(m, 'Minute')) + ': ' + pick(m, 'Level'),
+                            's|' + pick(m, 'Minute') + '|' + pick(m, 'Resource')));
                     });
                     (pick(day, 'Guard') || []).forEach(function (m) {
-                        box.appendChild(onDay(el('button', 'md-day-mark md-guard'), pick(m, 'Minute'), 'LoadGuard ' + pick(m, 'Action') + ' "' + pick(m, 'TaskName') + '" at ' + hm(pick(m, 'Minute'))));
+                        box.appendChild(onDay(el('button', 'md-day-mark md-guard'), pick(m, 'Minute'), 'LoadGuard ' + pick(m, 'Action') + ' "' + pick(m, 'TaskName') + '" at ' + hm(pick(m, 'Minute')),
+                            'g|' + pick(m, 'Minute') + '|' + pick(m, 'TaskName')));
                     });
                     box.appendChild(el('div', 'md-now-line'));
                     moveNowLine();
@@ -2085,6 +2088,7 @@
                         s.style.transform = 'translateX(' + (m === 0 ? '0' : m === 1440 ? '-100%' : '-50%') + ')';
                         axis.appendChild(s);
                     });
+                    dayDetailKey = keepPlace(box, focused, dayDetailKey, 'md-day-detail', DAY_HINT);
                 }
 
                 // ---------- Network ----------
@@ -2145,6 +2149,7 @@
                 function renderBusy() {
                     const grid = $('md-busy');
                     const summary = $('md-busy-summary');
+                    const focused = grid.contains(document.activeElement) ? document.activeElement.dataset.key : null;
                     grid.innerHTML = '';
                     const busy = pick(dash, 'BusyHours');
                     if (!busy) {
@@ -2185,15 +2190,17 @@
                             cell.title = label;
                             if (runs.length) {
                                 cell.type = 'button';
+                                cell.dataset.key = d + '|' + h;
                                 cell.setAttribute('aria-label', label);
                                 cell.appendChild(el('span', 'md-busy-dot'));
-                                const show = function () { $('md-busy-detail').textContent = label; };
+                                const show = function () { busyDetailKey = cell.dataset.key; $('md-busy-detail').textContent = label; };
                                 cell.addEventListener('click', show);
                                 cell.addEventListener('focus', show);
                             }
                             grid.appendChild(cell);
                         });
                     });
+                    busyDetailKey = keepPlace(grid, focused, busyDetailKey, 'md-busy-detail', BUSY_HINT);
                 }
 
                 // ---------- Why it transcodes ----------

@@ -1183,6 +1183,18 @@ async function medicTab(name, fresh) {
     }
 }
 
+// Signs in as the test admin in a new browser context, for checks that need their own clock or time zone.
+async function adminPage(ctx) {
+    const p = await ctx.newPage();
+    await p.goto(JF + '/web/index.html#/login');
+    await p.waitForSelector('#txtManualName', { timeout: 60000 });
+    await p.fill('#txtManualName', 'admin');
+    await p.fill('#txtManualPassword', 'admin');
+    await p.click('.manualLoginForm button[type="submit"]');
+    await p.waitForURL(/home/, { timeout: 60000 });
+    return p;
+}
+
 await check('Medic dashboard: every line of tiles reaches the right edge at 1920, 1280 and 390 px', async () => {
     // Tiles on the first line: four on a wide screen, two in the middle band, one on a phone.
     const perLine = { 1920: 4, 1280: 2, 390: 1 };
@@ -1248,14 +1260,8 @@ await check('Medic dashboard: Today moves with the clock in server time, and fet
     // A browser 14 hours ahead of UTC: positions must still follow the server's day.
     const ctx = await browser.newContext({ locale: 'en-GB', timezoneId: 'Pacific/Kiritimati' });
     await ctx.clock.install();
-    const p = await ctx.newPage();
     try {
-        await p.goto(JF + '/web/index.html#/login');
-        await p.waitForSelector('#txtManualName', { timeout: 60000 });
-        await p.fill('#txtManualName', 'admin');
-        await p.fill('#txtManualPassword', 'admin');
-        await p.click('.manualLoginForm button[type="submit"]');
-        await p.waitForURL(/home/, { timeout: 60000 });
+        const p = await adminPage(ctx);
         let fetches = 0;
         p.on('request', (r) => { if (/\/JellyfinMedic\/Dashboard(\?|$)/.test(r.url())) fetches++; });
         await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
@@ -1403,6 +1409,18 @@ await check('Dashboard panels: Right now, Disks and Load show the live readings,
     return `${charts.length} charts; ${disks.trim()} on ${data.Disks.Drives.length} drives`;
 });
 
+await check('Dashboard panels: Right now shows CPU, memory and who is watching, and leaves the rest to the Load panel', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => /Memory/.test(document.getElementById('md-now')?.textContent || ''), null, { timeout: 30000 });
+    const seen = await page.evaluate(() => ({
+        rows: Array.from(document.querySelectorAll('#md-now dt')).map((d) => d.textContent),
+        chart: !!document.getElementById('md-spark'),
+        cpu: document.getElementById('md-cpu').textContent
+    }));
+    expect(JSON.stringify(seen.rows) === JSON.stringify(['Memory', 'Watching']) && !seen.chart && /^\d+%$/.test(seen.cpu), 'Right now: ' + JSON.stringify(seen));
+    return `CPU ${seen.cpu}; ${seen.rows.join(', ')}`;
+});
+
 await check('Dashboard panels: Load draws a line from the first reading after a restart', async () => {
     // The monitor's first reading comes about 30 seconds after Jellyfin starts.
     let live = await ok('/JellyfinMedic/Dashboard/Live');
@@ -1474,6 +1492,72 @@ await check('Dashboard panels: the 15-second refresh leaves alone what has not c
     } finally {
         page.off('request', count);
         await page.unroute('**/JellyfinMedic/Dashboard/Live');
+    }
+});
+
+await check('Dashboard panels: the 5-minute refresh keeps the keyboard on the run or the hour it was on', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    await ctx.clock.install();
+    try {
+        const p = await adminPage(ctx);
+        let fetches = 0;
+        p.on('request', (r) => { if (/\/JellyfinMedic\/Dashboard(\?|$)/.test(r.url())) fetches++; });
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        await p.waitForSelector('#JellyfinMedicPage #md-day .md-run-failed', { timeout: 30000 });
+        const gotIt = p.locator('#md-whatsnew-close');
+        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+        const refresh = async () => {
+            const before = fetches;
+            await p.clock.fastForward('05:30');
+            await p.waitForTimeout(2000);
+            expect(fetches > before, 'the data was not fetched again after 5 minutes');
+        };
+        await p.focus('#md-day .md-run-failed');
+        await refresh();
+        const today = await p.evaluate(() => ({
+            kept: document.activeElement?.classList.contains('md-run-failed') || false,
+            detail: document.getElementById('md-day-detail').textContent
+        }));
+        expect(today.kept && /Fixture trickplay/.test(today.detail), 'Today after the refresh: ' + JSON.stringify(today));
+        await p.focus('#md-busy .md-busy-clash');
+        await refresh();
+        const busy = await p.evaluate(() => document.activeElement?.classList.contains('md-busy-clash') || false);
+        expect(busy, 'the keyboard left the busy hour after the refresh');
+        return 'kept on the failed run and on the busy hour';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Dashboard panels: at the server\'s midnight Today fetches the new day and starts over', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const nextDay = new Date(Date.parse(data.Today.Date + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+    const none = { Planned: 0, Runs: 0, Running: 0, Completed: 0, Failed: 0, Stopped: 0, Cancelled: 0, NotRun: 0, Late: 0 };
+    const late = { ...data, Today: { ...data.Today, NowMinutes: 1438 } };
+    const next = { ...data, Today: { ...data.Today, Date: nextDay, NowMinutes: 1, Planned: [], Actual: [], Spikes: [], Guard: [], Summary: none } };
+    let served = 0;
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    await ctx.clock.install();
+    try {
+        const p = await adminPage(ctx);
+        await p.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: served++ === 0 ? late : next }));
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        await p.waitForSelector('#JellyfinMedicPage #md-day .md-now-line', { timeout: 30000 });
+        const gotIt = p.locator('#md-whatsnew-close');
+        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+        expect(served === 1, `the data was fetched ${served} times on opening`);
+        // Three minutes is under the 5-minute refresh: only the end of the server's day can make the page fetch again.
+        await p.clock.fastForward('03:00');
+        await p.waitForTimeout(2000);
+        const after = await p.evaluate(() => ({
+            summary: document.getElementById('md-today-summary').textContent,
+            blocks: document.querySelectorAll('#md-day .md-day-block').length
+        }));
+        expect(served >= 2, 'the data was not fetched again at the server\'s midnight');
+        expect(/^0 planned, 0 runs/.test(after.summary) && after.blocks === 0, 'Today did not start over: ' + JSON.stringify(after));
+        return `fetched ${served} times; ${after.summary}`;
+    } finally {
+        await ctx.close();
     }
 });
 
