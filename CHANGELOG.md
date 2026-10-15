@@ -10,6 +10,7 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 ## Unreleased
 
 ### Added
+- **The schedule plan avoids times when the whole server is busy, not only when people watch.** On Linux, Medic now notes every 5 minutes how busy the machine is as a whole (CPU, memory, and the busiest drive) and keeps it as averages by hour of the week. After 3 days of readings the planner steers tasks away from hours when the server is usually busy, such as when downloads or backups run, and warns when a task can only go in one. It reads the totals Linux shows every program and never looks at what is using them, so Medic doesn't learn which program, container or app makes the server busy. Readings taken while a Jellyfin scheduled task runs are left out, so a task isn't pushed away from its own time. Nothing is read on Windows or macOS.
 - **Groundwork for a fuller Dashboard.** Medic now puts side by side, for the Dashboard panels to come, what it already records: busy hours next to the week's task runs, today's planned runs next to the ones that ran, why files are transcoded next to what in the library causes it, each drive's last 30 days, your connection next to the most people watching at once, repeated log errors, accounts and updates. Nothing new is collected or sent anywhere; the daily disk reading now also notes what each drive holds.
 
 ### Fixed

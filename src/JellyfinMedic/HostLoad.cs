@@ -1,0 +1,395 @@
+using System.Globalization;
+using System.Text.Json;
+using MediaBrowser.Common.Configuration;
+using MediaBrowser.Model.Tasks;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using JellyfinMedic.Api;
+
+namespace JellyfinMedic.Services;
+
+/// <summary>
+/// Every 5 minutes, reads how busy the whole server is: CPU, memory and disk for the machine as a
+/// whole, from the totals Linux shows every program in /proc. It never looks at single processes,
+/// containers or apps, so Medic learns how busy the server usually is, not what makes it busy.
+/// The readings go into an hour-of-the-week profile that the planner uses next to the viewing
+/// pattern. Readings taken while one of Jellyfin's scheduled tasks runs are left out, as those are
+/// the tasks the planner moves; counting them would push a task away from wherever it runs now.
+/// Nothing is read on Windows or macOS.
+/// </summary>
+public sealed class HostLoadSampler : IHostedService, IDisposable
+{
+    private static readonly TimeSpan Every = TimeSpan.FromMinutes(5);
+
+    private readonly ITaskManager _tasks;
+    private readonly IApplicationPaths _paths;
+    private readonly ILogger<HostLoadSampler> _logger;
+    private Timer? _timer;
+    private HostCounters? _previous;
+
+    public HostLoadSampler(ITaskManager tasks, IApplicationPaths paths, ILogger<HostLoadSampler> logger)
+    {
+        _tasks = tasks;
+        _paths = paths;
+        _logger = logger;
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            // The first reading only sets the starting point for the CPU and disk counters.
+            _timer = new Timer(_ => Sample(), null, TimeSpan.Zero, Every);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        _timer?.Change(Timeout.Infinite, Timeout.Infinite);
+        return Task.CompletedTask;
+    }
+
+    public void Dispose() => _timer?.Dispose();
+
+    private void Sample()
+    {
+        try
+        {
+            var now = HostCounters.Read(DateTime.UtcNow);
+            var previous = _previous;
+            _previous = now;
+            if (previous is null || _tasks.ScheduledTasks.Any(t => t.State == TaskState.Running))
+            {
+                return;
+            }
+
+            if (HostCounters.Between(previous, now) is { } reading)
+            {
+                HostLoadStore.Record(_paths, DateTime.Now, reading);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Jellyfin Medic: couldn't read the server's load this time.");
+        }
+    }
+}
+
+/// <summary>How busy the whole server was over one spell, as shares of 0 to 100.</summary>
+public sealed record HostLoadReading(double? CpuPercent, double? MemoryPercent, double? DiskBusyPercent);
+
+/// <summary>
+/// The machine-wide counters behind a reading: CPU time from /proc/stat, memory from /proc/meminfo,
+/// and time spent on disk I/O from /proc/diskstats (whole drives only, added up, never stored by drive).
+/// </summary>
+public sealed class HostCounters
+{
+    public DateTime TimeUtc { get; init; }
+
+    public long? CpuBusy { get; init; }
+
+    public long? CpuTotal { get; init; }
+
+    public double? MemoryPercent { get; init; }
+
+    // Milliseconds each whole drive spent doing I/O; only the busiest drive's share is kept.
+    public Dictionary<string, long> DiskIoMs { get; init; } = new();
+
+    public static HostCounters Read(DateTime utcNow)
+    {
+        var cpu = ParseCpu(HostPlatform.Lines("/proc/stat"));
+        return new HostCounters
+        {
+            TimeUtc = utcNow,
+            CpuBusy = cpu?.Busy,
+            CpuTotal = cpu?.Total,
+            MemoryPercent = ParseMemory(HostPlatform.Lines("/proc/meminfo")),
+            DiskIoMs = ParseDisks(HostPlatform.Lines("/proc/diskstats"), name => Directory.Exists("/sys/block/" + name))
+        };
+    }
+
+    /// <summary>The reading over the spell between two sets of counters, or null if nothing could be read.</summary>
+    public static HostLoadReading? Between(HostCounters before, HostCounters after)
+    {
+        double wallMs = (after.TimeUtc - before.TimeUtc).TotalMilliseconds;
+        if (wallMs <= 0)
+        {
+            return null;
+        }
+
+        double? cpu = null;
+        if (before.CpuTotal is { } t0 && after.CpuTotal is { } t1 && t1 > t0 && before.CpuBusy is { } b0 && after.CpuBusy is { } b1)
+        {
+            cpu = Math.Round(Math.Clamp((b1 - b0) * 100.0 / (t1 - t0), 0, 100), 1);
+        }
+
+        double? disk = null;
+        foreach (var (name, ms) in after.DiskIoMs)
+        {
+            if (before.DiskIoMs.TryGetValue(name, out long earlier) && ms >= earlier)
+            {
+                double busy = Math.Clamp((ms - earlier) * 100.0 / wallMs, 0, 100);
+                disk = Math.Round(Math.Max(disk ?? 0, busy), 1);
+            }
+        }
+
+        var reading = new HostLoadReading(cpu, after.MemoryPercent, disk);
+        return reading.CpuPercent is null && reading.MemoryPercent is null && reading.DiskBusyPercent is null ? null : reading;
+    }
+
+    /// <summary>All CPU time and the part of it not idle, from the "cpu" line of /proc/stat.</summary>
+    internal static (long Busy, long Total)? ParseCpu(IEnumerable<string> lines)
+    {
+        var line = lines.FirstOrDefault(l => l.StartsWith("cpu ", StringComparison.Ordinal));
+        if (line is null)
+        {
+            return null;
+        }
+
+        // user nice system idle iowait irq softirq steal (guest time is already in user and nice).
+        var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries).Skip(1).Take(8)
+            .Select(f => long.TryParse(f, NumberStyles.Integer, CultureInfo.InvariantCulture, out long v) ? v : 0).ToArray();
+        if (fields.Length < 4)
+        {
+            return null;
+        }
+
+        long total = fields.Sum();
+        long idle = fields[3] + (fields.Length > 4 ? fields[4] : 0);
+        return (total - idle, total);
+    }
+
+    /// <summary>Share of memory in use (not counting what can be freed at once, such as file cache).</summary>
+    internal static double? ParseMemory(IEnumerable<string> lines)
+    {
+        long? total = null, available = null;
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("MemTotal:", StringComparison.Ordinal))
+            {
+                total = Kb(line);
+            }
+            else if (line.StartsWith("MemAvailable:", StringComparison.Ordinal))
+            {
+                available = Kb(line);
+            }
+        }
+
+        return total is > 0 && available is { } a ? Math.Round(Math.Clamp((total.Value - a) * 100.0 / total.Value, 0, 100), 1) : null;
+
+        static long? Kb(string line) =>
+            long.TryParse(line.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out long v) ? v : null;
+    }
+
+    /// <summary>
+    /// Milliseconds spent on I/O for each whole drive in /proc/diskstats. Partitions would count a drive
+    /// twice, and loop, RAM and device-mapper devices sit on top of real drives, so they're left out.
+    /// </summary>
+    internal static Dictionary<string, long> ParseDisks(IEnumerable<string> lines, Func<string, bool> isWholeDrive)
+    {
+        var result = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var line in lines)
+        {
+            var f = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            // major minor name, then 11 or more counters; the 10th counter is time spent doing I/O.
+            if (f.Length < 13)
+            {
+                continue;
+            }
+
+            string name = f[2];
+            if (name.StartsWith("loop", StringComparison.Ordinal) || name.StartsWith("ram", StringComparison.Ordinal)
+                || name.StartsWith("dm-", StringComparison.Ordinal) || name.StartsWith("zram", StringComparison.Ordinal)
+                || name.StartsWith("md", StringComparison.Ordinal) || !isWholeDrive(name))
+            {
+                continue;
+            }
+
+            if (long.TryParse(f[12], NumberStyles.Integer, CultureInfo.InvariantCulture, out long ms))
+            {
+                result[name] = ms;
+            }
+        }
+
+        return result;
+    }
+}
+
+/// <summary>One hour of the week in the server load profile.</summary>
+public class HostLoadBucket
+{
+    public int CpuSamples { get; set; }
+
+    public double CpuSum { get; set; }
+
+    public double CpuMax { get; set; }
+
+    public int MemorySamples { get; set; }
+
+    public double MemorySum { get; set; }
+
+    public int DiskSamples { get; set; }
+
+    public double DiskSum { get; set; }
+
+    public double DiskMax { get; set; }
+}
+
+/// <summary>Server load by hour of the week (168 hours, Monday 00:00 first). Only totals, never what used them.</summary>
+public class HostLoadProfile
+{
+    public List<HostLoadBucket> Buckets { get; set; } = new();
+
+    public long TotalSamples { get; set; }
+
+    public DateTime? FirstSampleUtc { get; set; }
+
+    public DateTime? LastSampleUtc { get; set; }
+}
+
+public static class HostLoadStore
+{
+    private static readonly object Sync = new();
+    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    public static string FilePath(IApplicationPaths paths) =>
+        Path.Combine(paths.PluginConfigurationsPath, "JellyfinMedic", "host_load_profile.json");
+
+    public static HostLoadProfile Load(IApplicationPaths paths)
+    {
+        lock (Sync)
+        {
+            return LoadFrom(FilePath(paths));
+        }
+    }
+
+    public static void Record(IApplicationPaths paths, DateTime localNow, HostLoadReading reading)
+    {
+        lock (Sync)
+        {
+            string path = FilePath(paths);
+            var profile = LoadFrom(path);
+            Add(profile, localNow, reading);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            ScheduleStorage.WriteText(path, JsonSerializer.Serialize(profile, Indented));
+        }
+    }
+
+    internal static void Add(HostLoadProfile profile, DateTime localNow, HostLoadReading reading)
+    {
+        Fill(profile);
+        var bucket = profile.Buckets[(ScheduleStorage.MondayFirst(localNow.DayOfWeek) * 24) + localNow.Hour];
+        if (reading.CpuPercent is { } cpu)
+        {
+            bucket.CpuSamples++;
+            bucket.CpuSum += cpu;
+            bucket.CpuMax = Math.Max(bucket.CpuMax, cpu);
+        }
+
+        if (reading.MemoryPercent is { } memory)
+        {
+            bucket.MemorySamples++;
+            bucket.MemorySum += memory;
+        }
+
+        if (reading.DiskBusyPercent is { } disk)
+        {
+            bucket.DiskSamples++;
+            bucket.DiskSum += disk;
+            bucket.DiskMax = Math.Max(bucket.DiskMax, disk);
+        }
+
+        profile.TotalSamples++;
+        profile.FirstSampleUtc ??= DateTime.UtcNow;
+        profile.LastSampleUtc = DateTime.UtcNow;
+    }
+
+    private static HostLoadProfile LoadFrom(string path)
+    {
+        HostLoadProfile? profile = null;
+        try
+        {
+            if (File.Exists(path))
+            {
+                profile = JsonSerializer.Deserialize<HostLoadProfile>(File.ReadAllText(path));
+            }
+        }
+        catch (JsonException)
+        {
+            profile = null;
+        }
+
+        profile ??= new HostLoadProfile();
+        Fill(profile);
+        return profile;
+    }
+
+    private static void Fill(HostLoadProfile profile)
+    {
+        while (profile.Buckets.Count < 168)
+        {
+            profile.Buckets.Add(new HostLoadBucket());
+        }
+    }
+}
+
+/// <summary>The server load profile in the shape the planner needs.</summary>
+public class HostLoadSummary
+{
+    public double HoursCollected { get; set; }
+
+    public bool Ready { get; set; }
+
+    // Averages by hour of the week, Monday 00:00 first; null where that hour has no reading yet.
+    public List<double?> AverageCpu { get; set; } = new();
+
+    public List<double?> AverageMemory { get; set; } = new();
+
+    public List<double?> AverageDisk { get; set; } = new();
+}
+
+public static class HostLoadAnalyzer
+{
+    // Memory only counts once it's this full: most servers sit at a steady share all day.
+    private const double MemoryPressureFrom = 70;
+
+    public static HostLoadSummary Summarise(HostLoadProfile profile)
+    {
+        var buckets = profile.Buckets.Count == 168 ? profile.Buckets : Enumerable.Range(0, 168).Select(_ => new HostLoadBucket()).ToList();
+        var summary = new HostLoadSummary
+        {
+            // One reading every 5 minutes = 12 per hour.
+            HoursCollected = profile.TotalSamples / 12.0,
+            AverageCpu = buckets.Select(b => Average(b.CpuSum, b.CpuSamples)).ToList(),
+            AverageMemory = buckets.Select(b => Average(b.MemorySum, b.MemorySamples)).ToList(),
+            AverageDisk = buckets.Select(b => Average(b.DiskSum, b.DiskSamples)).ToList()
+        };
+
+        summary.Ready = summary.HoursCollected >= 72;
+        return summary;
+    }
+
+    /// <summary>
+    /// How busy the server usually is in each hour of the week, 0 (idle) to 1 (flat out): the CPU,
+    /// the busiest drive, or memory past 70% full, whichever is highest. Null where nothing is known.
+    /// </summary>
+    public static double?[] Busyness(HostLoadSummary summary)
+    {
+        var result = new double?[168];
+        for (int i = 0; i < 168; i++)
+        {
+            double? memory = summary.AverageMemory.ElementAtOrDefault(i) is { } m
+                ? Math.Max(0, (m - MemoryPressureFrom) / (100 - MemoryPressureFrom) * 100)
+                : null;
+            var known = new[] { summary.AverageCpu.ElementAtOrDefault(i), summary.AverageDisk.ElementAtOrDefault(i), memory }
+                .Where(v => v is not null).Select(v => v!.Value).ToList();
+            result[i] = known.Count > 0 ? Math.Clamp(known.Max() / 100, 0, 1) : null;
+        }
+
+        return result;
+    }
+
+    private static double? Average(double sum, int samples) => samples == 0 ? null : Math.Round(sum / samples, 1);
+}

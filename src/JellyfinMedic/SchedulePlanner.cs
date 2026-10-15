@@ -316,6 +316,18 @@ public static class SchedulePlanner
             }
         }
 
+        if (busy.FromServerLoad)
+        {
+            var (peak, peakMinute) = slots
+                .Select(sl => busy.ServerPeakOver(sl.Day, sl.Start * CellMinutes, (int)Math.Ceiling(estimate)))
+                .OrderByDescending(x => x.Peak)
+                .First();
+            if (peak >= BusyProfile.BusyServerThreshold)
+            {
+                warnings.Add($"Runs when the server is usually busy (about {peak * 100:0}% around {ScheduleStorage.Hhmm(TimeSpan.FromMinutes(peakMinute))}). There was no quieter free time for it.");
+            }
+        }
+
         int firstStart = slots.Min(sl => sl.Start);
         var result = new PlannedTask
         {

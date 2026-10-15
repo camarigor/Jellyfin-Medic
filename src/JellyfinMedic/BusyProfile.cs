@@ -8,6 +8,11 @@ namespace JellyfinMedic.Services;
 /// are a few days of them; until then a typical household pattern is used (quiet overnight, busy in
 /// the evenings). Times the admin has told Medic to avoid are never used.
 ///
+/// Once Medic has a few days of readings of how busy the whole server is (CPU, memory and disk
+/// for the machine as a whole, see HostLoadSampler), that counts too: a server flat out costs as
+/// much as two people watching. It covers work from other programs on the same machine, such as
+/// downloads or backups, without Medic knowing what they are.
+///
 /// Viewing is recorded per hour and per quarter hour. Each quarter hour starts from a smooth curve
 /// through the hourly averages, and leans on its own samples as they build up. Without that the
 /// cost is flat within each hour, so the quietest start always lands on the hour.
@@ -28,18 +33,31 @@ public sealed class BusyProfile
         0.35, 0.35, 0.35, 0.4, 0.5, 0.8, 1, 1, 1, 1, 0.9, 0.8
     };
 
+    // A server running flat out costs as much as this many people watching.
+    internal const double ServerLoadWeight = 2;
+
+    // How busy the server usually is before Medic warns about a time, 0 to 1.
+    internal const double BusyServerThreshold = 0.6;
+
     private readonly double[] _load = new double[SlotsPerWeek]; // index = Monday-first day * 96 + quarter hour
+    private readonly double[] _server = new double[SlotsPerWeek]; // 0 to 1, same index; all 0 until learned
     private readonly bool[] _avoid = new bool[SlotsPerDay];
 
     public bool FromViewing { get; private set; }
+
+    public bool FromServerLoad { get; private set; }
 
     public string Summary { get; private set; } = string.Empty;
 
     public bool HasAvoidedTimes => _avoid.Any(a => a);
 
-    public string PlacementNote => FromViewing
-        ? "Timed for a quiet spell in your viewing pattern."
-        : "Timed for the usual quiet hours until Medic has learned when people watch.";
+    public string PlacementNote => (FromViewing, FromServerLoad) switch
+    {
+        (true, true) => "Timed for a quiet spell in your viewing pattern and the server's load.",
+        (true, false) => "Timed for a quiet spell in your viewing pattern.",
+        (false, true) => "Timed for a spell when the server is usually quiet.",
+        _ => "Timed for the usual quiet hours until Medic has learned when people watch."
+    };
 
     /// <summary>Start of the avoided window, in minutes after midnight.</summary>
     public static int AvoidStartMinute(PluginConfiguration settings) =>
@@ -49,7 +67,7 @@ public sealed class BusyProfile
     public static int AvoidEndMinute(PluginConfiguration settings) =>
         (Math.Clamp(settings.AvoidEndMinute ?? settings.AvoidEndHour * 60, 0, 1440) % 1440) / SlotMinutes * SlotMinutes;
 
-    public static BusyProfile Create(UsageSummary usage, PluginConfiguration? settings)
+    public static BusyProfile Create(UsageSummary usage, PluginConfiguration? settings, HostLoadSummary? server = null)
     {
         var profile = new BusyProfile();
 
@@ -117,6 +135,8 @@ public sealed class BusyProfile
                 : smooth;
         }
 
+        profile.AddServerLoad(server);
+
         if (profile.HasAvoidedTimes)
         {
             profile.Summary += $" Never schedules tasks between {Clock(AvoidStartMinute(settings!))} and {Clock(AvoidEndMinute(settings!))}.";
@@ -125,22 +145,71 @@ public sealed class BusyProfile
         return profile;
     }
 
+    private void AddServerLoad(HostLoadSummary? server)
+    {
+        if (server is null)
+        {
+            return;
+        }
+
+        if (!server.Ready)
+        {
+            if (server.HoursCollected > 0)
+            {
+                Summary += $" Still learning how busy the server is ({(int)server.HoursCollected} hours recorded).";
+            }
+
+            return;
+        }
+
+        var busy = HostLoadAnalyzer.Busyness(server);
+
+        // An hour with no reading yet takes that hour's average from the days that have one, else counts as idle.
+        var hourly = new double[168];
+        for (int i = 0; i < 168; i++)
+        {
+            var sameHour = Enumerable.Range(0, 7).Select(d => busy[(d * 24) + (i % 24)]).Where(v => v is not null).ToList();
+            hourly[i] = busy[i] ?? (sameHour.Count > 0 ? sameHour.Average()!.Value : 0);
+        }
+
+        for (int i = 0; i < SlotsPerWeek; i++)
+        {
+            double hourPos = (i + 0.5) * SlotMinutes / 60.0 - 0.5;
+            int before = (int)Math.Floor(hourPos);
+            double t = hourPos - before;
+            _server[i] = (hourly[(before + 168) % 168] * (1 - t)) + (hourly[(before + 1) % 168] * t);
+        }
+
+        FromServerLoad = true;
+        Summary += " Also uses how busy the whole server usually is (CPU, memory and disk), learned over "
+            + $"{Math.Max(1, (int)Math.Round(server.HoursCollected / 24))} days, without looking at what uses it.";
+    }
+
     private static string Clock(int minute) => ScheduleStorage.Hhmm(TimeSpan.FromMinutes(minute));
 
     /// <summary>People usually watching at a time of day; minutes past midnight run on into the next day.</summary>
-    public double At(DayOfWeek day, int minute)
+    public double At(DayOfWeek day, int minute) => _load[Slot(day, minute)];
+
+    private static int Slot(DayOfWeek day, int minute)
     {
         int index = (ScheduleStorage.MondayFirst(day) * SlotsPerDay) + (int)Math.Floor(minute / (double)SlotMinutes);
-        return _load[((index % SlotsPerWeek) + SlotsPerWeek) % SlotsPerWeek];
+        return ((index % SlotsPerWeek) + SlotsPerWeek) % SlotsPerWeek;
     }
 
-    /// <summary>Expected people watching x hours over a run starting at a cell.</summary>
+    /// <summary>How busy the whole server usually is at a time of day, 0 to 1 (0 until Medic has learned it).</summary>
+    public double ServerAt(DayOfWeek day, int minute) => _server[Slot(day, minute)];
+
+    /// <summary>
+    /// Expected people watching x hours over a run starting at a cell, with the server's usual load
+    /// counted as people watching (flat out = ServerLoadWeight people).
+    /// </summary>
     public double CostOver(DayOfWeek day, int startCell, int cells, int cellMinutes)
     {
         double sum = 0;
         for (int c = startCell; c < startCell + cells; c++)
         {
-            sum += At(day, c * cellMinutes) * cellMinutes / 60.0;
+            int minute = c * cellMinutes;
+            sum += (At(day, minute) + (ServerAt(day, minute) * ServerLoadWeight)) * cellMinutes / 60.0;
         }
 
         return sum;
@@ -154,6 +223,24 @@ public sealed class BusyProfile
         for (int m = startMinute; m < startMinute + Math.Max(1, minutes); m += SlotMinutes)
         {
             double value = At(day, m);
+            if (value > peak)
+            {
+                peak = value;
+                peakMinute = m / SlotMinutes * SlotMinutes % 1440;
+            }
+        }
+
+        return (peak, peakMinute);
+    }
+
+    /// <summary>The time a run would overlap when the server is usually busiest (minutes past midnight), and how busy, 0 to 1.</summary>
+    public (double Peak, int Minute) ServerPeakOver(DayOfWeek day, int startMinute, int minutes)
+    {
+        double peak = 0;
+        int peakMinute = startMinute / SlotMinutes * SlotMinutes;
+        for (int m = startMinute; m < startMinute + Math.Max(1, minutes); m += SlotMinutes)
+        {
+            double value = ServerAt(day, m);
             if (value > peak)
             {
                 peak = value;

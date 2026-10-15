@@ -472,7 +472,8 @@ public class ScheduleController : ControllerBase
         SchedulePlanner.Build(VisibleTasks(), ScheduleStorage.LoadProfile(_appPaths), ScheduleStorage.LoadManaged(_appPaths), Busy(), ScheduleStorage.LoadChoices(_appPaths));
 
     private BusyProfile Busy() =>
-        BusyProfile.Create(UsageAnalyzer.Summarise(UsageStore.Load(_appPaths)), Plugin.Instance?.Configuration);
+        BusyProfile.Create(UsageAnalyzer.Summarise(UsageStore.Load(_appPaths)), Plugin.Instance?.Configuration,
+            HostLoadAnalyzer.Summarise(HostLoadStore.Load(_appPaths)));
 
     private (string FileName, int Count) WriteBackup(string? keep = null)
     {
