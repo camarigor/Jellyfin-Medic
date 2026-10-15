@@ -7,7 +7,7 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
-## Unreleased
+## [1.0.20] – 2026-10-15
 
 ### Added
 - **Schedule lists the tasks that have no time set.** Below the timeline, each task that never runs on its own (or only when Jellyfin starts) is listed with what it does and whether Medic recommends turning it on, and how often. Tasks Medic knows are recommended on, Scheduled restart is recommended off unless the server slows down the longer it runs, and tasks Medic doesn't know are left to you.
