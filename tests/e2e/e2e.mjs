@@ -1469,6 +1469,28 @@ await check('Dashboard panels: Today shows the planned and actual runs, the fail
     return seen.summary;
 });
 
+await check('Dashboard panels: a task that runs all day gets one line under Today instead of a block per run', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const runs = Array.from({ length: 20 }, (_, i) => ({
+        TaskId: 'e2e-often', TaskName: 'Fixture notifier', StartMinutes: i * 3, EndMinutes: i * 3 + 1,
+        Status: i === 5 ? 'Failed' : 'Completed', ErrorMessage: i === 5 ? 'Fixture timeout' : null
+    }));
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Today: { ...data.Today, Actual: [...data.Today.Actual, ...runs] } } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => /Fixture notifier/.test(document.getElementById('md-day-repeats')?.textContent || ''), null, { timeout: 30000 });
+        const seen = await page.evaluate(() => ({
+            line: document.getElementById('md-day-repeats').textContent,
+            blocks: Array.from(document.querySelectorAll('#md-day .md-actual')).filter((b) => /Fixture notifier/.test(b.getAttribute('aria-label'))).length
+        }));
+        expect(/Fixture notifier, 20 runs \(1 failed\), last at/.test(seen.line), 'line: ' + seen.line);
+        expect(seen.blocks === 1, `${seen.blocks} blocks for the notifier, expected only its failed run`);
+        return seen.line;
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
 await check('Dashboard panels: the 15-second refresh leaves alone what has not changed, the keyboard\'s place on Today and the paused list', async () => {
     const live = await ok('/JellyfinMedic/Dashboard/Live');
     const paused = [{ TaskId: 'e2e-fixture-trickplay', TaskName: 'Fixture trickplay', StoppedUtc: new Date().toISOString() }];

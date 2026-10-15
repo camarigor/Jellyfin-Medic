@@ -86,6 +86,7 @@
                             <p id="md-today-summary" class="md-today-summary">Loading…</p>
                             <div id="md-day" class="md-day" role="group" aria-label="Today's planned and actual runs"></div>
                             <div id="md-day-axis" class="md-axis"></div>
+                            <p id="md-day-repeats" class="so-small so-muted"></p>
                             <div class="md-legend">
                                 <span><i class="md-sw md-sw-planned"></i>Planned</span>
                                 <span><i class="md-sw md-sw-ran"></i>Ran</span>
@@ -1961,6 +1962,8 @@
 
                 const RUN_WORD = { Completed: 'completed', Failed: 'failed', Aborted: 'stopped', Cancelled: 'cancelled' };
                 const PLAN_WORD = { ran: 'ran on time', late: 'ran late', 'not run': 'did not run', waiting: 'not yet' };
+                // From this many runs today a task (a notifier every few minutes, say) gets one line instead of a block per run.
+                const REPEATS_FROM = 7;
 
                 function todaySummary(s) {
                     const n = function (k) { return pick(s, k) || 0; };
@@ -2032,6 +2035,7 @@
                     const day = pick(dash, 'Today');
                     if (!day) {
                         summary.textContent = pick(pick(dash, 'Errors') || {}, 'Today') || (dash ? 'n/a' : 'Loading…');
+                        $('md-day-repeats').textContent = '';
                         return;
                     }
                     summary.textContent = todaySummary(pick(day, 'Summary') || {});
@@ -2055,9 +2059,23 @@
                         if (pick(p, 'Status') === 'not run') b.classList.add('md-plan-missed');
                         box.appendChild(b);
                     });
-                    (pick(day, 'Actual') || []).forEach(function (r) {
+                    // A task that runs over and over would bury the axis in blocks: it gets one line under the axis, and only its
+                    // failed or stopped runs keep a block.
+                    const actual = pick(day, 'Actual') || [];
+                    const runsOf = {};
+                    actual.forEach(function (r) { runsOf[pick(r, 'TaskId')] = (runsOf[pick(r, 'TaskId')] || 0) + 1; });
+                    const repeats = {};
+                    actual.forEach(function (r) {
                         const status = pick(r, 'Status');
                         const start = pick(r, 'StartMinutes');
+                        const id = pick(r, 'TaskId');
+                        if (runsOf[id] >= REPEATS_FROM) {
+                            const g = repeats[id] || (repeats[id] = { name: pick(r, 'TaskName'), runs: 0, failed: 0, last: 0 });
+                            g.runs++;
+                            if (status === 'Failed') g.failed++;
+                            g.last = Math.max(g.last, start);
+                            if (status !== 'Failed' && status !== 'Aborted') return;
+                        }
                         const b = onDay(el('button', 'md-day-block md-actual'), start, runText(r), 'a|' + pick(r, 'TaskId') + '|' + start);
                         b.style.width = (Math.max(pick(r, 'EndMinutes') - start, 1) / 1440 * 100) + '%';
                         if (status === 'Failed') {
@@ -2072,6 +2090,11 @@
                         }
                         box.appendChild(b);
                     });
+                    $('md-day-repeats').textContent = Object.keys(repeats).length === 0 ? ''
+                        : 'Repeats through the day: ' + Object.keys(repeats).map(function (id) {
+                            const g = repeats[id];
+                            return g.name + ', ' + g.runs + ' runs' + (g.failed ? ' (' + g.failed + ' failed)' : '') + ', last at ' + hm(g.last);
+                        }).join('; ') + '.';
                     (pick(day, 'Spikes') || []).forEach(function (m) {
                         box.appendChild(onDay(el('button', 'md-day-mark md-spike'), pick(m, 'Minute'), pick(m, 'Resource') + ' high at ' + hm(pick(m, 'Minute')) + ': ' + pick(m, 'Level'),
                             's|' + pick(m, 'Minute') + '|' + pick(m, 'Resource')));
