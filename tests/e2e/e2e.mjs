@@ -1005,6 +1005,162 @@ async function medicTab(name, fresh) {
     await page.click(`#JellyfinMedicPage .so-tab[data-tab="${name}"]`);
 }
 
+await check('Medic dashboard: every line of tiles reaches the right edge at 1920, 1280 and 390 px', async () => {
+    const widths = [];
+    try {
+        for (const width of [1920, 1280, 390]) {
+            await page.setViewportSize({ width, height: 1000 });
+            await medicTab('dashboard');
+            await page.waitForFunction(() => !/Checking/.test(document.getElementById('md-health-big')?.textContent || 'Checking'), null, { timeout: 30000 });
+            const found = await page.evaluate(() => {
+                const board = document.querySelector('#JellyfinMedicPage [data-panel="dashboard"] .md-board, #JellyfinMedicPage [data-panel="dashboard"] .md-tiles');
+                const right = board.getBoundingClientRect().right;
+                const tiles = Array.from(board.querySelectorAll('.md-tile')).filter((t) => t.offsetParent !== null);
+                const lines = new Map();
+                tiles.forEach((t) => {
+                    const r = t.getBoundingClientRect();
+                    const top = Math.round(r.top);
+                    lines.set(top, Math.max(lines.get(top) || 0, r.right));
+                });
+                return {
+                    short: [...lines.entries()].filter(([, end]) => right - end > 2).map(([top, end]) => `line at ${top}px ends ${Math.round(right - end)}px early`),
+                    overflow: tiles.filter((t) => t.scrollWidth > t.clientWidth + 1).map((t) => t.querySelector('.md-tile-head')?.textContent || '?')
+                };
+            });
+            expect(found.short.length === 0, `${width}px: ${found.short.join('; ')}`);
+            expect(found.overflow.length === 0, `${width}px: content wider than its tile in ${found.overflow.join(', ')}`);
+            widths.push(width);
+        }
+    } finally {
+        await page.setViewportSize({ width: 1280, height: 720 });
+    }
+    return 'no line ends early at ' + widths.join(', ') + ' px';
+});
+
+await check('Medic dashboard: "Last 24 hours" counts every run, whatever the History filter says', async () => {
+    const all = await ok('/JellyfinMedic/Schedule/GetRunHistory?errorsOnly=false');
+    const since = Date.now() - 24 * 3600 * 1000;
+    const runs = (all.Runs || []).filter((r) => new Date(r.EndUtc).getTime() >= since);
+    expect(runs.length > 0, 'no task ran in the last 24 hours, so this check would prove nothing');
+    const completed = runs.filter((r) => r.Status === 'Completed').length;
+    await medicTab('history');
+    const box = page.locator('#md-errors-only');
+    if (!(await box.isChecked())) await box.check();
+    try {
+        await page.waitForTimeout(1500);
+        const completedRows = await page.locator('#md-hist-runs tr', { hasText: 'Completed' }).count();
+        expect(completedRows === 0, `History shows ${completedRows} completed runs with "Show errors only" ticked`);
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+        await page.waitForFunction(() => !/Loading/.test(document.getElementById('md-last-big')?.textContent || 'Loading'), null, { timeout: 15000 });
+        const big = (await page.textContent('#md-last-big')).trim();
+        const total = big === 'No tasks ran' ? 0 : Number((big.match(/of (\d+)/) || big.match(/^(\d+) tasks? ran/) || [])[1]);
+        expect(total === runs.length, `the tile says "${big}", but ${runs.length} runs ended in the last 24 hours`);
+        const counts = (await page.textContent('#md-last-counts').catch(() => '')) || '';
+        expect(counts.includes(completed + ' completed'), `counts line "${counts}", expected ${completed} completed`);
+    } finally {
+        await medicTab('history');
+        await page.locator('#md-errors-only').uncheck();
+    }
+    return `${runs.length} runs, ${completed} completed`;
+});
+
+await check('Medic dashboard: a LoadGuard stop older than a day is not shown, an open recent stop is', async () => {
+    // Jellyfin owns its config folder while it runs, so the file is written inside the container.
+    const { execFileSync } = await import('node:child_process');
+    const file = `${MEDIC_DATA}/load_guard.json`;
+    const put = (text) => execFileSync('docker', ['exec', '-i', 'medic-e2e', 'sh', '-c', 'cat > "$1"', 'sh', file], { input: text });
+    const before = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'cat "$1" 2>/dev/null || true', 'sh', file]).toString();
+    const at = (hoursAgo) => new Date(Date.now() - hoursAgo * 3600 * 1000).toISOString();
+    try {
+        put(JSON.stringify([{ TimestampUtc: at(72), Action: 'stopped', TaskName: 'Old task', MemoryUsedGb: 7.5, MemoryLimitGb: 8 }]));
+        await medicTab('dashboard');
+        await page.waitForTimeout(2500);
+        const old = ((await page.textContent('#md-guard')) || '').trim();
+        expect(old === '', 'a 3-day-old stop still shows: ' + old);
+
+        // Newest first: another task restarted after "Recent task" was stopped; that must not hide the open stop.
+        put(JSON.stringify([
+            { TimestampUtc: at(0.5), Action: 'restarted', TaskName: 'Other task', MemoryUsedGb: 3, MemoryLimitGb: 8 },
+            { TimestampUtc: at(1), Action: 'stopped', TaskName: 'Recent task', MemoryUsedGb: 7.5, MemoryLimitGb: 8 }
+        ]));
+        await medicTab('dashboard');
+        await page.waitForFunction(() => /stopped "Recent task"/.test(document.getElementById('md-guard')?.textContent || ''), null, { timeout: 20000 });
+        return 'old stop hidden; an open recent stop still warns';
+    } finally {
+        if (before.trim()) put(before); else execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-f', file]);
+    }
+});
+
+await check('Medic dashboard: "Today\'s tasks" moves with the clock, in server time, and fetches the schedule again after 15 minutes', async () => {
+    // A browser 14 hours ahead of UTC: positions must still follow the server's day.
+    const ctx = await browser.newContext({ locale: 'en-GB', timezoneId: 'Pacific/Kiritimati' });
+    await ctx.clock.install();
+    const p = await ctx.newPage();
+    try {
+        await p.goto(JF + '/web/index.html#/login');
+        await p.waitForSelector('#txtManualName', { timeout: 60000 });
+        await p.fill('#txtManualName', 'admin');
+        await p.fill('#txtManualPassword', 'admin');
+        await p.click('.manualLoginForm button[type="submit"]');
+        await p.waitForURL(/home/, { timeout: 60000 });
+        let fetches = 0;
+        p.on('request', (r) => { if (r.url().includes('/Schedule/GetCalendar')) fetches++; });
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        await p.waitForSelector('#JellyfinMedicPage #md-today .md-now-line', { timeout: 30000 });
+        const gotIt = p.locator('#md-whatsnew-close');
+        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+        const cal = await ok('/JellyfinMedic/Schedule/GetCalendar?weekOffset=0');
+        const left = () => p.evaluate(() => parseFloat(document.querySelector('#JellyfinMedicPage #md-today .md-now-line').style.left));
+        const first = await left();
+        expect(Math.abs(first - cal.NowMinutes / 1440 * 100) < 1, `now line at ${first}%, server minute ${cal.NowMinutes} is ${(cal.NowMinutes / 1440 * 100).toFixed(1)}%`);
+        // Only the browser's clock moves here, so a fresh schedule puts the line back at the server's real minute:
+        // the line is checked before the 15-minute refetch, and the refetch after it.
+        const fetchesBefore = fetches;
+        await p.clock.fastForward('10:00');
+        await p.waitForTimeout(1500);
+        const moved = await left();
+        expect(moved - first > 0.5, `now line stayed at ${first}% after 10 minutes (now ${moved}%)`);
+        expect(fetches === fetchesBefore, `the schedule was fetched again after only 10 minutes (${fetches - fetchesBefore} times)`);
+        await p.clock.fastForward('06:00');
+        await p.waitForTimeout(1500);
+        expect(fetches > fetchesBefore, 'the schedule was not fetched again after 16 minutes');
+        return `now line ${first.toFixed(2)}% to ${moved.toFixed(2)}% after 10 minutes, schedule fetched again after 16`;
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic dashboard: Details on a top issue opens Checks at that finding, whatever filter Checks was on', async () => {
+    const folders = await ok('/Library/VirtualFolders');
+    const movies = folders.find((f) => f.Name === 'Movies');
+    const original = JSON.parse(JSON.stringify(movies.LibraryOptions));
+    const setOptions = (o) => api('POST', '/Library/VirtualFolders/LibraryOptions', { Id: movies.ItemId, LibraryOptions: o });
+    try {
+        // Trickplay during scans is an Improve finding, so the Top issues list can't be empty.
+        await setOptions({ ...original, EnableTrickplayImageExtraction: true, ExtractTrickplayImagesDuringLibraryScan: true });
+        await medicTab('recs', true);
+        await page.click('#JellyfinMedicPage .so-filter[data-filter="Tip"]');
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+        await page.waitForSelector('#md-issues li[data-key]', { timeout: 30000 });
+        const key = await page.getAttribute('#md-issues li[data-key]', 'data-key');
+        await page.click('#md-issues li[data-key] button:has-text("Details")');
+        const landed = await page.evaluate(() => {
+            const card = document.activeElement;
+            return {
+                checksShown: !document.querySelector('#JellyfinMedicPage [data-panel="recs"]').hidden,
+                focusedKey: card && card.getAttribute('data-key'),
+                marked: !!(card && card.classList.contains('is-target'))
+            };
+        });
+        expect(landed.checksShown, 'Checks did not open');
+        expect(landed.focusedKey === key, `focus is on "${landed.focusedKey}", expected "${key}"`);
+        expect(landed.marked, 'the card is not marked');
+        return 'landed on ' + key;
+    } finally {
+        await setOptions(original);
+    }
+});
+
 await check('Medic page: Off/Suggest and the time range are separate buttons, and the arrow keys reach every tab', async () => {
     await medicTab('settings');
     const pressed = () => page.evaluate(() => Array.from(document.querySelectorAll('#JellyfinMedicPage .md-seg button[aria-pressed="true"]'))

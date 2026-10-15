@@ -38,100 +38,109 @@
             <!-- Dashboard -->
             <section class="so-tabpanel" data-panel="dashboard" role="tabpanel">
                 <p id="md-checked" class="so-muted so-small md-checked"></p>
-                <div class="md-tiles">
-                    <section class="md-tile" aria-labelledby="md-t-health">
-                        <h3 id="md-t-health" class="md-tile-head">Health</h3>
-                        <p id="md-health-big" class="md-big">Checking…</p>
-                        <div id="so-counts" class="md-counts"></div>
-                        <button type="button" class="so-btn so-btn-plain md-goto" data-goto="recs">See all checks</button>
-                    </section>
-                    <section class="md-tile" aria-labelledby="md-t-week">
-                        <h3 id="md-t-week" class="md-tile-head">This week</h3>
-                        <p id="md-week-big" class="md-big">Loading…</p>
-                        <div id="md-week" class="so-small md-week"></div>
-                    </section>
-                    <section class="md-tile" aria-labelledby="md-t-today">
-                        <h3 id="md-t-today" class="md-tile-head">Today's tasks</h3>
-                        <p id="md-today-big" class="md-big">Loading…</p>
-                        <div id="md-today" class="md-mini"></div>
-                        <div id="md-today-axis" class="md-axis"></div>
-                        <button type="button" class="so-btn so-btn-plain md-goto" data-goto="schedule">Open the schedule</button>
-                    </section>
-                    <section class="md-tile" aria-labelledby="md-t-now">
-                        <h3 id="md-t-now" class="md-tile-head">Right now</h3>
-                        <div class="md-now-top">
-                            <div><p id="md-cpu" class="md-big">–</p><span class="so-muted so-small">Jellyfin CPU</span></div>
-                            <svg id="md-spark" width="150" height="46" viewBox="0 0 150 46" aria-hidden="true"><polyline id="md-spark-line" points="" fill="none" stroke="#5fd0b3" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline></svg>
-                        </div>
-                        <dl id="md-now" class="so-kv"></dl>
-                        <p id="md-guard" class="so-small" role="status"></p>
-                        <details id="md-spikes" class="md-spikes" hidden>
-                            <summary id="md-spikes-summary"></summary>
-                            <ul id="md-spikes-list" class="md-spike-list"></ul>
-                        </details>
-                    </section>
-                    <section class="md-tile md-wide" aria-labelledby="md-t-issues">
-                        <div class="md-row md-space">
-                            <h3 id="md-t-issues" class="md-tile-head">Top issues</h3>
-                            <button type="button" class="so-btn so-btn-plain md-goto" data-goto="recs">All checks</button>
-                        </div>
-                        <ul id="md-issues" class="md-issues"></ul>
-                    </section>
-                    <section class="md-tile" aria-labelledby="md-t-last">
-                        <h3 id="md-t-last" class="md-tile-head">Last 24 hours</h3>
-                        <p id="md-last-big" class="md-big">Loading…</p>
-                        <div id="md-last"></div>
-                        <button type="button" class="so-btn so-btn-plain md-goto" data-goto="history">Open history</button>
-                    </section>
-                    <section class="md-tile" aria-labelledby="md-t-users">
-                        <h3 id="md-t-users" class="md-tile-head">Users and access</h3>
-                        <p id="md-users-big" class="md-big">–</p>
-                        <ul id="md-users" class="md-list"></ul>
-                    </section>
-                    <section class="md-tile" aria-labelledby="md-t-updates">
-                        <h3 id="md-t-updates" class="md-tile-head">Updates</h3>
-                        <p id="md-updates-big" class="md-big">–</p>
-                        <ul id="md-updates" class="md-list"></ul>
-                    </section>
-                    <section class="md-tile md-wide" aria-labelledby="md-t-maint">
-                        <h3 id="md-t-maint" class="md-tile-head">Maintenance</h3>
-                        <div class="md-maint">
-                            <div class="md-maint-col">
-                                <strong>Free up disk space</strong>
-                                <p id="md-cleanup-text" class="so-muted so-small">Checking…</p>
-                                <div id="md-cleanup-actions" class="md-row md-wrap"></div>
-                                <p class="so-muted so-small">Only removes files on disk (leftover transcodes, old log files and deselected IPTV stream files). It never edits Jellyfin's database. After clearing stream files, run a library scan.</p>
+                <div class="md-board">
+                    <div class="md-line">
+                        <section class="md-tile" aria-labelledby="md-t-health">
+                            <h3 id="md-t-health" class="md-tile-head">Health</h3>
+                            <p id="md-health-big" class="md-big">Checking…</p>
+                            <div id="so-counts" class="md-counts"></div>
+                            <button type="button" class="so-btn so-btn-plain md-goto" data-goto="recs">See all checks</button>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-week">
+                            <h3 id="md-t-week" class="md-tile-head">This week</h3>
+                            <p id="md-week-big" class="md-big">Loading…</p>
+                            <div id="md-week" class="so-small md-week"></div>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-today">
+                            <h3 id="md-t-today" class="md-tile-head">Today's tasks</h3>
+                            <p id="md-today-big" class="md-big">Loading…</p>
+                            <div id="md-today" class="md-mini"></div>
+                            <div id="md-today-axis" class="md-axis"></div>
+                            <button type="button" class="so-btn so-btn-plain md-goto" data-goto="schedule">Open the schedule</button>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-last">
+                            <h3 id="md-t-last" class="md-tile-head">Last 24 hours</h3>
+                            <p id="md-last-big" class="md-big">Loading…</p>
+                            <p id="md-last-counts" class="so-small"></p>
+                            <div id="md-last"></div>
+                            <button type="button" class="so-btn so-btn-plain md-goto" data-goto="history">Open history</button>
+                        </section>
+                    </div>
+                    <div class="md-line">
+                        <section class="md-tile md-w2" aria-labelledby="md-t-issues">
+                            <div class="md-row md-space">
+                                <h3 id="md-t-issues" class="md-tile-head">Top issues</h3>
+                                <button type="button" class="so-btn so-btn-plain md-goto" data-goto="recs">All checks</button>
                             </div>
-                            <div class="md-maint-col">
-                                <strong>Is your server open to the internet?</strong>
-                                <p class="so-muted so-small">Checks whether something answers at an address you give. A domain, or an address over http, is tried from this server. An IP over https, or one that doesn't answer here, is tested from the internet by portchecker.io, which gets only that address and port. The boxes start from what Medic found; change any of them.</p>
-                                <div class="md-expose-form">
-                                    <label class="md-field"><span>Protocol</span>
-                                        <select id="md-expose-protocol" class="so-input">
-                                            <option value="https">https</option>
-                                            <option value="http">http</option>
-                                        </select>
-                                    </label>
-                                    <label class="md-field md-grow"><span>Domain or IP</span>
-                                        <input type="text" id="md-expose-host" class="so-input" placeholder="e.g. jellyfin.example.com">
-                                    </label>
-                                    <label class="md-field"><span>Port</span>
-                                        <input type="number" id="md-expose-port" class="so-input md-num" min="1" max="65535" value="443">
-                                    </label>
+                            <ul id="md-issues" class="md-issues"></ul>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-now">
+                            <h3 id="md-t-now" class="md-tile-head">Right now</h3>
+                            <div class="md-now-top">
+                                <div><p id="md-cpu" class="md-big">–</p><span class="so-muted so-small">Jellyfin CPU</span></div>
+                                <svg id="md-spark" width="150" height="46" viewBox="0 0 150 46" aria-hidden="true"><polyline id="md-spark-line" points="" fill="none" stroke="#5fd0b3" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline></svg>
+                            </div>
+                            <dl id="md-now" class="so-kv"></dl>
+                            <p id="md-guard" class="so-small" role="status"></p>
+                            <details id="md-spikes" class="md-spikes" hidden>
+                                <summary id="md-spikes-summary"></summary>
+                                <ul id="md-spikes-list" class="md-spike-list"></ul>
+                            </details>
+                        </section>
+                    </div>
+                    <div class="md-line">
+                        <section class="md-tile" aria-labelledby="md-t-users">
+                            <h3 id="md-t-users" class="md-tile-head">Users and access</h3>
+                            <p id="md-users-big" class="md-big">–</p>
+                            <ul id="md-users" class="md-list"></ul>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-updates">
+                            <h3 id="md-t-updates" class="md-tile-head">Updates</h3>
+                            <p id="md-updates-big" class="md-big">–</p>
+                            <ul id="md-updates" class="md-list"></ul>
+                        </section>
+                    </div>
+                    <div class="md-line">
+                        <section class="md-tile md-wide" aria-labelledby="md-t-maint">
+                            <h3 id="md-t-maint" class="md-tile-head">Maintenance</h3>
+                            <div class="md-maint">
+                                <div class="md-maint-col">
+                                    <strong>Free up disk space</strong>
+                                    <p id="md-cleanup-text" class="so-muted so-small">Checking…</p>
+                                    <div id="md-cleanup-actions" class="md-row md-wrap"></div>
+                                    <p class="so-muted so-small">Only removes files on disk (leftover transcodes, old log files and deselected IPTV stream files). It never edits Jellyfin's database. After clearing stream files, run a library scan.</p>
                                 </div>
-                                <div class="md-row md-wrap" style="margin-top:8px">
-                                    <button type="button" id="md-expose" class="so-btn so-btn-plain">Check now</button>
-                                    <button type="button" id="md-expose-use-ip" class="so-btn so-btn-plain">Use my IP + 8096</button>
+                                <div class="md-maint-col">
+                                    <strong>Is your server open to the internet?</strong>
+                                    <p class="so-muted so-small">Checks whether something answers at an address you give. A domain, or an address over http, is tried from this server. An IP over https, or one that doesn't answer here, is tested from the internet by portchecker.io, which gets only that address and port. The boxes start from what Medic found; change any of them.</p>
+                                    <div class="md-expose-form">
+                                        <label class="md-field"><span>Protocol</span>
+                                            <select id="md-expose-protocol" class="so-input">
+                                                <option value="https">https</option>
+                                                <option value="http">http</option>
+                                            </select>
+                                        </label>
+                                        <label class="md-field md-grow"><span>Domain or IP</span>
+                                            <input type="text" id="md-expose-host" class="so-input" placeholder="e.g. jellyfin.example.com">
+                                        </label>
+                                        <label class="md-field"><span>Port</span>
+                                            <input type="number" id="md-expose-port" class="so-input md-num" min="1" max="65535" value="443">
+                                        </label>
+                                    </div>
+                                    <div class="md-row md-wrap" style="margin-top:8px">
+                                        <button type="button" id="md-expose" class="so-btn so-btn-plain">Check now</button>
+                                        <button type="button" id="md-expose-use-ip" class="so-btn so-btn-plain">Use my IP + 8096</button>
+                                    </div>
+                                    <p id="md-expose-result" class="so-small" role="status"></p>
                                 </div>
-                                <p id="md-expose-result" class="so-small" role="status"></p>
+                                <div class="md-maint-col">
+                                    <strong>Running tasks</strong>
+                                    <p id="md-running-text" class="so-muted so-small">None running.</p>
+                                    <button type="button" id="md-stop2" class="so-btn so-btn-plain">Stop running tasks</button>
+                                </div>
                             </div>
-                            <div class="md-maint-col">
-                                <strong>Running tasks</strong>
-                                <p id="md-running-text" class="so-muted so-small">None running.</p>
-                                <button type="button" id="md-stop2" class="so-btn so-btn-plain">Stop running tasks</button>
-                            </div>
-                        </div>
-                    </section>
+                        </section>
+                    </div>
                 </div>
                 <details class="so-panel md-details">
                     <summary>Your setup</summary>
@@ -744,6 +753,7 @@
         #JellyfinMedicPage .so-speed-grid strong { display: block; font-size: 1.5em; }
         #JellyfinMedicPage .so-viewers { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
         #JellyfinMedicPage .so-card.is-ignored { opacity: 0.6; }
+        #JellyfinMedicPage .so-card.is-target { outline: 2px solid #8cc8ff; outline-offset: 2px; }
         #JellyfinMedicPage .so-ignore-btn { float: right; background: #333; color: #ccc; border: 1px solid #555; border-radius: 4px; padding: 4px 10px; font: inherit; font-size: 0.8em; cursor: pointer; margin-left: 10px; }
         #JellyfinMedicPage .so-ignore-btn:hover { color: #fff; border-color: #888; }
         #JellyfinMedicPage .so-ignored-note { margin: 8px 0 0; font-size: 0.85em; color: #aaa; }
@@ -756,6 +766,20 @@
         #JellyfinMedicPage .md-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 18px; }
         #JellyfinMedicPage .md-tile { background: #1b1d22; border: 1px solid #2a2d34; border-radius: 12px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
         #JellyfinMedicPage .md-wide { grid-column: 1 / -1; }
+        /* The Dashboard: lines of tiles that always fill their width, so no column or line is left empty. */
+        #JellyfinMedicPage .md-board { display: flex; flex-direction: column; gap: 16px; margin-bottom: 18px; container-type: inline-size; }
+        #JellyfinMedicPage .md-line { display: flex; flex-wrap: wrap; gap: 16px; }
+        #JellyfinMedicPage .md-line > .md-tile { flex: 1 1 260px; }
+        #JellyfinMedicPage .md-line > .md-w2 { flex: 2 1 520px; }
+        #JellyfinMedicPage .md-line > .md-wide { flex-basis: 100%; }
+        #JellyfinMedicPage .md-line > .md-tile > .md-goto:last-child { margin-top: auto; }
+        @container (max-width: 1400px) {
+            #JellyfinMedicPage .md-line > .md-tile { flex-basis: calc(50% - 8px); }
+            #JellyfinMedicPage .md-line > .md-w2, #JellyfinMedicPage .md-line > .md-wide { flex-basis: 100%; }
+        }
+        @container (max-width: 900px) {
+            #JellyfinMedicPage .md-line > .md-tile { flex-basis: 100%; }
+        }
         #JellyfinMedicPage .md-tile-head { margin: 0; font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #a7adb8; }
         #JellyfinMedicPage .md-big { margin: 0; font-size: 1.7em; font-weight: 600; line-height: 1.2; }
         #JellyfinMedicPage .md-goto { align-self: flex-start; }
@@ -964,9 +988,12 @@
                 let activeTab = 'dashboard';
                 let cal = null;
                 let calWeek = 0;
+                let calFetchedAt = 0;
                 let range = 'full';
                 let selKey = null;
                 let history = null;
+                let dashHistory = null;
+                let dashHistoryAt = 0;
                 let nowData = null;
                 let nowTimer = null;
                 let iptv = null;
@@ -991,6 +1018,8 @@
                     const sev = pick(f, 'Severity');
                     const ignored = !!pick(f, 'Ignored');
                     const card = el('div', 'so-card sev-' + sev + (ignored ? ' is-ignored' : ''));
+                    if (pick(f, 'Key')) card.setAttribute('data-key', pick(f, 'Key'));
+                    card.tabIndex = -1;
                     const head = el('div');
                     if (sev !== 'Good' && pick(f, 'Key')) {
                         const button = el('button', 'so-ignore-btn', ignored ? 'Show again' : 'Ignore');
@@ -1497,6 +1526,19 @@
 
                 function goto(tab) { selectTab(tab); }
 
+                // Opens Checks at one finding: scrolls to its card, focuses it and marks it for 3 seconds.
+                function openFinding(key) {
+                    setFilter('all');
+                    selectTab('recs');
+                    if (!key) return;
+                    const card = Array.from($('so-recs').querySelectorAll('.so-card[data-key]')).find(function (c) { return c.getAttribute('data-key') === key; });
+                    if (!card) return;
+                    card.scrollIntoView({ block: 'center' });
+                    card.focus({ preventScroll: true });
+                    card.classList.add('is-target');
+                    setTimeout(function () { card.classList.remove('is-target'); }, 3000);
+                }
+
                 page.querySelectorAll('.md-goto').forEach(function (b) {
                     b.addEventListener('click', function () { goto(b.getAttribute('data-goto')); });
                 });
@@ -1535,6 +1577,7 @@
                     top.forEach(function (f) {
                         const sev = pick(f, 'Severity');
                         const li = el('li');
+                        if (pick(f, 'Key')) li.setAttribute('data-key', pick(f, 'Key'));
                         li.appendChild(el('span', 'md-pill sev-' + sev, SEV_LABEL[sev] || sev));
                         const text = el('div', 'md-issue-text');
                         text.appendChild(el('strong', null, fmtTimes(pick(f, 'Title'))));
@@ -1543,7 +1586,7 @@
                         const actions = el('div', 'md-row');
                         const show = el('button', 'so-btn so-btn-plain', 'Details');
                         show.type = 'button';
-                        show.addEventListener('click', function () { setFilter('all'); selectTab('recs'); });
+                        show.addEventListener('click', function () { openFinding(pick(f, 'Key')); });
                         actions.appendChild(show);
                         const ignore = el('button', 'so-btn so-btn-plain', 'Ignore');
                         ignore.type = 'button';
@@ -1670,20 +1713,34 @@
                     try {
                         const events = await getJson('/JellyfinMedic/LoadGuard');
                         const g = $('md-guard');
-                        if (events && events.length) {
-                            const last = events[0];
-                            const when = fmtShort(pick(last, 'TimestampUtc'));
-                            if (pick(last, 'Action') === 'stopped') {
-                                g.textContent = 'Load guard stopped "' + pick(last, 'TaskName') + '" at ' + when + ' (memory ' + pick(last, 'MemoryUsedGb') + ' GB). It restarts once memory recovers.';
-                                g.className = 'so-small md-warn-text';
-                            } else {
-                                g.textContent = 'Load guard restarted "' + pick(last, 'TaskName') + '" at ' + when + '.';
-                                g.className = 'so-small md-ok-text';
-                            }
+                        // Newest first. Only the last day counts, and a stop stays a warning until the same task restarts.
+                        const dayAgo = Date.now() - 24 * 3600 * 1000;
+                        const recent = (events || []).filter(function (e) { return new Date(pick(e, 'TimestampUtc')).getTime() >= dayAgo; });
+                        const open = recent.find(function (e, i) {
+                            return pick(e, 'Action') === 'stopped' && !recent.slice(0, i).some(function (later) {
+                                return pick(later, 'Action') === 'restarted' && pick(later, 'TaskName') === pick(e, 'TaskName');
+                            });
+                        });
+                        if (open) {
+                            g.textContent = 'Load guard stopped "' + pick(open, 'TaskName') + '" at ' + fmtShort(pick(open, 'TimestampUtc')) + ' (memory ' + pick(open, 'MemoryUsedGb') + ' GB). It restarts once memory recovers.';
+                            g.className = 'so-small md-warn-text';
+                        } else if (recent.length) {
+                            g.textContent = 'Load guard restarted "' + pick(recent[0], 'TaskName') + '" at ' + fmtShort(pick(recent[0], 'TimestampUtc')) + '.';
+                            g.className = 'so-small md-ok-text';
                         } else {
                             g.textContent = '';
                         }
                     } catch (e) { /* no guard history yet */ }
+                }
+
+                // Minutes past midnight on the server now: the calendar's own reading plus the time since it was fetched.
+                function nowMinutesToday() {
+                    return (pick(cal, 'NowMinutes') || 0) + (Date.now() - calFetchedAt) / 60000;
+                }
+
+                // The cached calendar is stale after 15 minutes, or once the server's day has rolled over.
+                function calendarStale() {
+                    return !cal || calWeek !== 0 || Date.now() - calFetchedAt > 15 * 60000 || nowMinutesToday() >= 1440;
                 }
 
                 function renderToday() {
@@ -1696,7 +1753,7 @@
                     const day = (pick(cal, 'Days') || [])[todayIndex];
                     if (!day) { $('md-today-big').textContent = 'No schedule data'; return; }
                     const runs = (pick(day, 'Runs') || []).filter(function (r) { return pick(r, 'StartMinutes') >= 0; });
-                    const now = pick(cal, 'NowMinutes');
+                    const now = Math.min(1439, nowMinutesToday());
                     const next = runs.find(function (r) { return pick(r, 'StartMinutes') >= now; });
                     $('md-today-big').textContent = runs.length + (runs.length === 1 ? ' task' : ' tasks') + (next ? ', next at ' + hm(pick(next, 'StartMinutes')) : ', all done');
                     runs.forEach(function (r) {
@@ -1720,17 +1777,22 @@
                 }
 
                 function renderLastDay() {
-                    if (!history) return;
+                    if (!dashHistory) return;
                     const since = Date.now() - 24 * 3600 * 1000;
-                    const runs = (pick(history, 'Runs') || []).filter(function (r) { return new Date(pick(r, 'EndUtc')).getTime() >= since; });
-                    const failed = runs.filter(function (r) { return ['Failed', 'Aborted'].indexOf(pick(r, 'Status')) >= 0; });
-                    const done = runs.filter(function (r) { return pick(r, 'Status') === 'Completed'; }).length;
-                    $('md-last-big').textContent = runs.length === 0 ? 'No tasks ran' : done + ' of ' + runs.length + ' tasks completed';
+                    const runs = (pick(dashHistory, 'Runs') || []).filter(function (r) { return new Date(pick(r, 'EndUtc')).getTime() >= since; });
+                    const count = function (status) { return runs.filter(function (r) { return pick(r, 'Status') === status; }).length; };
+                    const failed = count('Failed'), stopped = count('Aborted'), cancelled = count('Cancelled');
+                    $('md-last-big').textContent = runs.length === 0 ? 'No tasks ran' : (runs.length === 1 ? '1 task ran' : runs.length + ' tasks ran');
+                    const parts = runs.length === 0 ? [] : [count('Completed') + ' completed'];
+                    if (failed) parts.push(failed + ' failed');
+                    if (stopped) parts.push(stopped + ' stopped');
+                    if (cancelled) parts.push(cancelled + ' cancelled');
+                    $('md-last-counts').textContent = parts.join(', ');
                     const box = $('md-last');
                     box.innerHTML = '';
-                    failed.slice(0, 3).forEach(function (r) {
+                    runs.filter(function (r) { return ['Failed', 'Aborted'].indexOf(pick(r, 'Status')) >= 0; }).slice(0, 3).forEach(function (r) {
                         const f = el('div', 'md-fail-box');
-                        f.appendChild(el('strong', null, pick(r, 'TaskName') + ' failed'));
+                        f.appendChild(el('strong', null, pick(r, 'TaskName') + (pick(r, 'Status') === 'Aborted' ? ' stopped' : ' failed')));
                         f.appendChild(el('span', 'so-small', (pick(r, 'ErrorMessage') || 'No error message') + ' (' + fmtShort(pick(r, 'EndUtc')) + ')'));
                         box.appendChild(f);
                     });
@@ -1741,6 +1803,7 @@
                 async function loadCalendar() {
                     try {
                         cal = await getJson('/JellyfinMedic/Schedule/GetCalendar', { weekOffset: calWeek });
+                        calFetchedAt = Date.now();
                         renderTimeline();
                         renderToday();
                     } catch (err) {
@@ -2564,9 +2627,20 @@
                     try {
                         history = await getJson('/JellyfinMedic/Schedule/GetRunHistory', { errorsOnly: $('md-errors-only').checked });
                         renderHistory();
+                    } catch (err) {
+                        console.error('Jellyfin Medic: could not load run history', err);
+                    }
+                }
+
+                // The Dashboard keeps its own list, so History's "Show errors only" can't change its counts.
+                async function loadDashHistory() {
+                    try {
+                        dashHistory = await getJson('/JellyfinMedic/Schedule/GetRunHistory', { errorsOnly: false });
+                        dashHistoryAt = Date.now();
                         renderLastDay();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load run history', err);
+                        $('md-last-big').textContent = 'Couldn\'t load the runs';
                     }
                 }
 
@@ -4032,6 +4106,7 @@
                     nowTimer = setInterval(function () {
                         if (!shown() || !document.body.contains(page) || activeTab !== 'dashboard') { stopNowTimer(); return; }
                         loadNow();
+                        if (calendarStale()) { calWeek = 0; loadCalendar(); } else { renderToday(); }
                     }, 15000);
                 }
 
@@ -4075,8 +4150,8 @@
                             loadCleanup();
                             loadWeekly();
                             loadExposureDefaults();
-                            if (!cal || calWeek !== 0) { calWeek = 0; await loadCalendar(); } else { renderToday(); }
-                            if (!history) await loadHistory();
+                            if (calendarStale()) { calWeek = 0; await loadCalendar(); } else { renderToday(); }
+                            if (!dashHistory || Date.now() - dashHistoryAt > 5 * 60000) await loadDashHistory();
                         } else if (name === 'schedule') {
                             await Promise.all([loadCalendar(), loadBackups(), loadAudit()]);
                             if (!usage) { usage = await getJson('/JellyfinMedic/Usage'); }
@@ -4171,7 +4246,8 @@
                         showClock();
                         if (report) { renderDashboard(); renderRecs(); }
                         if (cal) { renderTimeline(); renderToday(); }
-                        if (history) { renderHistory(); renderLastDay(); }
+                        if (history) renderHistory();
+                        renderLastDay();
                         if (usage) renderUsage();
                         if (plugins) renderPlugins();
                         if (speedResult) renderSpeed();
