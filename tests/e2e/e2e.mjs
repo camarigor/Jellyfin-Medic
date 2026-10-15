@@ -1000,12 +1000,22 @@ async function medicTab(name, fresh) {
     await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
     if (fresh) await page.reload();
     await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+    // On a first visit "What's new" opens a moment after the page and covers the tabs: close it whenever it shows.
     const gotIt = page.locator('#md-whatsnew-close');
-    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
-    await page.click(`#JellyfinMedicPage .so-tab[data-tab="${name}"]`);
+    for (let attempt = 1; ; attempt++) {
+        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+        try {
+            await page.click(`#JellyfinMedicPage .so-tab[data-tab="${name}"]`, { timeout: 5000 });
+            return;
+        } catch (e) {
+            if (attempt === 3) throw e;
+        }
+    }
 }
 
 await check('Medic dashboard: every line of tiles reaches the right edge at 1920, 1280 and 390 px', async () => {
+    // Tiles on the first line: four on a wide screen, two in the middle band, one on a phone.
+    const perLine = { 1920: 4, 1280: 2, 390: 1 };
     const widths = [];
     try {
         for (const width of [1920, 1280, 390]) {
@@ -1013,6 +1023,11 @@ await check('Medic dashboard: every line of tiles reaches the right edge at 1920
             await medicTab('dashboard');
             await page.waitForFunction(() => !/Checking/.test(document.getElementById('md-health-big')?.textContent || 'Checking'), null, { timeout: 30000 });
             const found = await page.evaluate(() => {
+                // A long name with no spaces, like a release path in a task's error, must wrap inside its tile.
+                const long = document.createElement('div');
+                long.className = 'md-fail-box';
+                long.textContent = '/media/downloads/' + 'Some.Release.Name.2026.2160p.UHD.BluRay.Remux.DV.HDR.HEVC.TrueHD.Atmos.7.1.GROUP'.repeat(2) + '.mkv';
+                document.getElementById('md-last').appendChild(long);
                 const board = document.querySelector('#JellyfinMedicPage [data-panel="dashboard"] .md-board, #JellyfinMedicPage [data-panel="dashboard"] .md-tiles');
                 const right = board.getBoundingClientRect().right;
                 const tiles = Array.from(board.querySelectorAll('.md-tile')).filter((t) => t.offsetParent !== null);
@@ -1020,34 +1035,61 @@ await check('Medic dashboard: every line of tiles reaches the right edge at 1920
                 tiles.forEach((t) => {
                     const r = t.getBoundingClientRect();
                     const top = Math.round(r.top);
-                    lines.set(top, Math.max(lines.get(top) || 0, r.right));
+                    const line = lines.get(top) || { end: 0, count: 0 };
+                    lines.set(top, { end: Math.max(line.end, r.right), count: line.count + 1 });
                 });
-                return {
-                    short: [...lines.entries()].filter(([, end]) => right - end > 2).map(([top, end]) => `line at ${top}px ends ${Math.round(right - end)}px early`),
+                const result = {
+                    first: [...lines.entries()].sort((a, b) => a[0] - b[0])[0][1].count,
+                    short: [...lines.entries()].filter(([, l]) => right - l.end > 2).map(([top, l]) => `line at ${top}px ends ${Math.round(right - l.end)}px early`),
                     overflow: tiles.filter((t) => t.scrollWidth > t.clientWidth + 1).map((t) => t.querySelector('.md-tile-head')?.textContent || '?')
                 };
+                long.remove();
+                return result;
             });
             expect(found.short.length === 0, `${width}px: ${found.short.join('; ')}`);
             expect(found.overflow.length === 0, `${width}px: content wider than its tile in ${found.overflow.join(', ')}`);
+            expect(found.first === perLine[width], `${width}px: ${found.first} tiles on the first line, expected ${perLine[width]}`);
             widths.push(width);
         }
     } finally {
         await page.setViewportSize({ width: 1280, height: 720 });
     }
-    return 'no line ends early at ' + widths.join(', ') + ' px';
+    return 'full lines, ' + widths.map((w) => `${perLine[w]} to a line at ${w} px`).join(', ');
+});
+
+await check('Medic dashboard: on a phone, tiles follow the priority order', async () => {
+    try {
+        await page.setViewportSize({ width: 390, height: 1000 });
+        await medicTab('dashboard');
+        await page.waitForFunction(() => !/Checking/.test(document.getElementById('md-health-big')?.textContent || 'Checking'), null, { timeout: 30000 });
+        const order = await page.evaluate(() => Array.from(document.querySelectorAll('#JellyfinMedicPage [data-panel="dashboard"] .md-tile'))
+            .filter((t) => t.offsetParent !== null)
+            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+            .map((t) => (t.querySelector('.md-tile-head')?.textContent || '?').trim()));
+        const expected = ['Health', 'Right now', 'Top issues', 'Today\'s tasks', 'Last 24 hours', 'This week', 'Users and access', 'Updates', 'Maintenance'];
+        expect(JSON.stringify(order) === JSON.stringify(expected), 'order: ' + order.join(', '));
+        return order.length + ' tiles in priority order';
+    } finally {
+        await page.setViewportSize({ width: 1280, height: 720 });
+    }
 });
 
 await check('Medic dashboard: "Last 24 hours" counts every run, whatever the History filter says', async () => {
-    const all = await ok('/JellyfinMedic/Schedule/GetRunHistory?errorsOnly=false');
+    // A fresh page: the Dashboard opens first and fetches its own list; that response is what the tile must show.
+    const isRunList = (errorsOnly) => (r) => r.url().includes('/Schedule/GetRunHistory') && r.url().includes('errorsOnly=' + errorsOnly);
+    const own = page.waitForResponse(isRunList(false), { timeout: 30000 });
+    await medicTab('history', true);
+    const all = await (await own).json();
     const since = Date.now() - 24 * 3600 * 1000;
     const runs = (all.Runs || []).filter((r) => new Date(r.EndUtc).getTime() >= since);
     expect(runs.length > 0, 'no task ran in the last 24 hours, so this check would prove nothing');
     const completed = runs.filter((r) => r.Status === 'Completed').length;
-    await medicTab('history');
     const box = page.locator('#md-errors-only');
-    if (!(await box.isChecked())) await box.check();
+    const filtered = page.waitForResponse(isRunList(true), { timeout: 30000 });
+    await box.check();
     try {
-        await page.waitForTimeout(1500);
+        await filtered;
+        await page.waitForTimeout(300);
         const completedRows = await page.locator('#md-hist-runs tr', { hasText: 'Completed' }).count();
         expect(completedRows === 0, `History shows ${completedRows} completed runs with "Show errors only" ticked`);
         await page.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
@@ -1073,8 +1115,11 @@ await check('Medic dashboard: a LoadGuard stop older than a day is not shown, an
     const at = (hoursAgo) => new Date(Date.now() - hoursAgo * 3600 * 1000).toISOString();
     try {
         put(JSON.stringify([{ TimestampUtc: at(72), Action: 'stopped', TaskName: 'Old task', MemoryUsedGb: 7.5, MemoryLimitGb: 8 }]));
+        // Wait for the page to read the file, so an empty line means "hidden", not "not loaded yet".
+        const loaded = page.waitForResponse((r) => r.url().includes('/JellyfinMedic/LoadGuard'), { timeout: 30000 });
         await medicTab('dashboard');
-        await page.waitForTimeout(2500);
+        await loaded;
+        await page.waitForTimeout(300);
         const old = ((await page.textContent('#md-guard')) || '').trim();
         expect(old === '', 'a 3-day-old stop still shows: ' + old);
 
@@ -1085,7 +1130,15 @@ await check('Medic dashboard: a LoadGuard stop older than a day is not shown, an
         ]));
         await medicTab('dashboard');
         await page.waitForFunction(() => /stopped "Recent task"/.test(document.getElementById('md-guard')?.textContent || ''), null, { timeout: 20000 });
-        return 'old stop hidden; an open recent stop still warns';
+
+        // The same task restarting closes its stop: the line turns to the restart.
+        put(JSON.stringify([
+            { TimestampUtc: at(0.5), Action: 'restarted', TaskName: 'Recent task', MemoryUsedGb: 3, MemoryLimitGb: 8 },
+            { TimestampUtc: at(1), Action: 'stopped', TaskName: 'Recent task', MemoryUsedGb: 7.5, MemoryLimitGb: 8 }
+        ]));
+        await medicTab('dashboard');
+        await page.waitForFunction(() => /restarted "Recent task"/.test(document.getElementById('md-guard')?.textContent || ''), null, { timeout: 20000 });
+        return 'old stop hidden; a stop warns until its own task restarts';
     } finally {
         if (before.trim()) put(before); else execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-f', file]);
     }
@@ -1116,15 +1169,29 @@ await check('Medic dashboard: "Today\'s tasks" moves with the clock, in server t
         // Only the browser's clock moves here, so a fresh schedule puts the line back at the server's real minute:
         // the line is checked before the 15-minute refetch, and the refetch after it.
         const fetchesBefore = fetches;
+        if (1440 - cal.NowMinutes < 17) {
+            // Too close to the server's midnight for the line to move 10 minutes: the day rolls over instead.
+            await p.clock.fastForward('17:00');
+            await p.waitForTimeout(1500);
+            expect(fetches > fetchesBefore, 'the schedule was not fetched again when the server\'s day rolled over');
+            return 'near the server\'s midnight: fetched again on the rollover';
+        }
         await p.clock.fastForward('10:00');
         await p.waitForTimeout(1500);
         const moved = await left();
         expect(moved - first > 0.5, `now line stayed at ${first}% after 10 minutes (now ${moved}%)`);
         expect(fetches === fetchesBefore, `the schedule was fetched again after only 10 minutes (${fetches - fetchesBefore} times)`);
+        // The refetch fails here, as during a Jellyfin restart: it must not leave an error on the page.
+        await p.route('**/Schedule/GetCalendar*', (route) => route.abort());
         await p.clock.fastForward('06:00');
         await p.waitForTimeout(1500);
         expect(fetches > fetchesBefore, 'the schedule was not fetched again after 16 minutes');
-        return `now line ${first.toFixed(2)}% to ${moved.toFixed(2)}% after 10 minutes, schedule fetched again after 16`;
+        const banner = await p.evaluate(() => {
+            const s = document.querySelector('#JellyfinMedicPage #so-status');
+            return s && !s.hidden ? s.textContent : '';
+        });
+        expect(banner === '', 'a failed background fetch left this on the page: ' + banner);
+        return `now line ${first.toFixed(2)}% to ${moved.toFixed(2)}% after 10 minutes, fetched again quietly after 16`;
     } finally {
         await ctx.close();
     }

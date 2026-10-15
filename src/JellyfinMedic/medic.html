@@ -769,7 +769,7 @@
         /* The Dashboard: lines of tiles that always fill their width, so no column or line is left empty. */
         #JellyfinMedicPage .md-board { display: flex; flex-direction: column; gap: 16px; margin-bottom: 18px; container-type: inline-size; }
         #JellyfinMedicPage .md-line { display: flex; flex-wrap: wrap; gap: 16px; }
-        #JellyfinMedicPage .md-line > .md-tile { flex: 1 1 260px; }
+        #JellyfinMedicPage .md-line > .md-tile { flex: 1 1 260px; box-sizing: border-box; overflow-wrap: anywhere; }
         #JellyfinMedicPage .md-line > .md-w2 { flex: 2 1 520px; }
         #JellyfinMedicPage .md-line > .md-wide { flex-basis: 100%; }
         #JellyfinMedicPage .md-line > .md-tile > .md-goto:last-child { margin-top: auto; }
@@ -778,7 +778,17 @@
             #JellyfinMedicPage .md-line > .md-w2, #JellyfinMedicPage .md-line > .md-wide { flex-basis: 100%; }
         }
         @container (max-width: 900px) {
-            #JellyfinMedicPage .md-line > .md-tile { flex-basis: 100%; }
+            /* One column in order of priority: the lines step aside so the tiles can be ordered across them. */
+            #JellyfinMedicPage .md-line { display: contents; }
+            #JellyfinMedicPage .md-line > .md-tile { flex: 0 0 auto; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-now"] { order: 1; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-issues"] { order: 2; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-today"] { order: 3; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-last"] { order: 4; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-week"] { order: 5; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-users"] { order: 6; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-updates"] { order: 7; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-maint"] { order: 8; }
         }
         #JellyfinMedicPage .md-tile-head { margin: 0; font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #a7adb8; }
         #JellyfinMedicPage .md-big { margin: 0; font-size: 1.7em; font-weight: 600; line-height: 1.2; }
@@ -1743,6 +1753,13 @@
                     return !cal || calWeek !== 0 || Date.now() - calFetchedAt > 15 * 60000 || nowMinutesToday() >= 1440;
                 }
 
+                // Today's tile: fetch the calendar again when it's stale, otherwise just move the now line.
+                function refreshToday(quiet) {
+                    if (calendarStale()) { calWeek = 0; return loadCalendar(quiet); }
+                    renderToday();
+                    return Promise.resolve();
+                }
+
                 function renderToday() {
                     const box = $('md-today');
                     const axis = $('md-today-axis');
@@ -1800,7 +1817,9 @@
 
                 // ---------- Schedule ----------
 
-                async function loadCalendar() {
+                // Quiet for the Dashboard's background refresh: a failure there is retried on the next tick, so it
+                // mustn't leave an error on the page once Jellyfin answers again.
+                async function loadCalendar(quiet) {
                     try {
                         cal = await getJson('/JellyfinMedic/Schedule/GetCalendar', { weekOffset: calWeek });
                         calFetchedAt = Date.now();
@@ -1808,7 +1827,7 @@
                         renderToday();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load the schedule', err);
-                        showStatus('Couldn\'t load the schedule. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        if (!quiet) showStatus('Couldn\'t load the schedule. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
                     }
                 }
 
@@ -2640,7 +2659,11 @@
                         renderLastDay();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load run history', err);
+                        // Drop the old list too, so neither the tile nor a later redraw shows stale counts under the error.
+                        dashHistory = null;
                         $('md-last-big').textContent = 'Couldn\'t load the runs';
+                        $('md-last-counts').textContent = '';
+                        $('md-last').innerHTML = '';
                     }
                 }
 
@@ -4108,7 +4131,7 @@
                     nowTimer = setInterval(function () {
                         if (!shown() || !document.body.contains(page) || activeTab !== 'dashboard') { stopNowTimer(); return; }
                         loadNow();
-                        if (calendarStale()) { calWeek = 0; loadCalendar(); } else { renderToday(); }
+                        refreshToday(true);
                     }, 15000);
                 }
 
@@ -4130,7 +4153,7 @@
 
                 function resumePolling() {
                     updateActivity();
-                    if (activeTab === 'dashboard') startNowTimer();
+                    if (activeTab === 'dashboard') { startNowTimer(); refreshToday(true); }
                     else if (activeTab === 'tracks') { pollTracks(); pollScan(); }
                     else if (activeTab === 'media') loadMedia();
                 }
@@ -4152,7 +4175,7 @@
                             loadCleanup();
                             loadWeekly();
                             loadExposureDefaults();
-                            if (calendarStale()) { calWeek = 0; await loadCalendar(); } else { renderToday(); }
+                            await refreshToday();
                             if (!dashHistory || Date.now() - dashHistoryAt > 5 * 60000) await loadDashHistory();
                         } else if (name === 'schedule') {
                             await Promise.all([loadCalendar(), loadBackups(), loadAudit()]);

@@ -93,23 +93,28 @@ public static class WeeklyLedger
     /// <summary>Records today's open issues (one snapshot per day, the latest wins).</summary>
     public static void Snapshot(IEnumerable<Finding> findings)
     {
-        var counted = findings.Where(f => f.Severity is Sev.Problem or Sev.Improve or Sev.Tip).ToList();
-        var open = counted.Where(f => !f.Ignored).ToList();
-        var ignored = counted.Where(f => f.Ignored).Select(KeyOf).Distinct().ToList();
+        var day = BuildDay(findings, DateTime.Now.Date);
         lock (Sync)
         {
-            var today = DateTime.Now.Date;
-            _ledger.Days.RemoveAll(d => d.Day == today || d.Day < today.AddDays(-15));
-            _ledger.Days.Add(new DaySnapshot
-            {
-                Day = today,
-                Issues = open.GroupBy(KeyOf).ToDictionary(g => g.Key, g => g.First().Title),
-                Ignored = ignored,
-                Problems = open.Count(f => f.Severity == Sev.Problem),
-                Others = open.Count(f => f.Severity != Sev.Problem)
-            });
+            _ledger.Days.RemoveAll(d => d.Day == day.Day || d.Day < day.Day.AddDays(-15));
+            _ledger.Days.Add(day);
             Save();
         }
+    }
+
+    /// <summary>One day's record from a report's findings: open issues by key and title, and the keys of ignored ones.</summary>
+    internal static DaySnapshot BuildDay(IEnumerable<Finding> findings, DateTime day)
+    {
+        var counted = findings.Where(f => f.Severity is Sev.Problem or Sev.Improve or Sev.Tip).ToList();
+        var open = counted.Where(f => !f.Ignored).ToList();
+        return new DaySnapshot
+        {
+            Day = day,
+            Issues = open.GroupBy(KeyOf).ToDictionary(g => g.Key, g => g.First().Title),
+            Ignored = counted.Where(f => f.Ignored).Select(KeyOf).Distinct().ToList(),
+            Problems = open.Count(f => f.Severity == Sev.Problem),
+            Others = open.Count(f => f.Severity != Sev.Problem)
+        };
     }
 
     public static void AddFreed(string kind, long bytes)
@@ -166,11 +171,15 @@ public static class WeeklyLedger
         }
     }
 
-    /// <summary>What changed between two days: new issues, fixed ones, and ones ignored since, which aren't fixed.</summary>
+    /// <summary>
+    /// What changed between two days: new issues, fixed ones, and ones ignored since. An issue ignored since
+    /// isn't fixed, and one shown again after being ignored isn't new.
+    /// </summary>
     internal static void Compare(DaySnapshot then, DaySnapshot now, WeeklySummary summary)
     {
         var ignoredNow = new HashSet<string>(now.Ignored);
-        summary.NewIssues = now.Issues.Where(i => !then.Issues.ContainsKey(i.Key)).Select(i => i.Value).Take(10).ToList();
+        var ignoredThen = new HashSet<string>(then.Ignored);
+        summary.NewIssues = now.Issues.Where(i => !then.Issues.ContainsKey(i.Key) && !ignoredThen.Contains(i.Key)).Select(i => i.Value).Take(10).ToList();
         summary.FixedIssues = then.Issues.Where(i => !now.Issues.ContainsKey(i.Key) && !ignoredNow.Contains(i.Key)).Select(i => i.Value).Take(10).ToList();
         summary.IgnoredIssues = then.Issues.Where(i => ignoredNow.Contains(i.Key)).Select(i => i.Value).Take(10).ToList();
     }
