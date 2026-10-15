@@ -211,6 +211,8 @@ For anything that doesn't belong on a public page, email [p1zzm1ssilerepo@gmail.
 
 Jellyfin Medic stands on other people's work:
 
+- **[Igor Marques (@camarigor)](https://github.com/camarigor)**, who has contributed dozens of pull requests: safer track cleanup, the week-long schedule planner, tasks recognised on servers in any language, secrets kept out of the support export, the Dashboard's layout and data, the release tests and much more across Medic, Medic Picks and Medic Profiles.
+- **Everyone who sends a pull request.** Each release's notes end with a line thanking the people whose pull requests went into it.
 - **The Jellyfin team**, for the server this is built on.
 - **The LinuxServer.io team** and **binhex**, whose Jellyfin containers are what Medic is developed and tested against.
 - **Unraid (Lime Technology)**, the platform it was built for.
