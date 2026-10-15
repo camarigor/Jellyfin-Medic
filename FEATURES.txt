@@ -431,7 +431,9 @@ Running it:
     Unraid's own disk data.
   - Developed and tested on Unraid with the binhex and linuxserver.io
     Jellyfin containers.
-  - Server language must be English (tasks are recognised by English names).
+  - Works whatever language the server is set to: Jellyfin's own tasks are
+    recognised by their keys, and tasks added by plugins by their names,
+    which plugins rarely translate.
   - Replaces Task Advisor and Setup Optimiser: on first start it copies their
     schedule backups, run history, monthly tasks, viewing pattern and ignored
     findings, then flags the old plugins for removal.

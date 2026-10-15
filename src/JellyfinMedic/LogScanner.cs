@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using JellyfinMedic.Api;
@@ -130,6 +131,7 @@ public static class LogScanner
         repeated.Where(r => r.Count >= 100).Take(5).Select(r => new Finding
         {
             Area = "Logs",
+            Id = "log.repeated:" + ErrorId(r),
             Severity = r.Count >= 1000 ? Sev.Problem : Sev.Improve,
             Title = countingFrom is { } since
                 ? $"An error has repeated {r.Count:N0} times since {since.LocalDateTime:HH:mm}"
@@ -139,6 +141,11 @@ public static class LogScanner
             Why = "The same error over and over usually means an app, browser page or plugin is stuck retrying something that can never work. Each attempt costs CPU and fills the log.",
             Where = "Dashboard → Logs (search for the message)"
         }).ToList();
+
+    // Names a repeated error by where it came from and its message, not by its count, so ignoring it lasts.
+    // Messages can be long and ignore keys are limited in length, so a short hash stands for them.
+    private static string ErrorId(RepeatedError r) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(r.Source + "|" + r.Message)), 0, 8).ToLowerInvariant();
 
     private static void ScanFile(string path, Dictionary<string, RepeatedError> counts, DateTimeOffset? from)
     {

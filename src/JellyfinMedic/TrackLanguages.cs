@@ -1,4 +1,5 @@
 using System.Text.Json;
+using JellyfinMedic.Api;
 
 namespace JellyfinMedic.Services;
 
@@ -91,10 +92,7 @@ public static class TrackLanguages
 
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
-            string tmp = _file + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(_map));
-            File.Move(tmp, _file, overwrite: true);
+            ScheduleStorage.WriteText(_file, JsonSerializer.Serialize(_map));
         }
         catch
         {

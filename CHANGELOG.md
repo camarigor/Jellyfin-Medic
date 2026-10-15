@@ -10,6 +10,8 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 ## Unreleased
 
 ### Fixed
+- **Ignoring a repeated error in the log keeps working when it repeats again.** Its title says how many times the error has repeated, so it came back after being ignored, and two different errors with the same count shared one ignore. It's now named by the error itself. A repeated error you ignored before needs ignoring once more.
+- **Two drives that hold the same library each keep their own "will be full" warning.** When one library is spread over two drives that hold nothing else, both warnings had the same name, so ignoring one also hid the other. The name now uses the drive's mount point when Medic can read it. A "will be full" warning you ignored in 1.0.19 needs ignoring once more.
 - **Memory on "Right now" shows its real share.** It always said 0%, so its warning colours never showed. Medic now sends the share with the reading.
 - **The Dashboard fills the width of the screen.** On a wide screen it left whole columns empty on the right. Tiles now sit in lines that always reach the right edge, two to a line on medium screens and one on phones, where Health, Right now and Top issues come first. Long names without spaces, such as a file path in a task's error, wrap inside their tile.
 - **"Last 24 hours" counts every run.** With "Show errors only" ticked on the History tab, the tile counted only the errors. It now has its own list, and says how many runs completed, failed, stopped or were cancelled; a stopped run is no longer called "failed".

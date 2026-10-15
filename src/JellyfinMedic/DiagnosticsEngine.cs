@@ -640,7 +640,7 @@ public sealed class DiagnosticsEngine
                     $"{SystemProbe.Gb(d.FreeGb)} free, using about {SystemProbe.Gb(d.GbPerDay!.Value)} a day",
                     "Free some space, add a drive, or find what's filling it (for example trickplay images or old downloads)",
                     "At this rate the drive runs out soon, and Jellyfin, downloads and track cleanup all need room to write.", d.ExamplePath,
-                    id: "storage.filling-up:" + d.Holds);
+                    id: "storage.filling-up:" + d.StableName);
             }
         }
 
