@@ -1365,6 +1365,19 @@ await check('Dashboard panels: a section the server couldn\'t build shows its me
     }
 });
 
+await check('Dashboard panels: with no data yet, each 3b panel says so instead of staying empty', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => !/Loading/.test(document.getElementById('md-busy-summary')?.textContent || 'Loading'), null, { timeout: 30000 });
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const text = await page.evaluate(() => ['md-busy-summary', 'md-why-summary', 'md-trend', 'md-people-big', 'md-people']
+        .map((id) => [id, (document.getElementById(id)?.textContent || '').trim()]));
+    const empty = text.filter(([, t]) => t === '' || /undefined|null|NaN/.test(t)).map(([id]) => id);
+    expect(empty.length === 0, 'empty or broken: ' + empty.join(', ') + ' ' + JSON.stringify(text));
+    if (!data.BusyHours.Ready) expect(/Still learning, \d+ hours recorded/.test(text[0][1]), 'Busy hours: ' + text[0][1]);
+    if (!data.Transcodes.Samples) expect(/Nothing caught transcoding/.test(text[1][1]), 'Why it transcodes: ' + text[1][1]);
+    return text.map(([, t]) => t.slice(0, 40)).join(' | ');
+});
+
 let dashFixtures = null;
 
 await check('Dashboard panels: fixture data written, and the Dashboard built again from it', async () => {
@@ -1473,6 +1486,149 @@ await check('Dashboard panels: Network shows the speed test and the suggestion, 
     const errors = await page.$$eval('#md-errors li', (lis) => lis.map((li) => li.textContent));
     expect(data.RepeatedErrors.length === 0 ? /No repeated errors/.test(errors[0] || '') : errors.length === data.RepeatedErrors.length, 'errors: ' + JSON.stringify(errors));
     return `${(await page.textContent('#md-net-big')).trim()}; ${errors.length} log line(s)`;
+});
+
+await check('Dashboard panels: Busy hours shows 7 by 24 hours, outlines the runs in busy hours and lets the keyboard reach them', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => document.querySelectorAll('#md-busy .md-busy-cell').length === 168, null, { timeout: 30000 });
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const hours = data.BusyHours.Days.flat();
+    const clashes = hours.filter((h) => h.Busy && h.Runs.length > 0).length;
+    const withRuns = hours.filter((h) => h.Runs.length > 0).length;
+    const seen = await page.evaluate(() => ({
+        clash: document.querySelectorAll('#md-busy .md-busy-clash').length,
+        focusable: document.querySelectorAll('#md-busy button.md-busy-cell').length,
+        summary: document.getElementById('md-busy-summary').textContent
+    }));
+    expect(clashes > 0 && seen.clash === clashes, `${seen.clash} outlined hours, the data has ${clashes} busy hours with runs`);
+    expect(seen.focusable === withRuns, `${seen.focusable} focusable hours, the data has ${withRuns} hours with runs`);
+    expect(seen.summary.includes(`${data.BusyHours.RunsInBusyHours} run`) && /Most watched: \w{3} \d/.test(seen.summary), 'summary: ' + seen.summary);
+    if (data.UtcOffsetMinutes !== -new Date().getTimezoneOffset()) expect(/server's/.test(seen.summary), 'the hours are the server\'s, yet the summary does not say so: ' + seen.summary);
+    const hint = await page.textContent('#md-busy-detail');
+    expect(/to see its runs/.test(hint), 'no hint before an hour is chosen: ' + hint);
+    await page.focus('#md-busy .md-busy-clash');
+    const detail = await page.textContent('#md-busy-detail');
+    expect(/Fixture scan/.test(detail) && /busy/.test(detail), 'the focused hour\'s details: ' + detail);
+    return seen.summary;
+});
+
+await check('Dashboard panels: Why it transcodes shows each reason\'s share and its titles, and asks for the media report while there is none', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => document.querySelectorAll('#md-why li').length > 0, null, { timeout: 30000 });
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const seen = await page.evaluate(() => ({
+        reasons: Array.from(document.querySelectorAll('#md-why li')).map((li) => li.textContent),
+        titles: document.querySelectorAll('#md-why-titles li').length,
+        summary: document.getElementById('md-why-summary').textContent
+    }));
+    expect(seen.reasons.length === data.Transcodes.Reasons.length, `${seen.reasons.length} reasons, the data has ${data.Transcodes.Reasons.length}`);
+    expect(/Audio format not supported/.test(seen.reasons[0]) && /50%/.test(seen.reasons[0]), 'first reason: ' + seen.reasons[0]);
+    expect(seen.titles === data.Transcodes.Top.length, `${seen.titles} titles, the data has ${data.Transcodes.Top.length}`);
+    expect(seen.summary.includes(`Caught transcoding ${data.Transcodes.Samples} times`), 'summary: ' + seen.summary);
+    if (!data.Transcodes.MediaReportUtc) expect(/Build the media report/.test(seen.summary), 'no media report, yet the summary says: ' + seen.summary);
+    return seen.summary;
+});
+
+await check('Dashboard panels: Disk trend draws each drive\'s days with the projection to full', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => document.querySelectorAll('#md-trend .md-trend-drive').length > 0, null, { timeout: 30000 });
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const seen = await page.evaluate(() => Array.from(document.querySelectorAll('#md-trend .md-trend-drive')).map((d) => ({
+        text: d.textContent,
+        projection: d.querySelectorAll('.md-line-projection').length,
+        label: d.querySelector('svg[role="img"]')?.getAttribute('aria-label') || ''
+    })));
+    expect(seen.length === data.Disks.Drives.length, `${seen.length} drives drawn, the data has ${data.Disks.Drives.length}`);
+    // The fixture drive: 400 GB free ten days ago, 220 GB today, so 20 GB a day and full in 11 days.
+    const fixture = seen.find((d) => /Fixture films/.test(d.text));
+    expect(fixture && fixture.projection === 1 && /220 GB free, using 20 GB a day, full in about 11 days/.test(fixture.text) && /full in/.test(fixture.label),
+        'the filling fixture drive: ' + JSON.stringify(fixture));
+    expect(seen.every((d) => d.label || /after 3 days/.test(d.text)), 'a drive with neither a chart summary nor the 3 days note: ' + JSON.stringify(seen));
+    return seen.length + ' drives';
+});
+
+await check('Dashboard panels: Disk trend marks the days Medic freed space', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const drive = data.Disks.Drives.find((d) => d.Holds === 'Fixture films');
+    expect(drive, 'the fixture drive is not in the data');
+    // Nothing has freed space on the e2e server: serve its data with one freed day, three days ago.
+    const day = drive.Series[drive.Series.length - 4].Day;
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Disks: { ...data.Disks, Freed: [{ Day: day, Bytes: 5368709120, Kinds: ['Transcodes'] }] } } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => document.querySelectorAll('#md-trend .md-line-freed').length > 0, null, { timeout: 30000 });
+        const marked = await page.evaluate(() => Array.from(document.querySelectorAll('#md-trend .md-trend-drive'))
+            .filter((d) => /Fixture films/.test(d.textContent))
+            .map((d) => ({ lines: d.querySelectorAll('.md-line-freed').length, label: d.querySelector('svg[role="img"]').getAttribute('aria-label') }))[0]);
+        expect(marked && marked.lines === 1 && /freed space on 1 day/.test(marked.label), 'the freed day on the fixture drive: ' + JSON.stringify(marked));
+        return 'marked ' + day;
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
+await check('Dashboard panels: People and access counts the accounts and lists the administrators', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => /account/.test(document.getElementById('md-people-big')?.textContent || ''), null, { timeout: 30000 });
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const big = (await page.textContent('#md-people-big')).trim();
+    expect(big === `${data.People.Total} account${data.People.Total === 1 ? '' : 's'}`, 'People: ' + big);
+    const text = await page.textContent('#md-people');
+    expect(text.includes(`Administrators: ${data.People.AdminNames.length}`), 'administrators: ' + text);
+    return big;
+});
+
+// Once Medic has read a media report it keeps it in memory for the rest of the run, so this comes after every check without one.
+await check('Dashboard panels: a media report and an unreadable disk history written, and the Dashboard built again', async () => {
+    expect(dashFixtures, 'the fixture check did not run');
+    for (const name of ['media_report.json', 'disk_history.json.bad']) {
+        if (!(name in dashFixtures)) dashFixtures[name] = readMedicFile(name);
+    }
+    const since = Date.now();
+    writeMedicFile('media_report.json', JSON.stringify({ GeneratedUtc: new Date().toISOString(), Files: 16, Bytes: 1, HardwareAcceleration: 'none', Compatibility: { DtsOrTrueHdOnly: 4, ImageSubtitles: 2, OldContainers: 0, Hdr: 0 } }));
+    // Medic sets a file it can't read aside as .bad and starts a new one.
+    writeMedicFile('disk_history.json', '{ not json');
+    const data = await dashboardAfter(since);
+    expect(data.Transcodes.MediaReportUtc, 'the data has no media report date');
+    return `${data.Disks.Drives.length} drives after the unreadable history`;
+});
+
+await check('Dashboard panels: an unreadable disk history empties only the Disk panels', async () => {
+    // The data built just before. Opening the tab runs the checks, which record today's disk reading again.
+    const data = await ok('/JellyfinMedic/Dashboard');
+    expect(data.Disks && data.Disks.Drives.length === 0, 'the data still has drives: ' + JSON.stringify(data.Disks));
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => /first daily reading/.test(document.getElementById('md-trend')?.textContent || ''), null, { timeout: 30000 });
+    const seen = await page.evaluate(() => ({
+        disks: document.getElementById('md-disks-big').textContent,
+        today: document.getElementById('md-today-summary').textContent,
+        net: document.getElementById('md-net-big').textContent,
+        why: document.querySelectorAll('#md-why li').length
+    }));
+    expect(seen.disks === 'No readings yet', 'Disks: ' + seen.disks);
+    expect(/planned/.test(seen.today) && /Mbps up/.test(seen.net) && seen.why > 0, 'the other panels: ' + JSON.stringify(seen));
+    return 'Disks: ' + seen.disks + '; Today: ' + seen.today;
+});
+
+await check('Dashboard panels: with a media report, each reason names what in the library causes it and how many files have it', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => /in the library/.test(document.getElementById('md-why')?.textContent || ''), null, { timeout: 30000 });
+    const text = await page.textContent('#md-why');
+    expect(/Only DTS or TrueHD audio: 4 files in the library/.test(text) && /Picture subtitles \(PGS, VobSub\): 2 files in the library/.test(text), 'causes: ' + text);
+    const summary = await page.textContent('#md-why-summary');
+    expect(/media report of/.test(summary), 'the summary does not date the report: ' + summary);
+    return 'audio: 4 files, picture subtitles: 2 files';
+});
+
+await check('Dashboard panels: the data files that were there before are back', async () => {
+    expect(dashFixtures, 'the fixture check did not run');
+    for (const [name, before] of Object.entries(dashFixtures)) {
+        if (before === null) removeMedicFile(name);
+        else writeMedicFile(name, before);
+    }
+    const differ = Object.entries(dashFixtures).filter(([name, before]) => readMedicFile(name) !== before).map(([name]) => name);
+    expect(differ.length === 0, 'not put back: ' + differ.join(', '));
+    return Object.keys(dashFixtures).length + ' files put back';
 });
 
 await check('Medic page: Off/Suggest and the time range are separate buttons, and the arrow keys reach every tab', async () => {

@@ -97,7 +97,7 @@
                                 <span><i class="md-sw md-sw-spike"></i>Heavy use</span>
                                 <span><i class="md-sw md-sw-guard"></i>LoadGuard</span>
                             </div>
-                            <p id="md-day-detail" class="so-small" role="status">Choose a run or a mark to see its details.</p>
+                            <p id="md-day-detail" class="so-small">Choose a run or a mark to see its details.</p>
                             <p id="md-day-zone" class="so-small so-muted"></p>
                         </section>
                     </div>
@@ -109,8 +109,8 @@
                             </div>
                             <p id="md-busy-summary" class="so-small">Loading…</p>
                             <div id="md-busy" class="md-busy" role="group" aria-label="People watching on average by weekday and hour, with the last 7 days of task runs"></div>
-                            <p class="so-small so-muted">Darker hours have more people watching. A dot marks an hour with task runs; an amber outline, runs in a busy hour.</p>
-                            <p id="md-busy-detail" class="so-small" role="status"></p>
+                            <p class="so-small so-muted">Brighter blue: more people watching. An outline marks a busy hour, amber when tasks ran in it; a dot marks an hour with task runs.</p>
+                            <p id="md-busy-detail" class="so-small">Choose an hour with a dot to see its runs.</p>
                         </section>
                         <section class="md-tile" aria-labelledby="md-t-why">
                             <div class="md-row md-space md-wrap">
@@ -902,6 +902,8 @@
         #JellyfinMedicPage .md-sw-guard { background: #ffd27a; transform: rotate(45deg) scale(0.7); }
         /* Busy hours: 7 days by 24 hours. */
         #JellyfinMedicPage .md-busy { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 0.68em; color: #8e95a1; }
+        /* The hour and day labels stay whole in narrow columns (tiles let long names wrap anywhere). */
+        #JellyfinMedicPage .md-busy > span:not(.md-busy-cell) { white-space: nowrap; }
         #JellyfinMedicPage .md-busy-cell { position: relative; height: 18px; padding: 0; border: 0; border-radius: 3px; background: #15171b; }
         #JellyfinMedicPage .md-busy-cell.md-busy-on { box-shadow: inset 0 0 0 1px #5a6370; }
         #JellyfinMedicPage .md-busy-cell.md-busy-clash { box-shadow: inset 0 0 0 2px #ffb648; }
@@ -1840,6 +1842,10 @@
                     renderToday();
                     renderNet();
                     renderErrors();
+                    renderBusy();
+                    renderWhy();
+                    renderTrend();
+                    renderPeople();
                 }
 
                 // A section the server couldn't build: its message in place of the panel. True when there was one.
@@ -1855,9 +1861,11 @@
                 function gb(v) { return v >= 1000 ? (v / 1024).toFixed(1) + ' TB' : Math.round(v) + ' GB'; }
 
                 function daysText(days) {
-                    return days < 14 ? 'about ' + Math.max(1, Math.round(days)) + ' days'
+                    const n = Math.max(1, Math.round(days));
+                    return days < 14 ? 'about ' + n + (n === 1 ? ' day' : ' days')
                         : days < 120 ? 'about ' + Math.round(days / 7) + ' weeks'
-                            : 'about ' + Math.round(days / 30) + ' months';
+                            : days < 730 ? 'about ' + Math.round(days / 30) + ' months'
+                                : 'more than two years';
                 }
 
                 // A line chart in a viewBox of width by height: values from 0 to top, an optional dashed alert line, and
@@ -1965,7 +1973,9 @@
                     const worst = drives.slice().sort(function (a, b) { return share(a) - share(b); })[0];
                     big.textContent = pick(worst, 'TotalGb') > 0 ? Math.round(share(worst) * 100) + '% free' : gb(pick(worst, 'FreeGb')) + ' free';
                     const days = pick(worst, 'DaysToFull');
-                    text.textContent = (pick(worst, 'Holds') || pick(worst, 'Key')) + ': ' + (days !== null && days !== undefined ? 'full in ' + daysText(days) : 'not filling');
+                    const rate = pick(worst, 'GbPerDay');
+                    text.textContent = (pick(worst, 'Holds') || pick(worst, 'Key')) + ': ' + (days !== null && days !== undefined ? 'full in ' + daysText(days)
+                        : rate === null || rate === undefined ? 'the trend shows after 3 days of readings' : 'not filling');
                 }
 
                 // ---------- Today: planned and actual ----------
@@ -2128,6 +2138,234 @@
                         li.appendChild(el('span', 'so-small so-muted', pick(e, 'Count') + ' times' + (last ? ', last ' + fmtShort(last) : '')));
                         list.appendChild(li);
                     });
+                }
+
+                // ---------- Busy hours and tasks ----------
+
+                function renderBusy() {
+                    const grid = $('md-busy');
+                    const summary = $('md-busy-summary');
+                    grid.innerHTML = '';
+                    const busy = pick(dash, 'BusyHours');
+                    if (!busy) {
+                        summary.textContent = pick(pick(dash, 'Errors') || {}, 'BusyHours') || 'n/a';
+                        return;
+                    }
+                    const days = pick(busy, 'Days') || [];
+                    const inBusy = pick(busy, 'RunsInBusyHours') || 0;
+                    let peak = null;
+                    days.forEach(function (hours, d) {
+                        hours.forEach(function (hour, h) {
+                            const v = pick(hour, 'AverageStreams') || 0;
+                            if (v > 0 && (!peak || v > peak.v)) peak = { d: d, h: h, v: v };
+                        });
+                    });
+                    summary.textContent = (pick(busy, 'Ready')
+                        ? (inBusy === 1 ? '1 run' : inBusy + ' runs') + ' in busy hours last week.'
+                        : 'Still learning, ' + Math.round(pick(busy, 'HoursRecorded') || 0) + ' hours recorded. Busy hours show after 72 hours.') +
+                        (peak ? ' Most watched: ' + DAYS[peak.d] + ' ' + hm(peak.h * 60) + ', ' + fmtNum(peak.v) + ' on average.' : '') +
+                        (zoneNote() ? ' ' + zoneNote() : '');
+                    const max = peak ? peak.v : 1;
+                    grid.appendChild(el('span'));
+                    for (let h = 0; h < 24; h++) grid.appendChild(el('span', null, h % 3 === 0 ? hourLabel(h) : ''));
+                    days.forEach(function (hours, d) {
+                        grid.appendChild(el('span', null, DAYS[d]));
+                        hours.forEach(function (hour, h) {
+                            const v = pick(hour, 'AverageStreams') || 0;
+                            const runs = pick(hour, 'Runs') || [];
+                            const isBusy = pick(hour, 'Busy');
+                            const label = DAYS[d] + ' ' + hm(h * 60) + ': ' + fmtNum(v) + ' watching on average' + (isBusy ? ', busy' : '') +
+                                (runs.length ? '; ' + runs.map(function (r) {
+                                    const c = pick(r, 'Count');
+                                    return pick(r, 'TaskName') + ' (' + c + (c === 1 ? ' run' : ' runs') + ')';
+                                }).join(', ') : '');
+                            const cell = el(runs.length ? 'button' : 'span', 'md-busy-cell');
+                            if (v > 0) cell.style.background = 'rgba(0, 164, 220, ' + (0.15 + 0.85 * v / max).toFixed(2) + ')';
+                            if (isBusy) cell.classList.add(runs.length ? 'md-busy-clash' : 'md-busy-on');
+                            cell.title = label;
+                            if (runs.length) {
+                                cell.type = 'button';
+                                cell.setAttribute('aria-label', label);
+                                cell.appendChild(el('span', 'md-busy-dot'));
+                                const show = function () { $('md-busy-detail').textContent = label; };
+                                cell.addEventListener('click', show);
+                                cell.addEventListener('focus', show);
+                            }
+                            grid.appendChild(cell);
+                        });
+                    });
+                }
+
+                // ---------- Why it transcodes ----------
+
+                // What in the library causes a reason, by the media report's count it pairs with.
+                const CAUSE = {
+                    DtsOrTrueHdOnly: 'Only DTS or TrueHD audio',
+                    ImageSubtitles: 'Picture subtitles (PGS, VobSub)',
+                    OldContainers: 'Older file types (AVI, WMV, MPEG)',
+                    Hdr: 'HDR video'
+                };
+
+                function renderWhy() {
+                    const list = $('md-why');
+                    const titles = $('md-why-titles');
+                    const summary = $('md-why-summary');
+                    list.innerHTML = '';
+                    titles.innerHTML = '';
+                    const tx = pick(dash, 'Transcodes');
+                    if (!tx) {
+                        summary.textContent = pick(pick(dash, 'Errors') || {}, 'Transcodes') || 'n/a';
+                        return;
+                    }
+                    const samples = pick(tx, 'Samples') || 0;
+                    const since = pick(tx, 'Since');
+                    const sinceText = since ? ' since ' + new Date(since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+                    const reportAt = pick(tx, 'MediaReportUtc');
+                    // Worded as on the Media report tab, which lists the same log.
+                    summary.textContent = samples
+                        ? 'Caught transcoding ' + (samples === 1 ? 'once' : samples + ' times') + sinceText + '. ' +
+                            (reportAt ? 'Library counts from the media report of ' + fmtShort(reportAt) + '.' : 'Build the media report to see what causes these.')
+                        : 'Nothing caught transcoding' + (sinceText || ' yet') + '. Medic checks playback every 5 minutes.';
+                    (pick(tx, 'Reasons') || []).forEach(function (r) {
+                        const share = pick(r, 'Share') || 0;
+                        const name = txReason(pick(r, 'Reason'));
+                        const li = el('li');
+                        const head = el('div', 'md-row md-space');
+                        head.appendChild(el('span', null, name));
+                        head.appendChild(el('strong', null, Math.round(share) + '%'));
+                        li.appendChild(head);
+                        const bar = el('div', 'md-bar');
+                        bar.setAttribute('role', 'img');
+                        bar.setAttribute('aria-label', name + ': ' + Math.round(share) + '% of transcoding checks');
+                        const fill = el('i');
+                        fill.style.width = Math.min(100, share) + '%';
+                        bar.appendChild(fill);
+                        li.appendChild(bar);
+                        const cause = pick(r, 'LibraryCause');
+                        const count = pick(r, 'LibraryCount');
+                        if (cause) {
+                            li.appendChild(el('span', 'so-small so-muted', (CAUSE[cause] || cause) +
+                                (count !== null && count !== undefined ? ': ' + count + (count === 1 ? ' file' : ' files') + ' in the library' : '')));
+                        }
+                        list.appendChild(li);
+                    });
+                    (pick(tx, 'Top') || []).forEach(function (t) {
+                        const li = el('li');
+                        li.appendChild(el('span', null, pick(t, 'Title')));
+                        li.appendChild(el('span', 'so-muted', (pick(t, 'Reasons') || []).map(txReason).join(', ')));
+                        titles.appendChild(li);
+                    });
+                }
+
+                // ---------- Disk trend and forecast ----------
+
+                // Days from one yyyy-MM-dd date to another.
+                function daysBetween(from, to) {
+                    return Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000);
+                }
+
+                function renderTrend() {
+                    const box = $('md-trend');
+                    box.innerHTML = '';
+                    const section = pick(dash, 'Disks');
+                    if (!section) {
+                        if (!sectionError(box, 'Disks')) box.appendChild(el('p', 'so-muted so-small', 'n/a'));
+                        return;
+                    }
+                    const drives = pick(section, 'Drives') || [];
+                    if (!drives.length) {
+                        box.appendChild(el('p', 'so-muted so-small', 'Disk data starts after the first daily reading.'));
+                        return;
+                    }
+                    // The server's date: Today's, or the build time in the server's zone when Today couldn't be built.
+                    const today = pick(pick(dash, 'Today'), 'Date') ||
+                        new Date(Date.parse(pick(dash, 'GeneratedUtc')) + (pick(dash, 'UtcOffsetMinutes') || 0) * 60000).toISOString().slice(0, 10);
+                    const freed = (pick(section, 'Freed') || []).map(function (f) { return pick(f, 'Day'); });
+                    const ns = 'http://www.w3.org/2000/svg';
+                    drives.forEach(function (d) {
+                        const wrap = el('div', 'md-trend-drive');
+                        const name = pick(d, 'Holds') || pick(d, 'Key');
+                        const free = pick(d, 'FreeGb') || 0;
+                        const total = pick(d, 'TotalGb') || 0;
+                        const rate = pick(d, 'GbPerDay');
+                        const days = pick(d, 'DaysToFull');
+                        const filling = days !== null && days !== undefined;
+                        const series = pick(d, 'Series') || [];
+                        const status = gb(free) + ' free' + (total ? ' of ' + gb(total) : '') +
+                            (rate === null || rate === undefined ? '' : filling ? ', using ' + fmtNum(rate) + ' GB a day, full in ' + daysText(days) : ', not filling');
+                        wrap.appendChild(el('strong', null, name));
+                        if (rate === null || rate === undefined) {
+                            wrap.appendChild(el('span', 'so-small', status + '. The trend shows after 3 days of readings.'));
+                            box.appendChild(wrap);
+                            return;
+                        }
+                        // 30 days back on the left; on the right, as far ahead as the drive lasts, up to 30 days.
+                        const ahead = filling ? Math.min(30, days) : 1;
+                        const span = 29 + ahead;
+                        const top = Math.max(total, Math.max.apply(null, series.map(function (p) { return pick(p, 'FreeGb'); })), 1);
+                        const x = function (offset) { return ((offset + 29) / span * 300).toFixed(1); };
+                        const y = function (value) { return (62 - Math.max(0, value) / top * 58).toFixed(1); };
+                        const svg = document.createElementNS(ns, 'svg');
+                        svg.setAttribute('viewBox', '0 0 300 64');
+                        svg.setAttribute('preserveAspectRatio', 'none');
+                        svg.setAttribute('role', 'img');
+                        svg.setAttribute('aria-label', name + ': ' + status + '.' + (freed.length ? ' Medic freed space on ' + freed.length + (freed.length === 1 ? ' day.' : ' days.') : ''));
+                        freed.forEach(function (day) {
+                            const at = daysBetween(today, day);
+                            if (at < -29 || at > 0) return;
+                            const mark = document.createElementNS(ns, 'line');
+                            mark.setAttribute('x1', x(at));
+                            mark.setAttribute('x2', x(at));
+                            mark.setAttribute('y1', '0');
+                            mark.setAttribute('y2', '64');
+                            mark.setAttribute('class', 'md-line-freed');
+                            svg.appendChild(mark);
+                        });
+                        const line = document.createElementNS(ns, 'polyline');
+                        line.setAttribute('points', series.map(function (p) { return x(daysBetween(today, pick(p, 'Day'))) + ',' + y(pick(p, 'FreeGb')); }).join(' '));
+                        line.setAttribute('class', 'md-line-value');
+                        svg.appendChild(line);
+                        if (filling) {
+                            const projection = document.createElementNS(ns, 'polyline');
+                            projection.setAttribute('points', x(0) + ',' + y(free) + ' ' + x(ahead) + ',' + y(free - rate * ahead));
+                            projection.setAttribute('class', 'md-line-projection');
+                            svg.appendChild(projection);
+                        }
+                        wrap.appendChild(svg);
+                        wrap.appendChild(el('span', 'so-small', status + '.'));
+                        box.appendChild(wrap);
+                    });
+                }
+
+                // ---------- People and access ----------
+
+                function renderPeople() {
+                    const big = $('md-people-big');
+                    const box = $('md-people');
+                    box.innerHTML = '';
+                    const people = pick(dash, 'People');
+                    if (!people) {
+                        big.textContent = 'n/a';
+                        sectionError(box, 'People');
+                        return;
+                    }
+                    const total = pick(people, 'Total') || 0;
+                    big.textContent = total + (total === 1 ? ' account' : ' accounts');
+                    const group = function (title, names, warn) {
+                        const g = el('div', 'md-people-group');
+                        g.appendChild(el('strong', names.length && warn ? warn : null, title + ': ' + names.length));
+                        if (names.length) g.appendChild(el('span', 'so-small so-muted', names.join(', ')));
+                        box.appendChild(g);
+                    };
+                    group('Inactive', pick(people, 'Inactive') || [], 'md-num-warn');
+                    group('No password', pick(people, 'NoPassword') || [], 'md-num-bad');
+                    group('Administrators', pick(people, 'AdminNames') || [], null);
+                    const roaming = pick(people, 'Roaming');
+                    if (roaming === null || roaming === undefined) {
+                        box.appendChild(el('p', 'so-small so-muted', 'Sign-ins from several places couldn\'t be checked this time.'));
+                    } else {
+                        group('Signed in from several places', roaming.map(function (r) { return pick(r, 'Name') + ' (' + pick(r, 'Addresses') + ' addresses)'; }), 'md-num-warn');
+                    }
                 }
 
                 // ---------- Schedule ----------
@@ -2982,7 +3220,6 @@
                     }
                 }
 
-                // The Dashboard keeps its own list, so History's "Show errors only" can't change its counts.
                 function renderHistory() {
                     if (!history) return;
                     const sum = $('md-hist-summary');

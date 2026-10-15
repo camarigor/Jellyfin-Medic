@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Added
+- **A fuller Dashboard.** New panels put side by side what Medic already records: today's planned runs next to the ones that ran, with failures, late and missed runs, heavy use and LoadGuard on one axis; the load of the last 10 minutes against the alert levels; busy hours next to the week's task runs; why files are transcoded next to what in the library causes it; each drive's last 30 days and when it would be full; your connection next to the most people watching at once; repeated log errors; and who needs a look among the accounts. On a phone they stack in order of priority. "Today's tasks" and "Last 24 hours" are part of Today now; older runs stay on the History tab. Nothing new is collected or sent anywhere.
+
 ## [1.0.20] – 2026-10-15
 
 ### Added
