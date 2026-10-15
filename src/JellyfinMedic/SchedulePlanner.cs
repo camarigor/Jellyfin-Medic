@@ -52,6 +52,35 @@ public sealed class PlannedTask
 }
 
 /// <summary>
+/// A task that has no time to run at: what it does, and whether Medic recommends giving it one.
+/// </summary>
+public sealed class UntimedTaskAdvice
+{
+    public const string On = "On";
+    public const string Off = "Off";
+    public const string YourCall = "Your call";
+
+    public string TaskId { get; set; } = string.Empty;
+
+    public string TaskName { get; set; } = string.Empty;
+
+    public string Category { get; set; } = string.Empty;
+
+    public string WhatItDoes { get; set; } = string.Empty;
+
+    // "Never runs on its own" or "Only when Jellyfin starts".
+    public string Now { get; set; } = string.Empty;
+
+    // On, Off or Your call.
+    public string Recommendation { get; set; } = YourCall;
+
+    public string Why { get; set; } = string.Empty;
+
+    // How often Medic would run it, when it recommends turning it on.
+    public string? HowOften { get; set; }
+}
+
+/// <summary>
 /// Decides how often each known task needs to run and when.
 ///
 /// How often: every known task has a "need" (for example, the IPTV guide must refresh
@@ -316,6 +345,18 @@ public static class SchedulePlanner
             }
         }
 
+        if (busy.FromServerLoad)
+        {
+            var (peak, peakMinute) = slots
+                .Select(sl => busy.ServerPeakOver(sl.Day, sl.Start * CellMinutes, (int)Math.Ceiling(estimate)))
+                .OrderByDescending(x => x.Peak)
+                .First();
+            if (peak >= BusyProfile.BusyServerThreshold)
+            {
+                warnings.Add($"Runs when the server is usually busy (about {peak * 100:0}% around {ScheduleStorage.Hhmm(TimeSpan.FromMinutes(peakMinute))}). There was no quieter free time for it.");
+            }
+        }
+
         int firstStart = slots.Min(sl => sl.Start);
         var result = new PlannedTask
         {
@@ -355,6 +396,68 @@ public static class SchedulePlanner
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// The tasks with no time to run at (no daily, weekly or interval trigger, and not run monthly by Medic),
+    /// with what each does and whether Medic recommends turning it on.
+    /// </summary>
+    public static List<UntimedTaskAdvice> Untimed(
+        IReadOnlyList<IScheduledTaskWorker> workers,
+        IReadOnlyDictionary<string, ReliabilityRecord> profile,
+        IReadOnlyDictionary<string, ManagedRun> managed)
+    {
+        var result = new List<UntimedTaskAdvice>();
+        foreach (var worker in workers)
+        {
+            string id = worker.Id.ToString();
+            var triggers = worker.Triggers ?? Array.Empty<TaskTriggerInfo>();
+            if (managed.ContainsKey(id) || triggers.Any(t => t.Type is TaskTriggerInfoType.DailyTrigger or TaskTriggerInfoType.WeeklyTrigger or TaskTriggerInfoType.IntervalTrigger))
+            {
+                continue;
+            }
+
+            var advice = new UntimedTaskAdvice
+            {
+                TaskId = id,
+                TaskName = worker.Name,
+                Category = worker.Category ?? string.Empty,
+                WhatItDoes = string.IsNullOrWhiteSpace(worker.Description) ? "Its maker gives no description." : worker.Description.Trim(),
+                Now = triggers.Any(t => t.Type == TaskTriggerInfoType.StartupTrigger) ? "Only when Jellyfin starts" : "Never runs on its own"
+            };
+
+            string key = worker.ScheduledTask.Key;
+            if (key == RestartForUpdatesTask.TaskKey)
+            {
+                advice.Recommendation = UntimedTaskAdvice.On;
+                advice.HowOften = CadenceLabel(Cadence.Weekly);
+                advice.Why = "Plugin updates only finish installing after a restart, and this waits until nobody is watching. Give it a time after Update Plugins, such as 04:00 once a week.";
+            }
+            else if (key == ScheduledRestartTask.TaskKey)
+            {
+                advice.Recommendation = UntimedTaskAdvice.Off;
+                advice.Why = "Jellyfin doesn't need regular restarts. Only turn it on if your server gets slow or uses more memory the longer it runs.";
+            }
+            else if (RuleFor(worker) is { } rule)
+            {
+                profile.TryGetValue(id, out var rec);
+                var (minutes, _) = MeasureCost(worker, rec);
+                advice.Recommendation = UntimedTaskAdvice.On;
+                advice.HowOften = CadenceLabel(ChooseCadence(rule, minutes));
+                advice.Why = rule.Why + " Choose \"Let Medic schedule it\" in Preview changes to give it a quiet time.";
+            }
+            else
+            {
+                advice.Why = "Medic doesn't know this task, so it has no advice. Leave it off unless you use what it does; if you do, give it a time under Scheduled Tasks.";
+            }
+
+            result.Add(advice);
+        }
+
+        return result
+            .OrderBy(a => a.Recommendation switch { UntimedTaskAdvice.On => 0, UntimedTaskAdvice.YourCall => 1, _ => 2 })
+            .ThenBy(a => a.TaskName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static PlannedTask TurnOff(IScheduledTaskWorker worker, string current, bool canPlan) => new()

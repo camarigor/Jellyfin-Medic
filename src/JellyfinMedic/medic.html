@@ -187,6 +187,16 @@
                     <aside id="md-detail" class="md-detail" aria-label="Selected task"></aside>
                 </div>
                 <div id="md-preview-box" class="so-panel" hidden></div>
+                <div id="md-untimed" class="so-panel" hidden>
+                    <h3>Tasks with no time set</h3>
+                    <p class="so-muted so-small">These never run on their own (or only when Jellyfin starts). Here's what each does and whether Medic recommends turning it on.</p>
+                    <div class="so-scroll">
+                        <table class="so-table">
+                            <thead><tr><th>Task</th><th>What it does</th><th>Now</th><th>Recommended</th><th>Why</th></tr></thead>
+                            <tbody id="md-untimed-rows"></tbody>
+                        </table>
+                    </div>
+                </div>
                 <div class="so-panel">
                     <h3>Restore a backup</h3>
                     <p class="so-muted so-small">A backup is made before every Apply and every Restore, so any change can be undone.</p>
@@ -2078,6 +2088,26 @@
                     } catch (e) { /* leave the list as it is */ }
                 }
 
+                async function loadUntimed() {
+                    try {
+                        const rows = await getJson('/JellyfinMedic/Schedule/GetUntimedTasks');
+                        const body = $('md-untimed-rows');
+                        body.innerHTML = '';
+                        (rows || []).forEach(function (t) {
+                            const tr = el('tr');
+                            tr.appendChild(el('td', null, pick(t, 'TaskName')));
+                            tr.appendChild(el('td', 'so-muted', pick(t, 'WhatItDoes')));
+                            tr.appendChild(el('td', null, pick(t, 'Now')));
+                            const rec = pick(t, 'Recommendation');
+                            const often = pick(t, 'HowOften');
+                            tr.appendChild(el('td', rec === 'On' ? 'md-ok-text' : (rec === 'Off' ? 'md-warn-text' : null), rec + (often ? ' (' + often.toLowerCase() + ')' : '')));
+                            tr.appendChild(el('td', 'so-muted', pick(t, 'Why')));
+                            body.appendChild(tr);
+                        });
+                        $('md-untimed').hidden = !rows || rows.length === 0;
+                    } catch (e) { /* leave the table as it is */ }
+                }
+
                 async function loadAudit() {
                     try {
                         const rows = await getJson('/JellyfinMedic/Schedule/GetMovementAuditLog');
@@ -2185,7 +2215,7 @@
                         const result = await postJson('/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
                         showStatus(pick(result, 'Message') || 'Schedule applied.', pick(result, 'Success') === false ? 'error' : 'info');
                         $('md-preview-box').hidden = true;
-                        await Promise.all([loadCalendar(), loadBackups(), loadAudit()]);
+                        await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
                     } catch (err) {
                         showStatus('Couldn\'t apply the schedule. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
                     }
@@ -2210,7 +2240,7 @@
                     try {
                         const result = await postJson('/JellyfinMedic/Schedule/RestorePreviousSchedule', { backupFileName: file });
                         showStatus(pick(result, 'Message') || 'Schedule restored.', pick(result, 'Success') === false ? 'error' : 'info');
-                        await Promise.all([loadCalendar(), loadBackups(), loadAudit()]);
+                        await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
                     } catch (e) {
                         showStatus('Couldn\'t restore that backup.', 'error');
                     }
@@ -4178,7 +4208,7 @@
                             await refreshToday();
                             if (!dashHistory || Date.now() - dashHistoryAt > 5 * 60000) await loadDashHistory();
                         } else if (name === 'schedule') {
-                            await Promise.all([loadCalendar(), loadBackups(), loadAudit()]);
+                            await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
                             if (!usage) { usage = await getJson('/JellyfinMedic/Usage'); }
                             renderUsage();
                         } else if (name === 'history') {

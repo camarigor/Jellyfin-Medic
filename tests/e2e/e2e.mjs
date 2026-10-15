@@ -107,7 +107,7 @@ const medicGets = [
     '/JellyfinMedic/MedicSettings', '/JellyfinMedic/Plugins', '/JellyfinMedic/Usage', '/JellyfinMedic/TranscodeLog',
     '/JellyfinMedic/Weekly', '/JellyfinMedic/Cleanup', '/JellyfinMedic/JellyfinSettings',
     '/JellyfinMedic/Schedule/GetCalendar', '/JellyfinMedic/Schedule/GetRunHistory', '/JellyfinMedic/Schedule/PreviewScheduleDiff',
-    '/JellyfinMedic/Schedule/ListBackups', '/MedicPicks/Admin/Status', '/MedicProfiles/Status', '/MedicProfiles/History'
+    '/JellyfinMedic/Schedule/ListBackups', '/JellyfinMedic/Schedule/GetUntimedTasks', '/MedicPicks/Admin/Status', '/MedicProfiles/Status', '/MedicProfiles/History'
 ];
 for (const path of medicGets) {
     await check(`GET ${path}`, async () => { await ok(path); });
@@ -1034,6 +1034,19 @@ await check('schedule Preview: choosing per task updates the plan', async () => 
     await sleep(1500);
     const ours = errors.filter((e) => !/ResizeObserver|^CancelledError/i.test(e));
     expect(ours.length === 0, ours.join(' | '));
+});
+
+await check('schedule lists the tasks with no time set, with what each does and a recommendation', async () => {
+    const list = await ok('/JellyfinMedic/Schedule/GetUntimedTasks');
+    const row = (name) => list.find((t) => t.TaskName === name);
+    expect(row('Scheduled restart')?.Recommendation === 'Off', 'Scheduled restart: ' + JSON.stringify(row('Scheduled restart')));
+    expect(row('Restart Jellyfin for waiting updates')?.Recommendation === 'On', 'Restart for updates: ' + JSON.stringify(row('Restart Jellyfin for waiting updates')));
+    expect(list.every((t) => t.WhatItDoes && t.Why && ['On', 'Off', 'Your call'].includes(t.Recommendation)), JSON.stringify(list));
+    await page.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
+    const shown = page.locator('#md-untimed-rows tr', { hasText: 'Scheduled restart' });
+    await shown.waitFor({ timeout: 30000 });
+    expect((await shown.textContent()).includes('Off'), 'the Scheduled restart row has no recommendation: ' + await shown.textContent());
+    return list.length + ' tasks with no time set';
 });
 
 await check('exposure check result says when it only tested from this server', async () => {

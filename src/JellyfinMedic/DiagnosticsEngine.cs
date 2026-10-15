@@ -1299,7 +1299,7 @@ public sealed class DiagnosticsEngine
         List<PlannedTask> plan;
         try
         {
-            var busy = BusyProfile.Create(usage, Plugin.Instance?.Configuration);
+            var busy = BusyProfile.Create(usage, Plugin.Instance?.Configuration, HostLoadAnalyzer.Summarise(HostLoadStore.Load(_paths)));
             plan = SchedulePlanner.Build(_tasks.ScheduledTasks.Where(ScheduleStorage.IsVisible).ToList(),
                 ScheduleStorage.LoadProfile(_paths), ScheduleStorage.LoadManaged(_paths), busy, ScheduleStorage.LoadChoices(_paths));
         }

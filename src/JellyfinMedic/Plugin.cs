@@ -127,6 +127,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddHostedService<TaskLifecycleListener>();
         serviceCollection.AddHostedService<ManagedScheduleRunner>();
         serviceCollection.AddHostedService<UsageSampler>();
+        serviceCollection.AddHostedService<HostLoadSampler>();
         serviceCollection.AddHostedService<LoadGuard>();
         serviceCollection.AddHostedService<ResourceMonitor>();
 
