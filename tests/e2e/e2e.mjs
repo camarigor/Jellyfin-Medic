@@ -806,6 +806,29 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
     }
 });
 
+await check('Medic Profiles signs in to qBittorrent 5.2, which answers an empty 204', async () => {
+    const qbitServer = await fakeArr.startQbit(18080);
+    fakeArr.qbit.version = '5.2';
+    const logins = fakeArr.qbit.logins, failedLogins = fakeArr.qbit.failedLogins;
+    try {
+        const QB = ARR.replace('18989', '18080');
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'secret' });
+        let state = await ok('/MedicProfiles/FileFilter');
+        expect(state.reachable, 'right password: ' + JSON.stringify(state));
+        expect(fakeArr.qbit.logins === logins + 1, `signed in ${fakeArr.qbit.logins - logins} times`);
+
+        // 5.2 turns a wrong password down with 401 instead of "Fails.".
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'wrong' });
+        state = await ok('/MedicProfiles/FileFilter');
+        expect(!state.reachable && /user name and password/.test(state.message), 'wrong password: ' + JSON.stringify(state));
+        expect(fakeArr.qbit.failedLogins === failedLogins + 1, `the wrong password was tried ${fakeArr.qbit.failedLogins - failedLogins} times`);
+        return 'signed in on an empty 204; a 401 reads as a wrong password';
+    } finally {
+        fakeArr.qbit.version = '5.1';
+        qbitServer.close();
+    }
+});
+
 // ---------- Exposure check, without asking any outside service ----------
 
 await check('exposure check says it tested from this server, and a failed TLS handshake counts as an answer', async () => {

@@ -3,6 +3,11 @@
 All notable changes to Medic Profiles are recorded here. The newest version is at the top.
 Jellyfin Medic and Medic Picks have their own changelogs.
 
+## Unreleased
+
+### Fixed
+- **Signing in to qBittorrent 5.2 and later works.** From 5.2, qBittorrent answers a correct sign-in with an empty reply instead of "Ok.", so Medic Profiles said qBittorrent "didn't accept the user name and password" even though the sign-in had worked, and Block unsafe files couldn't be used. It now goes by the session cookie qBittorrent sends when you're signed in, which every version does.
+
 ## [1.1.2] – 2026-10-14
 
 ### Added

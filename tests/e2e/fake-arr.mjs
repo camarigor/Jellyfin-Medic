@@ -63,7 +63,9 @@ export function start(port) {
 }
 
 // A pretend qBittorrent Web UI: sign-in with admin/secret, and the "Excluded file names" preference.
-export const qbit = { prefs: { excluded_file_names_enabled: false, excluded_file_names: '*.nfo' }, sets: [], logins: 0, failedLogins: 0 };
+// Its sign-in answers like qBittorrent up to 5.1 ("Ok." or "Fails.", both 200), or like 5.2 and later
+// (an empty 204 with a QBT_SID_<port> cookie, or 401) when version is '5.2'.
+export const qbit = { prefs: { excluded_file_names_enabled: false, excluded_file_names: '*.nfo' }, sets: [], logins: 0, failedLogins: 0, version: '5.1' };
 
 export function startQbit(port) {
     const server = http.createServer((req, res) => {
@@ -71,16 +73,17 @@ export function startQbit(port) {
         req.on('data', (c) => { body += c; });
         req.on('end', () => {
             const path = req.url.split('?')[0];
-            const signedIn = /SID=good/.test(req.headers.cookie || '');
+            const signedIn = /SID(_\d+)?=good/.test(req.headers.cookie || '');
             if (path === '/api/v2/auth/login') {
                 const form = new URLSearchParams(body);
+                const newer = qbit.version === '5.2';
                 qbit.logins++;
                 if (form.get('username') === 'admin' && form.get('password') === 'secret') {
-                    res.writeHead(200, { 'Set-Cookie': 'SID=good; HttpOnly; path=/' });
-                    res.end('Ok.');
+                    res.writeHead(newer ? 204 : 200, { 'Set-Cookie': `${newer ? `QBT_SID_${port}` : 'SID'}=good; HttpOnly; path=/` });
+                    res.end(newer ? undefined : 'Ok.');
                 } else {
                     qbit.failedLogins++;
-                    res.writeHead(200); res.end('Fails.');
+                    res.writeHead(newer ? 401 : 200); res.end(newer ? 'Unauthorized' : 'Fails.');
                 }
                 return;
             }

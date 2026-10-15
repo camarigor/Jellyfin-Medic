@@ -359,16 +359,16 @@ public class QbitFileFilter
                 new KeyValuePair<string, string>("password", password)
             });
             using var response = await client.PostAsync(baseUrl + "/api/v2/auth/login", form, ct).ConfigureAwait(false);
-            string body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            // qBittorrent says "Ok." and sets its session cookie when signed in, "Fails." for a wrong password,
-            // and 403 after too many tries.
+            // Signed in, qBittorrent sets its session cookie and answers "Ok." (up to 5.1) or nothing at all (204, from 5.2),
+            // so the cookie is what tells. A wrong password gets "Fails." and no cookie (up to 5.1) or 401 (from 5.2), and
+            // too many tries get 403.
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 client.Dispose();
                 return (null, "qBittorrent has blocked sign-ins for now after too many wrong passwords. Wait a while, then try again.", true);
             }
 
-            if (!response.IsSuccessStatusCode || !body.Contains("Ok", StringComparison.OrdinalIgnoreCase) || cookies.GetCookies(new Uri(baseUrl)).Count == 0)
+            if (!response.IsSuccessStatusCode || cookies.GetCookies(new Uri(baseUrl)).Count == 0)
             {
                 client.Dispose();
                 return (null, "qBittorrent didn't accept the user name and password. Medic Profiles won't try them again for 5 minutes, so qBittorrent doesn't block this server.", true);
