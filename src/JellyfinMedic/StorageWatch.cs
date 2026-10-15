@@ -108,9 +108,16 @@ public static class StorageWatch
             bool changed = false;
             foreach (var d in drives)
             {
-                if (!history.Any(h => h.Key == d.Key && h.Day == today))
+                var todays = history.FirstOrDefault(h => h.Key == d.Key && h.Day == today);
+                if (todays is null)
                 {
-                    history.Add(new DiskSample { Key = d.Key, Day = today, FreeGb = d.FreeGb, Path = d.ExamplePath });
+                    history.Add(new DiskSample { Key = d.Key, Day = today, FreeGb = d.FreeGb, Holds = d.Holds, Path = d.ExamplePath });
+                    changed = true;
+                }
+                else if (todays.Holds.Length == 0 && d.Holds.Length > 0)
+                {
+                    // Today's first reading came from the background sampler, which may not know what the drive holds.
+                    todays.Holds = d.Holds;
                     changed = true;
                 }
             }
@@ -153,13 +160,22 @@ public static class StorageWatch
 
         var drives = history.Where(h => h.Path.Length > 0)
             .GroupBy(h => h.Key)
-            .Select(g => g.OrderBy(h => h.Day).Last())
-            .Select(h => SystemProbe.Space(h.Path) is { } s ? new DriveStatus { Key = h.Key, ExamplePath = h.Path, FreeGb = s.FreeGb, TotalGb = s.TotalGb } : null)
+            .Select(g => (Latest: g.OrderBy(h => h.Day).Last(), Holds: g.OrderBy(h => h.Day).LastOrDefault(h => h.Holds.Length > 0)?.Holds ?? string.Empty))
+            .Select(x => SystemProbe.Space(x.Latest.Path) is { } s ? new DriveStatus { Key = x.Latest.Key, Holds = x.Holds, ExamplePath = x.Latest.Path, FreeGb = s.FreeGb, TotalGb = s.TotalGb } : null)
             .OfType<DriveStatus>()
             .ToList();
         if (drives.Count > 0)
         {
             Record(pluginConfigDir, drives);
+        }
+    }
+
+    /// <summary>The daily readings of the last 30 days, every drive's. A damaged file reads as none and is set aside.</summary>
+    internal static List<DiskSample> History(string pluginConfigDir)
+    {
+        lock (Sync)
+        {
+            return ScheduleStorage.ReadList<DiskSample>(HistoryPath(pluginConfigDir));
         }
     }
 

@@ -15,6 +15,9 @@ public static class SecurityAuditor
     private const string Area = "Security";
     private const string WhereUsers = "Dashboard → Users";
 
+    // Signing in from this many addresses (IPv6 by /64) in a week is worth a look.
+    private const int RoamingAddresses = 3;
+
     public static List<Finding> Audit(object? activityManager, IUserManager userManager, List<object> users)
     {
         var findings = new List<Finding>();
@@ -65,34 +68,7 @@ public static class SecurityAuditor
             return;
         }
 
-        var failures = new List<(string User, string Ip)>();
-        var success = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var entry in entries)
-        {
-            string type = (SettingsReader.Text(entry, "Type") ?? string.Empty).ToLowerInvariant();
-            string name = SettingsReader.Text(entry, "Name") ?? string.Empty;
-            string overview = SettingsReader.Text(entry, "ShortOverview") ?? SettingsReader.Text(entry, "Overview") ?? string.Empty;
-            string ip = ExtractIp(overview) ?? ExtractIp(name) ?? string.Empty;
-            string user = SettingsReader.Text(entry, "UserId") ?? string.Empty;
-
-            bool failed = type.Contains("authenticationfailed") || type.Contains("failedlogin") ||
-                          (type.Contains("login") && (name + overview).Contains("failed", StringComparison.OrdinalIgnoreCase));
-            bool loggedIn = !failed && (type.Contains("authenticationsucceeded") || type.Contains("sessionstarted") || type.Contains("userauthenticated"));
-
-            if (failed)
-            {
-                failures.Add((NameOrUser(name, user), ip));
-            }
-            else if (loggedIn && ip.Length > 0)
-            {
-                // By account: the entry's text includes the device and is translated, and long ones used to all
-                // become "a user", adding up different people's addresses. Phones on IPv6 change address often,
-                // so an IPv6 address counts by its /64 network.
-                string key = user.Length > 0 ? (userNames.TryGetValue(user, out var known) ? known : "an account (" + user[..Math.Min(8, user.Length)] + ")") : NameOrUser(name, user);
-                (success.TryGetValue(key, out var set) ? set : success[key] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(Network(ip));
-            }
-        }
+        var (failures, networks) = SignIns(entries, userNames);
 
         if (failures.Count >= 10)
         {
@@ -120,7 +96,7 @@ public static class SecurityAuditor
             });
         }
 
-        var roaming = success.Where(s => s.Value.Count >= 3).ToList();
+        var roaming = networks.Where(s => s.Value.Count >= RoamingAddresses).ToList();
         if (roaming.Count > 0)
         {
             findings.Add(new Finding
@@ -135,6 +111,64 @@ public static class SecurityAuditor
                 Where = WhereUsers
             });
         }
+    }
+
+    /// <summary>
+    /// From activity log entries: each failed sign-in (account and address), and the networks each account
+    /// signed in from.
+    /// </summary>
+    internal static (List<(string User, string Ip)> Failures, Dictionary<string, HashSet<string>> Networks) SignIns(List<object> entries, Dictionary<string, string> userNames)
+    {
+        var failures = new List<(string User, string Ip)>();
+        var networks = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in entries)
+        {
+            string type = (SettingsReader.Text(entry, "Type") ?? string.Empty).ToLowerInvariant();
+            string name = SettingsReader.Text(entry, "Name") ?? string.Empty;
+            string overview = SettingsReader.Text(entry, "ShortOverview") ?? SettingsReader.Text(entry, "Overview") ?? string.Empty;
+            string ip = ExtractIp(overview) ?? ExtractIp(name) ?? string.Empty;
+            string user = SettingsReader.Text(entry, "UserId") ?? string.Empty;
+
+            bool failed = type.Contains("authenticationfailed") || type.Contains("failedlogin") ||
+                          (type.Contains("login") && (name + overview).Contains("failed", StringComparison.OrdinalIgnoreCase));
+            bool loggedIn = !failed && (type.Contains("authenticationsucceeded") || type.Contains("sessionstarted") || type.Contains("userauthenticated"));
+
+            if (failed)
+            {
+                failures.Add((NameOrUser(name, user), ip));
+            }
+            else if (loggedIn && ip.Length > 0)
+            {
+                // By account: the entry's text includes the device and is translated, and long ones used to all
+                // become "a user", adding up different people's addresses. Phones on IPv6 change address often,
+                // so an IPv6 address counts by its /64 network.
+                string key = user.Length > 0 ? (userNames.TryGetValue(user, out var known) ? known : "an account (" + user[..Math.Min(8, user.Length)] + ")") : NameOrUser(name, user);
+                (networks.TryGetValue(key, out var set) ? set : networks[key] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(Network(ip));
+            }
+        }
+
+        return (failures, networks);
+    }
+
+    /// <summary>
+    /// Accounts that signed in from 3 or more places in the last 7 days, with how many, most first. Never the
+    /// addresses. Null when the activity log didn't answer in time.
+    /// </summary>
+    internal static List<RoamingAccount>? RoamingAccounts(object? activityManager, List<object> users)
+    {
+        var entries = ActivityEntries(activityManager, DateTime.UtcNow.AddDays(-7));
+        if (entries is null)
+        {
+            return null;
+        }
+
+        var (_, networks) = SignIns(entries, UserNames(users));
+        return networks.Where(n => n.Value.Count >= RoamingAddresses)
+            .OrderByDescending(n => n.Value.Count)
+            .ThenBy(n => n.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(n => new RoamingAccount { Name = n.Key, Addresses = n.Value.Count })
+            .ToList();
     }
 
     // ---------- Library access ----------
@@ -176,6 +210,38 @@ public static class SecurityAuditor
                 Where = WhereUsers + " → (user) → Access and Parental Control"
             });
         }
+    }
+
+    // ---------- Finding the activity log ----------
+
+    // The activity manager's interface, under its name in this Jellyfin version. Looked up across the loaded
+    // assemblies once: controllers are created for every request, the Dashboard's frequent polls included.
+    private static readonly Lazy<Type[]> ActivityManagerTypes = new(() =>
+        new[] { "MediaBrowser.Model.Activity.IActivityManager", "Jellyfin.Data.IActivityManager" }
+            .Select(name => AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType(name)).FirstOrDefault(t => t is not null))
+            .OfType<Type>()
+            .ToArray());
+
+    /// <summary>Jellyfin's activity manager, or null when this version has none Medic can find.</summary>
+    internal static object? ResolveActivityManager(IServiceProvider services)
+    {
+        foreach (var type in ActivityManagerTypes.Value)
+        {
+            try
+            {
+                var service = services.GetService(type);
+                if (service is not null)
+                {
+                    return service;
+                }
+            }
+            catch
+            {
+                // Not registered in this version; try the next name.
+            }
+        }
+
+        return null;
     }
 
     // ---------- Reading the activity log ----------
