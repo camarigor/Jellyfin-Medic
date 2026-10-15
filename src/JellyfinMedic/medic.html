@@ -46,24 +46,20 @@
                             <div id="so-counts" class="md-counts"></div>
                             <button type="button" class="so-btn so-btn-plain md-goto" data-goto="recs">See all checks</button>
                         </section>
+                        <section class="md-tile" aria-labelledby="md-t-now">
+                            <h3 id="md-t-now" class="md-tile-head">Right now</h3>
+                            <div><p id="md-cpu" class="md-big">…</p><span class="so-muted so-small">Jellyfin CPU</span></div>
+                            <dl id="md-now" class="so-kv"></dl>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-disks">
+                            <h3 id="md-t-disks" class="md-tile-head">Disks</h3>
+                            <p id="md-disks-big" class="md-big">Loading…</p>
+                            <p id="md-disks-text" class="so-small"></p>
+                        </section>
                         <section class="md-tile" aria-labelledby="md-t-week">
                             <h3 id="md-t-week" class="md-tile-head">This week</h3>
                             <p id="md-week-big" class="md-big">Loading…</p>
                             <div id="md-week" class="so-small md-week"></div>
-                        </section>
-                        <section class="md-tile" aria-labelledby="md-t-today">
-                            <h3 id="md-t-today" class="md-tile-head">Today's tasks</h3>
-                            <p id="md-today-big" class="md-big">Loading…</p>
-                            <div id="md-today" class="md-mini"></div>
-                            <div id="md-today-axis" class="md-axis"></div>
-                            <button type="button" class="so-btn so-btn-plain md-goto" data-goto="schedule">Open the schedule</button>
-                        </section>
-                        <section class="md-tile" aria-labelledby="md-t-last">
-                            <h3 id="md-t-last" class="md-tile-head">Last 24 hours</h3>
-                            <p id="md-last-big" class="md-big">Loading…</p>
-                            <p id="md-last-counts" class="so-small"></p>
-                            <div id="md-last"></div>
-                            <button type="button" class="so-btn so-btn-plain md-goto" data-goto="history">Open history</button>
                         </section>
                     </div>
                     <div class="md-line">
@@ -74,29 +70,87 @@
                             </div>
                             <ul id="md-issues" class="md-issues"></ul>
                         </section>
-                        <section class="md-tile" aria-labelledby="md-t-now">
-                            <h3 id="md-t-now" class="md-tile-head">Right now</h3>
-                            <div class="md-now-top">
-                                <div><p id="md-cpu" class="md-big">–</p><span class="so-muted so-small">Jellyfin CPU</span></div>
-                                <svg id="md-spark" width="150" height="46" viewBox="0 0 150 46" aria-hidden="true"><polyline id="md-spark-line" points="" fill="none" stroke="#5fd0b3" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline></svg>
-                            </div>
-                            <dl id="md-now" class="so-kv"></dl>
-                            <p id="md-guard" class="so-small" role="status"></p>
-                            <details id="md-spikes" class="md-spikes" hidden>
-                                <summary id="md-spikes-summary"></summary>
-                                <ul id="md-spikes-list" class="md-spike-list"></ul>
-                            </details>
+                        <section class="md-tile" aria-labelledby="md-t-load">
+                            <h3 id="md-t-load" class="md-tile-head">Load, last 10 minutes</h3>
+                            <div id="md-load" class="md-load"></div>
+                            <p id="md-load-ffmpeg" class="so-small so-muted"></p>
+                            <div id="md-paused" class="so-small" role="status"></div>
                         </section>
                     </div>
                     <div class="md-line">
-                        <section class="md-tile" aria-labelledby="md-t-users">
-                            <h3 id="md-t-users" class="md-tile-head">Users and access</h3>
-                            <p id="md-users-big" class="md-big">–</p>
-                            <ul id="md-users" class="md-list"></ul>
+                        <section class="md-tile md-wide" aria-labelledby="md-t-today">
+                            <div class="md-row md-space md-wrap">
+                                <h3 id="md-t-today" class="md-tile-head">Today: planned and actual</h3>
+                                <button type="button" class="so-btn so-btn-plain md-goto" data-goto="schedule">Open the schedule</button>
+                            </div>
+                            <p id="md-today-summary" class="md-today-summary">Loading…</p>
+                            <div id="md-day" class="md-day" role="group" aria-label="Today's planned and actual runs"></div>
+                            <div id="md-day-axis" class="md-axis"></div>
+                            <p id="md-day-repeats" class="so-small so-muted"></p>
+                            <div class="md-legend">
+                                <span><i class="md-sw md-sw-planned"></i>Planned</span>
+                                <span><i class="md-sw md-sw-ran"></i>Ran</span>
+                                <span><i class="md-sw md-sw-failed"></i>Failed</span>
+                                <span><i class="md-sw md-hatch"></i>Moved after a failure</span>
+                                <span><i class="md-sw md-sw-spike"></i>Heavy use</span>
+                                <span><i class="md-sw md-sw-guard"></i>LoadGuard</span>
+                            </div>
+                            <p id="md-day-detail" class="so-small">Choose a run or a mark to see its details.</p>
+                            <p id="md-day-zone" class="so-small so-muted"></p>
+                        </section>
+                    </div>
+                    <div class="md-line">
+                        <section class="md-tile md-w2" aria-labelledby="md-t-busy">
+                            <div class="md-row md-space md-wrap">
+                                <h3 id="md-t-busy" class="md-tile-head">Busy hours and tasks</h3>
+                                <button type="button" class="so-btn so-btn-plain md-goto" data-goto="schedule">Plan around them</button>
+                            </div>
+                            <p id="md-busy-summary" class="so-small">Loading…</p>
+                            <div id="md-busy" class="md-busy" role="group" aria-label="People watching on average by weekday and hour, with the last 7 days of task runs"></div>
+                            <p class="so-small so-muted">Brighter blue: more people watching. An outline marks a busy hour, amber when tasks ran in it; a dot marks an hour with task runs.</p>
+                            <p id="md-busy-detail" class="so-small">Choose an hour with a dot to see its runs.</p>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-why">
+                            <div class="md-row md-space md-wrap">
+                                <h3 id="md-t-why" class="md-tile-head">Why it transcodes</h3>
+                                <button type="button" class="so-btn so-btn-plain md-goto" data-goto="media">Media report</button>
+                            </div>
+                            <p id="md-why-summary" class="so-small">Loading…</p>
+                            <ul id="md-why" class="md-why"></ul>
+                            <ul id="md-why-titles" class="md-list so-small"></ul>
+                        </section>
+                    </div>
+                    <div class="md-line">
+                        <section class="md-tile md-w2" aria-labelledby="md-t-trend">
+                            <h3 id="md-t-trend" class="md-tile-head">Disk trend and forecast</h3>
+                            <div id="md-trend" class="md-trend"></div>
+                            <p class="so-small so-muted">Free space over the last 30 days. The dashed line carries the trend on to when the drive would be full; a blue line marks a day Medic freed space.</p>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-net">
+                            <div class="md-row md-space md-wrap">
+                                <h3 id="md-t-net" class="md-tile-head">Network</h3>
+                                <button type="button" class="so-btn so-btn-plain md-goto" data-goto="tests">Tests</button>
+                            </div>
+                            <p id="md-net-big" class="md-big">Loading…</p>
+                            <dl id="md-net" class="so-kv"></dl>
+                        </section>
+                        <section class="md-tile" aria-labelledby="md-t-errors">
+                            <div class="md-row md-space md-wrap">
+                                <h3 id="md-t-errors" class="md-tile-head">Repeated log errors</h3>
+                                <button type="button" class="so-btn so-btn-plain md-goto" data-goto="recs">Checks</button>
+                            </div>
+                            <ul id="md-errors" class="md-list md-errors"></ul>
+                        </section>
+                    </div>
+                    <div class="md-line">
+                        <section class="md-tile" aria-labelledby="md-t-people">
+                            <h3 id="md-t-people" class="md-tile-head">People and access</h3>
+                            <p id="md-people-big" class="md-big">Loading…</p>
+                            <div id="md-people" class="md-people"></div>
                         </section>
                         <section class="md-tile" aria-labelledby="md-t-updates">
                             <h3 id="md-t-updates" class="md-tile-head">Updates</h3>
-                            <p id="md-updates-big" class="md-big">–</p>
+                            <p id="md-updates-big" class="md-big">Loading…</p>
                             <ul id="md-updates" class="md-list"></ul>
                         </section>
                     </div>
@@ -707,10 +761,6 @@
         #JellyfinMedicPage .so-area { font-size: 0.8em; color: #aaa; }
         #JellyfinMedicPage .so-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 8px; font-size: 0.92em; }
         #JellyfinMedicPage .md-dups { margin: 8px 0; }
-        #JellyfinMedicPage .md-spikes { margin-top: 8px; }
-        #JellyfinMedicPage .md-spikes summary { cursor: pointer; }
-        #JellyfinMedicPage .md-spike-list { list-style: none; padding: 0; margin: 6px 0 0; max-height: 260px; overflow-y: auto; }
-        #JellyfinMedicPage .md-spike-list li { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
         #JellyfinMedicPage .md-dups summary { cursor: pointer; }
         #JellyfinMedicPage .md-dups .so-input { margin: 8px 0; max-width: 320px; }
         #JellyfinMedicPage .md-dup-list { list-style: none; padding: 0; margin: 0; max-height: 420px; overflow-y: auto; }
@@ -794,11 +844,17 @@
             #JellyfinMedicPage .md-tile[aria-labelledby="md-t-now"] { order: 1; }
             #JellyfinMedicPage .md-tile[aria-labelledby="md-t-issues"] { order: 2; }
             #JellyfinMedicPage .md-tile[aria-labelledby="md-t-today"] { order: 3; }
-            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-last"] { order: 4; }
-            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-week"] { order: 5; }
-            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-users"] { order: 6; }
-            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-updates"] { order: 7; }
-            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-maint"] { order: 8; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-load"] { order: 4; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-disks"] { order: 5; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-week"] { order: 6; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-busy"] { order: 7; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-why"] { order: 8; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-trend"] { order: 9; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-net"] { order: 10; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-errors"] { order: 11; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-people"] { order: 12; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-updates"] { order: 13; }
+            #JellyfinMedicPage .md-tile[aria-labelledby="md-t-maint"] { order: 14; }
         }
         #JellyfinMedicPage .md-tile-head { margin: 0; font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #a7adb8; }
         #JellyfinMedicPage .md-big { margin: 0; font-size: 1.7em; font-weight: 600; line-height: 1.2; }
@@ -810,12 +866,57 @@
         #JellyfinMedicPage .md-count.sev-Improve strong { color: #ffc766; }
         #JellyfinMedicPage .md-count.sev-Tip strong { color: #8cc8ff; }
         #JellyfinMedicPage .md-count.sev-Ignored strong { color: #a3a9b3; }
-        #JellyfinMedicPage .md-mini { position: relative; height: 36px; background: #15171b; border-radius: 6px; overflow: hidden; }
-        #JellyfinMedicPage .md-mini-block { position: absolute; top: 7px; height: 22px; border-radius: 4px; }
         #JellyfinMedicPage .md-axis { position: relative; height: 14px; font-family: ui-monospace, monospace; font-size: 0.72em; color: #8e95a1; }
         #JellyfinMedicPage .md-axis span { position: absolute; top: 0; white-space: nowrap; }
         #JellyfinMedicPage .md-now-line { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #ff4040; }
-        #JellyfinMedicPage .md-now-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+        /* Load: four small line charts with the monitor's alert lines. */
+        #JellyfinMedicPage .md-load { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+        #JellyfinMedicPage .md-meter { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        #JellyfinMedicPage .md-meter-head { display: flex; justify-content: space-between; gap: 8px; font-size: 0.8em; color: #a7adb8; }
+        #JellyfinMedicPage .md-meter-head strong { color: #e6e8ec; font-family: ui-monospace, monospace; }
+        #JellyfinMedicPage .md-meter svg, #JellyfinMedicPage .md-trend svg { width: 100%; display: block; background: #15171b; border-radius: 6px; }
+        #JellyfinMedicPage .md-meter svg { height: 36px; }
+        #JellyfinMedicPage .md-line-value { fill: none; stroke: #5fd0b3; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+        #JellyfinMedicPage .md-line-alert { stroke: #ff9a9e; stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+        /* Today: planned runs (outlined) above the runs that happened (filled), on one 24-hour axis. */
+        #JellyfinMedicPage .md-today-summary { margin: 0; font-weight: 600; }
+        #JellyfinMedicPage .md-day { position: relative; height: 84px; background: #15171b; border-radius: 6px; overflow: hidden; }
+        #JellyfinMedicPage .md-day-lane { position: absolute; left: 6px; font-size: 0.68em; color: #8e95a1; pointer-events: none; }
+        #JellyfinMedicPage .md-day-block { position: absolute; height: 22px; min-width: 6px; padding: 0 3px; border: 0; border-radius: 4px; font: 600 0.68em/22px ui-monospace, monospace; color: #10131a; overflow: hidden; white-space: nowrap; cursor: pointer; }
+        #JellyfinMedicPage .md-day-block.md-planned { top: 24px; height: 14px; min-width: 8px; background: transparent; border: 2px solid #5fd0b3; line-height: 10px; }
+        #JellyfinMedicPage .md-day-block.md-planned.md-plan-missed { border-style: dashed; }
+        #JellyfinMedicPage .md-day-block.md-actual { top: 52px; }
+        #JellyfinMedicPage .md-day-block.md-run-failed { background: #d9534f; color: #fff; min-width: 44px; z-index: 1; }
+        #JellyfinMedicPage .md-day-block.md-run-stopped { background: #a3a9b3; min-width: 52px; z-index: 1; }
+        #JellyfinMedicPage .md-day-block.md-run-running { box-shadow: inset 0 0 0 2px #e6e8ec; }
+        #JellyfinMedicPage .md-day-block:focus-visible, #JellyfinMedicPage .md-day-mark:focus-visible, #JellyfinMedicPage .md-busy-cell:focus-visible { outline: 2px solid #8cc8ff; outline-offset: 1px; }
+        #JellyfinMedicPage .md-day-mark { position: absolute; width: 8px; height: 8px; margin-left: -4px; padding: 0; border: 0; border-radius: 2px; cursor: pointer; }
+        #JellyfinMedicPage .md-day-mark.md-spike { top: 6px; background: #ff9a9e; }
+        #JellyfinMedicPage .md-day-mark.md-guard { top: 76px; background: #ffd27a; transform: rotate(45deg); }
+        #JellyfinMedicPage .md-sw-planned { box-shadow: inset 0 0 0 2px #5fd0b3; }
+        #JellyfinMedicPage .md-sw-ran { background: #5fd0b3; }
+        #JellyfinMedicPage .md-sw-failed { background: #d9534f; }
+        #JellyfinMedicPage .md-sw-spike { background: #ff9a9e; }
+        #JellyfinMedicPage .md-sw-guard { background: #ffd27a; transform: rotate(45deg) scale(0.7); }
+        /* Busy hours: 7 days by 24 hours. */
+        #JellyfinMedicPage .md-busy { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 0.68em; color: #8e95a1; }
+        /* The hour and day labels stay whole in narrow columns (tiles let long names wrap anywhere). */
+        #JellyfinMedicPage .md-busy > span:not(.md-busy-cell) { white-space: nowrap; }
+        #JellyfinMedicPage .md-busy-cell { position: relative; height: 18px; padding: 0; border: 0; border-radius: 3px; background: #15171b; }
+        #JellyfinMedicPage .md-busy-cell.md-busy-on { box-shadow: inset 0 0 0 1px #5a6370; }
+        #JellyfinMedicPage .md-busy-cell.md-busy-clash { box-shadow: inset 0 0 0 2px #ffb648; }
+        #JellyfinMedicPage button.md-busy-cell { cursor: pointer; }
+        #JellyfinMedicPage .md-busy-dot { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: #e6e8ec; }
+        /* Why it transcodes, Disk trend, Repeated log errors, People. */
+        #JellyfinMedicPage .md-why { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+        #JellyfinMedicPage .md-why li { display: flex; flex-direction: column; gap: 4px; }
+        #JellyfinMedicPage .md-trend { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+        #JellyfinMedicPage .md-trend-drive { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        #JellyfinMedicPage .md-trend svg { height: 64px; }
+        #JellyfinMedicPage .md-line-projection { fill: none; stroke: #ffd27a; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+        #JellyfinMedicPage .md-line-freed { stroke: #8cc8ff; stroke-width: 1; vector-effect: non-scaling-stroke; }
+        #JellyfinMedicPage .md-errors li, #JellyfinMedicPage .md-people-group { display: flex; flex-direction: column; gap: 2px; }
+        #JellyfinMedicPage .md-people { display: flex; flex-direction: column; gap: 8px; }
         #JellyfinMedicPage .md-issues { list-style: none; margin: 0; padding: 0; }
         #JellyfinMedicPage .md-issues li { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid #262930; flex-wrap: wrap; }
         #JellyfinMedicPage .md-issue-text { flex: 1 1 340px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -828,7 +929,6 @@
         #JellyfinMedicPage .md-num-ok { color: #7fe0b5; }
         #JellyfinMedicPage .md-num-warn { color: #ffd27a; }
         #JellyfinMedicPage .md-num-bad { color: #ff9a9e; }
-        #JellyfinMedicPage .md-fail-box { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; background: #2a1a1c; border-radius: 8px; margin-bottom: 6px; }
         #JellyfinMedicPage .md-details summary { color: #e6e8ec; font-weight: 600; margin: 0; }
         #JellyfinMedicPage .md-details[open] summary { margin-bottom: 12px; }
         #JellyfinMedicPage .md-icon-btn { width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid #3a3e46; border-radius: 8px; color: #c4c9d2; cursor: pointer; }
@@ -1008,12 +1108,12 @@
                 let activeTab = 'dashboard';
                 let cal = null;
                 let calWeek = 0;
-                let calFetchedAt = 0;
                 let range = 'full';
                 let selKey = null;
                 let history = null;
-                let dashHistory = null;
-                let dashHistoryAt = 0;
+                let dash = null;
+                let dashAt = 0;
+                let live = null;
                 let nowData = null;
                 let nowTimer = null;
                 let iptv = null;
@@ -1588,7 +1688,7 @@
 
                     const list = $('md-issues');
                     list.innerHTML = '';
-                    const top = active.filter(function (f) { return ['Problem', 'Improve'].indexOf(pick(f, 'Severity')) >= 0; }).slice(0, 4);
+                    const top = active.filter(function (f) { return ['Problem', 'Improve'].indexOf(pick(f, 'Severity')) >= 0; }).slice(0, 6);
                     if (top.length === 0) {
                         const li = el('li');
                         li.appendChild(el('span', 'so-muted', 'Nothing important to fix. The Checks tab has optional tips.'));
@@ -1615,22 +1715,6 @@
                         li.appendChild(actions);
                         list.appendChild(li);
                     });
-
-                    const users = pick(report, 'Users');
-                    const ul = $('md-users');
-                    ul.innerHTML = '';
-                    if (users) {
-                        $('md-users-big').textContent = pick(users, 'Total') + (pick(users, 'Total') === 1 ? ' user' : ' users');
-                        [['Inactive', (pick(users, 'Inactive') || []).length, 'md-num-warn'],
-                         ['No password set', (pick(users, 'NoPassword') || []).length, 'md-num-bad'],
-                         ['Administrators', pick(users, 'Admins') || 0, ''],
-                         ['Disabled', pick(users, 'Disabled') || 0, '']].forEach(function (r) {
-                            const li = el('li');
-                            li.appendChild(el('span', null, r[0]));
-                            li.appendChild(el('strong', r[1] > 0 ? r[2] : 'md-num-ok', String(r[1])));
-                            ul.appendChild(li);
-                        });
-                    }
 
                     const updates = pick(report, 'Updates') || [];
                     $('md-updates-big').textContent = updates.length === 0 ? 'Plugins up to date' : (updates.length === 1 ? '1 plugin update' : updates.length + ' plugin updates');
@@ -1672,172 +1756,657 @@
                     });
                 }
 
+                // CPU, memory and who is watching; the Load panel charts the rest.
                 function renderNow() {
                     if (!nowData) return;
                     $('md-cpu').textContent = Math.round(pick(nowData, 'CpuPercent') || 0) + '%';
-                    const hist = (pick(nowData, 'CpuHistory') || []).concat([pick(nowData, 'CpuPercent') || 0]);
-                    const points = hist.map(function (v, i) {
-                        const x = hist.length < 2 ? 0 : (i / (hist.length - 1)) * 148 + 1;
-                        const y = 44 - Math.min(100, v) / 100 * 40;
-                        return x.toFixed(1) + ',' + y.toFixed(1);
-                    }).join(' ');
-                    $('md-spark-line').setAttribute('points', points);
                     const dl = $('md-now');
                     dl.innerHTML = '';
-                    function row(k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); }
-                    var memPct = pick(nowData, 'MemoryPercent') || 0;
-                    var memText = (pick(nowData, 'MemoryGb') || 0) + ' GB of ' + (pick(nowData, 'MemoryLimitGb') || '?') + ' GB (' + memPct + '%)';
+                    const memPct = pick(nowData, 'MemoryPercent') || 0;
                     dl.appendChild(el('dt', null, 'Memory'));
-                    dl.appendChild(el('dd', memPct >= 85 ? 'md-bad-text' : (memPct >= 70 ? 'md-warn-text' : null), memText));
+                    dl.appendChild(el('dd', memPct >= 85 ? 'md-bad-text' : (memPct >= 70 ? 'md-warn-text' : null),
+                        (pick(nowData, 'MemoryGb') || 0) + ' GB of ' + (pick(nowData, 'MemoryLimitGb') || '?') + ' GB (' + memPct + '%)'));
                     const watching = pick(nowData, 'Watching') || 0;
                     const transcoding = pick(nowData, 'Transcoding') || 0;
-                    row('Watching', watching === 0 ? 'Nobody' : watching + (watching === 1 ? ' person' : ' people') + (transcoding ? ', ' + transcoding + ' transcoding' : ''));
-                    const tasks = pick(nowData, 'RunningTasks') || [];
-                    row('Running tasks', tasks.length ? tasks.join(', ') : 'None');
-                    // Jellyfin plus the FFmpeg processes it started (not the rest of the machine).
-                    const res = pick(nowData, 'Resources');
-                    if (res) {
-                        const parts = ['CPU ' + pick(res, 'CpuPercent') + '%', pick(res, 'MemoryGb') + ' GB'];
-                        if (pick(res, 'DiskMBps') !== null && pick(res, 'DiskMBps') !== undefined) parts.push('disk ' + pick(res, 'DiskMBps') + ' MB/s');
-                        if (pick(res, 'GpuPercent') !== null && pick(res, 'GpuPercent') !== undefined) parts.push('GPU ' + pick(res, 'GpuPercent') + '%');
-                        const ff = pick(res, 'FfmpegProcesses') || 0;
-                        row('With FFmpeg', parts.join(' · ') + (ff ? ' (' + ff + ' FFmpeg process' + (ff === 1 ? '' : 'es') + ')' : ''));
-                    }
-                    row('Active devices', String(pick(nowData, 'ActiveDevices') || 0));
+                    dl.appendChild(el('dt', null, 'Watching'));
+                    dl.appendChild(el('dd', null, watching === 0 ? 'Nobody'
+                        : watching + (watching === 1 ? ' person' : ' people') + (transcoding ? ', ' + transcoding + ' transcoding' : '')));
                     const running = pick(nowData, 'RunningTasks') || [];
                     const rt = $('md-running-text');
                     if (rt) rt.textContent = running.length ? running.join(', ') : 'None running.';
                 }
 
-                async function loadNow() {
-                    try {
-                        nowData = await getJson('/JellyfinMedic/Now');
-                        renderNow();
-                    } catch (e) { /* the tile just stays as it was */ }
-                    try {
-                        // Spells of heavy use this week, and what was running at the time.
-                        const spikes = (await getJson('/JellyfinMedic/ResourceEvents') || []).filter(function (e) {
-                            return Date.now() - new Date(pick(e, 'TimeUtc')).getTime() < 7 * 86400000;
-                        });
-                        $('md-spikes').hidden = spikes.length === 0;
-                        $('md-spikes-summary').textContent = spikes.length + (spikes.length === 1 ? ' spell' : ' spells') + ' of heavy use this week';
-                        const list = $('md-spikes-list');
-                        list.innerHTML = '';
-                        spikes.slice(0, 20).forEach(function (e) {
-                            const li = el('li');
-                            li.appendChild(el('strong', null, fmtShort(pick(e, 'TimeUtc')) + ' · ' + pick(e, 'Resource') + ': ' + pick(e, 'Level')));
-                            li.appendChild(el('span', 'so-small so-muted', (pick(e, 'Causes') || []).join('; ')));
-                            list.appendChild(li);
-                        });
-                    } catch (e) { /* older server: no list */ }
-                    try {
-                        const events = await getJson('/JellyfinMedic/LoadGuard');
-                        const g = $('md-guard');
-                        // Newest first. Only the last day counts, and a stop stays a warning until the same task restarts.
-                        const dayAgo = Date.now() - 24 * 3600 * 1000;
-                        const recent = (events || []).filter(function (e) { return new Date(pick(e, 'TimestampUtc')).getTime() >= dayAgo; });
-                        const open = recent.find(function (e, i) {
-                            return pick(e, 'Action') === 'stopped' && !recent.slice(0, i).some(function (later) {
-                                return pick(later, 'Action') === 'restarted' && pick(later, 'TaskName') === pick(e, 'TaskName');
-                            });
-                        });
-                        if (open) {
-                            g.textContent = 'Load guard stopped "' + pick(open, 'TaskName') + '" at ' + fmtShort(pick(open, 'TimestampUtc')) + ' (memory ' + pick(open, 'MemoryUsedGb') + ' GB). It restarts once memory recovers.';
-                            g.className = 'so-small md-warn-text';
-                        } else if (recent.length) {
-                            g.textContent = 'Load guard restarted "' + pick(recent[0], 'TaskName') + '" at ' + fmtShort(pick(recent[0], 'TimestampUtc')) + '.';
-                            g.className = 'so-small md-ok-text';
-                        } else {
-                            g.textContent = '';
-                        }
-                    } catch (e) { /* no guard history yet */ }
+                // ---------- Dashboard data ----------
+
+                // Minutes past midnight on the server now: the data's own reading plus the time since it was fetched.
+                function dayMinutesNow() {
+                    return (pick(pick(dash, 'Today'), 'NowMinutes') || 0) + (Date.now() - dashAt) / 60000;
                 }
 
-                // Minutes past midnight on the server now: the calendar's own reading plus the time since it was fetched.
-                function nowMinutesToday() {
-                    return (pick(cal, 'NowMinutes') || 0) + (Date.now() - calFetchedAt) / 60000;
+                // The slower data is fetched again after 5 minutes, or once the server's day has rolled over.
+                function dashStale() {
+                    return !dash || Date.now() - dashAt > 5 * 60000 || dayMinutesNow() >= 1440;
                 }
 
-                // The cached calendar is stale after 15 minutes, or once the server's day has rolled over.
-                function calendarStale() {
-                    return !cal || calWeek !== 0 || Date.now() - calFetchedAt > 15 * 60000 || nowMinutesToday() >= 1440;
+                // Quiet for the background refresh: a failure there is tried again on the next tick, so it mustn't leave an
+                // error on the page once Jellyfin answers again.
+                async function loadDash(quiet) {
+                    try {
+                        dash = await getJson('/JellyfinMedic/Dashboard');
+                        dashAt = Date.now();
+                        renderDash();
+                    } catch (err) {
+                        console.error('Jellyfin Medic: could not load the Dashboard data', err);
+                        if (!quiet) showStatus('Couldn\'t load the Dashboard. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                    }
                 }
 
-                // Today's tile: fetch the calendar again when it's stale, otherwise just move the now line.
-                function refreshToday(quiet) {
-                    if (calendarStale()) { calWeek = 0; return loadCalendar(quiet); }
-                    renderToday();
+                // Between fetches only the now line moves: rebuilding Today would drop the keyboard's place on its runs.
+                function refreshDash(quiet) {
+                    if (dashStale()) return loadDash(quiet);
+                    moveNowLine();
                     return Promise.resolve();
                 }
 
+                async function loadLive() {
+                    try {
+                        live = await getJson('/JellyfinMedic/Dashboard/Live');
+                        nowData = pick(live, 'Now');
+                        renderNow();
+                        renderLoad();
+                    } catch (e) { /* the tiles stay as they were */ }
+                }
+
+                function renderDash() {
+                    renderDisks();
+                    renderToday();
+                    renderNet();
+                    renderErrors();
+                    renderBusy();
+                    renderWhy();
+                    renderTrend();
+                    renderPeople();
+                }
+
+                // A section the server couldn't build: its message in place of the panel. True when there was one.
+                function sectionError(box, name, tag) {
+                    const message = pick(pick(dash, 'Errors') || {}, name);
+                    if (!message) return false;
+                    box.appendChild(el(tag || 'p', 'so-small md-bad-text', message));
+                    return true;
+                }
+
+                function fmtNum(v) { return String(Math.round(v * 10) / 10); }
+
+                function gb(v) { return v >= 1000 ? (v / 1024).toFixed(1) + ' TB' : Math.round(v) + ' GB'; }
+
+                function daysText(days) {
+                    const n = Math.max(1, Math.round(days));
+                    return days < 14 ? 'about ' + n + (n === 1 ? ' day' : ' days')
+                        : days < 120 ? 'about ' + Math.round(days / 7) + ' weeks'
+                            : days < 730 ? 'about ' + Math.round(days / 30) + ' months'
+                                : 'more than two years';
+                }
+
+                // A line chart in a viewBox of width by height: values from 0 to top, an optional dashed alert line, and
+                // the label read out instead of the picture.
+                function spark(width, height, values, top, alert, label) {
+                    const ns = 'http://www.w3.org/2000/svg';
+                    const svg = document.createElementNS(ns, 'svg');
+                    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+                    svg.setAttribute('preserveAspectRatio', 'none');
+                    svg.setAttribute('role', 'img');
+                    svg.setAttribute('aria-label', label);
+                    const y = function (v) { return (height - 2 - Math.min(v, top) / top * (height - 4)).toFixed(1); };
+                    if (alert) {
+                        const line = document.createElementNS(ns, 'line');
+                        line.setAttribute('x1', '0');
+                        line.setAttribute('x2', String(width));
+                        line.setAttribute('y1', y(alert));
+                        line.setAttribute('y2', y(alert));
+                        line.setAttribute('class', 'md-line-alert');
+                        svg.appendChild(line);
+                    }
+                    // One reading (just after a restart) is drawn as a flat line, so the chart isn't blank.
+                    const points = values.length === 1 ? [values[0], values[0]] : values;
+                    const poly = document.createElementNS(ns, 'polyline');
+                    poly.setAttribute('points', points.map(function (v, i) {
+                        return (i / (points.length - 1) * width).toFixed(1) + ',' + y(v);
+                    }).join(' '));
+                    poly.setAttribute('class', 'md-line-value');
+                    svg.appendChild(poly);
+                    return svg;
+                }
+
+                // ---------- Load, last 10 minutes ----------
+
+                const METERS = [
+                    { name: 'CPU with FFmpeg', field: 'CpuPercent', unit: '%', top: 100 },
+                    { name: 'Memory', field: 'MemoryPercent', unit: '%', top: 100 },
+                    { name: 'Disk', field: 'DiskMBps', unit: ' MB/s', top: null },
+                    { name: 'GPU', field: 'GpuPercent', unit: '%', top: 100 }
+                ];
+
+                function renderLoad() {
+                    const box = $('md-load');
+                    box.innerHTML = '';
+                    const readings = pick(live, 'Resources') || [];
+                    const limits = pick(live, 'Limits') || {};
+                    METERS.forEach(function (m) {
+                        const values = readings.map(function (r) { return pick(r, m.field); }).filter(function (v) { return v !== null && v !== undefined; });
+                        const alert = pick(limits, m.field);
+                        const meter = el('div', 'md-meter');
+                        const head = el('div', 'md-meter-head');
+                        head.appendChild(el('span', null, m.name));
+                        head.appendChild(el('strong', null, values.length ? fmtNum(values[values.length - 1]) + m.unit : 'n/a'));
+                        meter.appendChild(head);
+                        if (!values.length) {
+                            meter.appendChild(el('span', 'so-small so-muted', readings.length ? 'Not measured on this server' : 'No readings yet'));
+                        } else {
+                            const highest = Math.max.apply(null, values);
+                            const top = m.top || Math.max((alert || 0) * 1.2, highest * 1.1, 1);
+                            const minutes = Math.max(1, Math.round(values.length / 4));
+                            meter.appendChild(spark(160, 36, values, top, alert, m.name + ': now ' + fmtNum(values[values.length - 1]) + m.unit +
+                                ', highest ' + fmtNum(highest) + m.unit + ' in the last ' + minutes + (minutes === 1 ? ' minute' : ' minutes') + '; alert at ' + fmtNum(alert || 0) + m.unit + '.'));
+                        }
+                        box.appendChild(meter);
+                    });
+                    const ff = readings.length ? pick(readings[readings.length - 1], 'FfmpegProcesses') || 0 : 0;
+                    $('md-load-ffmpeg').textContent = !readings.length ? 'The first readings come about 30 seconds after Jellyfin starts.'
+                        : (ff === 0 ? 'No FFmpeg processes now.' : ff + ' FFmpeg process' + (ff === 1 ? '' : 'es') + ' now.');
+                    renderPaused(pick(live, 'Paused') || []);
+                }
+
+                // A live region: written again only when the list or the clock changes, so screen readers don't repeat it every 15 seconds.
+                function renderPaused(paused) {
+                    const p = $('md-paused');
+                    const key = clock + JSON.stringify(paused);
+                    if (p.dataset.key === key) return;
+                    p.dataset.key = key;
+                    p.innerHTML = '';
+                    if (!paused.length) return;
+                    p.appendChild(el('strong', 'md-warn-text', 'Paused by LoadGuard until memory recovers'));
+                    const list = el('ul', 'md-list');
+                    paused.forEach(function (t) { list.appendChild(el('li', null, pick(t, 'TaskName') + ', stopped ' + fmtShort(pick(t, 'StoppedUtc')))); });
+                    p.appendChild(list);
+                }
+
+                // ---------- Disks (the drive with the least room left) ----------
+
+                function renderDisks() {
+                    const big = $('md-disks-big');
+                    const text = $('md-disks-text');
+                    text.textContent = '';
+                    const section = pick(dash, 'Disks');
+                    if (!section) {
+                        big.textContent = 'n/a';
+                        text.textContent = pick(pick(dash, 'Errors') || {}, 'Disks') || '';
+                        return;
+                    }
+                    const drives = pick(section, 'Drives') || [];
+                    if (!drives.length) {
+                        big.textContent = 'No readings yet';
+                        text.textContent = 'Disk data starts after the first daily reading.';
+                        return;
+                    }
+                    const share = function (d) { return pick(d, 'TotalGb') > 0 ? pick(d, 'FreeGb') / pick(d, 'TotalGb') : 1; };
+                    const worst = drives.slice().sort(function (a, b) { return share(a) - share(b); })[0];
+                    big.textContent = pick(worst, 'TotalGb') > 0 ? Math.round(share(worst) * 100) + '% free' : gb(pick(worst, 'FreeGb')) + ' free';
+                    const days = pick(worst, 'DaysToFull');
+                    const rate = pick(worst, 'GbPerDay');
+                    text.textContent = (pick(worst, 'Holds') || pick(worst, 'Key')) + ': ' + (days !== null && days !== undefined ? 'full in ' + daysText(days)
+                        : rate === null || rate === undefined ? 'the trend shows after 3 days of readings' : 'not filling');
+                }
+
+                // ---------- Today: planned and actual ----------
+
+                const RUN_WORD = { Completed: 'completed', Failed: 'failed', Aborted: 'stopped', Cancelled: 'cancelled' };
+                const PLAN_WORD = { ran: 'ran on time', late: 'ran late', 'not run': 'did not run', waiting: 'not yet' };
+                // From this many runs today a task (a notifier every few minutes, say) gets one line instead of a block per run.
+                const REPEATS_FROM = 7;
+
+                function todaySummary(s) {
+                    const n = function (k) { return pick(s, k) || 0; };
+                    const parts = [n('Planned') + ' planned', n('Runs') + (n('Runs') === 1 ? ' run' : ' runs')];
+                    [['Running', 'running'], ['Failed', 'failed'], ['Stopped', 'stopped'], ['Cancelled', 'cancelled'], ['Late', 'late'], ['NotRun', 'not run']].forEach(function (k) {
+                        if (n(k[0])) parts.push(n(k[0]) + ' ' + k[1]);
+                    });
+                    return parts.join(', ');
+                }
+
+                function runText(r) {
+                    const status = pick(r, 'Status');
+                    const when = status === 'Running' ? 'running since ' + hm(pick(r, 'StartMinutes'))
+                        : (RUN_WORD[status] || String(status).toLowerCase()) + ', from ' + hm(pick(r, 'StartMinutes')) + ' to ' + hm(pick(r, 'EndMinutes'));
+                    return pick(r, 'TaskName') + ': ' + when + (pick(r, 'ErrorMessage') ? '. ' + pick(r, 'ErrorMessage') : '');
+                }
+
+                const DAY_HINT = 'Choose a run or a mark to see its details.';
+                const BUSY_HINT = 'Choose an hour with a dot to see its runs.';
+                let dayDetailKey = null;
+                let busyDetailKey = null;
+
+                // After a panel is rebuilt: focus the new copy of the run or hour the keyboard was on, and put the hint back
+                // when the one the detail line describes is gone. Returns the key the detail line still describes.
+                function keepPlace(box, focused, described, detail, hint) {
+                    if (focused) {
+                        const again = box.querySelector('[data-key="' + CSS.escape(focused) + '"]');
+                        if (again) again.focus({ preventScroll: true });
+                    }
+                    if (described && !box.querySelector('[data-key="' + CSS.escape(described) + '"]')) {
+                        $(detail).textContent = hint;
+                        return null;
+                    }
+                    return described;
+                }
+
+                // A focusable block or mark on the 24-hour axis; focusing or clicking it shows its details under the panel.
+                function onDay(node, startMinutes, label, key) {
+                    node.type = 'button';
+                    node.dataset.key = key;
+                    node.style.left = (startMinutes / 1440 * 100) + '%';
+                    node.setAttribute('aria-label', label);
+                    node.title = label;
+                    const show = function () { dayDetailKey = key; $('md-day-detail').textContent = label; };
+                    node.addEventListener('click', show);
+                    node.addEventListener('focus', show);
+                    return node;
+                }
+
+                function zoneNote() {
+                    const offset = pick(dash, 'UtcOffsetMinutes');
+                    if (offset === undefined || offset === null || offset === -new Date().getTimezoneOffset()) return '';
+                    const abs = Math.abs(offset);
+                    return 'Times are the server\'s (UTC' + (offset < 0 ? '-' : '+') + Math.floor(abs / 60) + (abs % 60 ? ':' + String(abs % 60).padStart(2, '0') : '') + ').';
+                }
+
+                function moveNowLine() {
+                    const line = $('md-day').querySelector('.md-now-line');
+                    if (line) line.style.left = (Math.min(1439, dayMinutesNow()) / 1440 * 100) + '%';
+                }
+
                 function renderToday() {
-                    const box = $('md-today');
-                    const axis = $('md-today-axis');
+                    const box = $('md-day');
+                    const axis = $('md-day-axis');
+                    const summary = $('md-today-summary');
+                    const focused = box.contains(document.activeElement) ? document.activeElement.dataset.key : null;
                     box.innerHTML = '';
                     axis.innerHTML = '';
-                    if (!cal) return;
-                    const todayIndex = pick(cal, 'TodayIndex');
-                    const day = (pick(cal, 'Days') || [])[todayIndex];
-                    if (!day) { $('md-today-big').textContent = 'No schedule data'; return; }
-                    const runs = (pick(day, 'Runs') || []).filter(function (r) { return pick(r, 'StartMinutes') >= 0; });
-                    const now = Math.min(1439, nowMinutesToday());
-                    const next = runs.find(function (r) { return pick(r, 'StartMinutes') >= now; });
-                    $('md-today-big').textContent = runs.length + (runs.length === 1 ? ' task' : ' tasks') + (next ? ', next at ' + hm(pick(next, 'StartMinutes')) : ', all done');
-                    runs.forEach(function (r) {
-                        const b = el('div', 'md-mini-block');
-                        const cat = CATEGORY[pick(r, 'Category')] || CATEGORY.upkeep;
-                        b.style.left = (pick(r, 'StartMinutes') / 1440 * 100) + '%';
-                        b.style.width = 'max(' + (pick(r, 'DurationMinutes') / 1440 * 100) + '%, 4px)';
-                        b.style.background = pick(r, 'Kind') === 'backoff' ? HATCH : cat.bg;
-                        b.title = pick(r, 'TaskName') + ' at ' + hm(pick(r, 'StartMinutes'));
+                    const day = pick(dash, 'Today');
+                    if (!day) {
+                        summary.textContent = pick(pick(dash, 'Errors') || {}, 'Today') || (dash ? 'n/a' : 'Loading…');
+                        $('md-day-repeats').textContent = '';
+                        return;
+                    }
+                    summary.textContent = todaySummary(pick(day, 'Summary') || {});
+                    $('md-day-zone').textContent = zoneNote();
+                    const planned = el('span', 'md-day-lane', 'Planned');
+                    planned.style.top = '6px';
+                    box.appendChild(planned);
+                    const ran = el('span', 'md-day-lane', 'Ran');
+                    ran.style.top = '38px';
+                    box.appendChild(ran);
+                    const category = {};
+                    const backedOff = {};
+                    (pick(day, 'Planned') || []).forEach(function (p) {
+                        category[pick(p, 'TaskId')] = pick(p, 'Category');
+                        if (pick(p, 'Kind') === 'backoff') backedOff[pick(p, 'TaskId')] = true;
+                        const b = onDay(el('button', 'md-day-block md-planned'), pick(p, 'StartMinutes'),
+                            pick(p, 'TaskName') + ', planned at ' + hm(pick(p, 'StartMinutes')) + ': ' + (PLAN_WORD[pick(p, 'Status')] || pick(p, 'Status')),
+                            'p|' + pick(p, 'TaskId') + '|' + pick(p, 'StartMinutes'));
+                        b.style.width = (Math.max(pick(p, 'DurationMinutes') || 0, 1) / 1440 * 100) + '%';
+                        b.style.borderColor = (CATEGORY[pick(p, 'Category')] || CATEGORY.upkeep).bg;
+                        if (pick(p, 'Status') === 'not run') b.classList.add('md-plan-missed');
                         box.appendChild(b);
                     });
-                    const line = el('div', 'md-now-line');
-                    line.style.left = (now / 1440 * 100) + '%';
-                    box.appendChild(line);
+                    // A task that runs over and over would bury the axis in blocks: it gets one line under the axis, and only its
+                    // failed or stopped runs keep a block.
+                    const actual = pick(day, 'Actual') || [];
+                    const runsOf = {};
+                    actual.forEach(function (r) { runsOf[pick(r, 'TaskId')] = (runsOf[pick(r, 'TaskId')] || 0) + 1; });
+                    const repeats = {};
+                    actual.forEach(function (r) {
+                        const status = pick(r, 'Status');
+                        const start = pick(r, 'StartMinutes');
+                        const id = pick(r, 'TaskId');
+                        if (runsOf[id] >= REPEATS_FROM) {
+                            const g = repeats[id] || (repeats[id] = { name: pick(r, 'TaskName'), runs: 0, failed: 0, last: 0 });
+                            g.runs++;
+                            if (status === 'Failed') g.failed++;
+                            g.last = Math.max(g.last, start);
+                            if (status !== 'Failed' && status !== 'Aborted') return;
+                        }
+                        const b = onDay(el('button', 'md-day-block md-actual'), start, runText(r), 'a|' + pick(r, 'TaskId') + '|' + start);
+                        b.style.width = (Math.max(pick(r, 'EndMinutes') - start, 1) / 1440 * 100) + '%';
+                        if (status === 'Failed') {
+                            b.classList.add('md-run-failed');
+                            b.textContent = 'failed';
+                        } else if (status === 'Aborted') {
+                            b.classList.add('md-run-stopped');
+                            b.textContent = 'stopped';
+                        } else {
+                            b.style.background = backedOff[pick(r, 'TaskId')] ? HATCH : (CATEGORY[category[pick(r, 'TaskId')]] || CATEGORY.upkeep).bg;
+                            if (status === 'Running') b.classList.add('md-run-running');
+                        }
+                        box.appendChild(b);
+                    });
+                    $('md-day-repeats').textContent = Object.keys(repeats).length === 0 ? ''
+                        : 'Repeats through the day: ' + Object.keys(repeats).map(function (id) {
+                            const g = repeats[id];
+                            return g.name + ', ' + g.runs + ' runs' + (g.failed ? ' (' + g.failed + ' failed)' : '') + ', last at ' + hm(g.last);
+                        }).join('; ') + '.';
+                    (pick(day, 'Spikes') || []).forEach(function (m) {
+                        box.appendChild(onDay(el('button', 'md-day-mark md-spike'), pick(m, 'Minute'), pick(m, 'Resource') + ' high at ' + hm(pick(m, 'Minute')) + ': ' + pick(m, 'Level'),
+                            's|' + pick(m, 'Minute') + '|' + pick(m, 'Resource')));
+                    });
+                    (pick(day, 'Guard') || []).forEach(function (m) {
+                        box.appendChild(onDay(el('button', 'md-day-mark md-guard'), pick(m, 'Minute'), 'LoadGuard ' + pick(m, 'Action') + ' "' + pick(m, 'TaskName') + '" at ' + hm(pick(m, 'Minute')),
+                            'g|' + pick(m, 'Minute') + '|' + pick(m, 'TaskName')));
+                    });
+                    box.appendChild(el('div', 'md-now-line'));
+                    moveNowLine();
                     [0, 360, 720, 1080, 1440].forEach(function (m) {
                         const s = el('span', null, m === 1440 ? (clock === '24' ? '24:00' : '12 am') : hm(m));
                         s.style.left = (m / 1440 * 100) + '%';
                         s.style.transform = 'translateX(' + (m === 0 ? '0' : m === 1440 ? '-100%' : '-50%') + ')';
                         axis.appendChild(s);
                     });
+                    dayDetailKey = keepPlace(box, focused, dayDetailKey, 'md-day-detail', DAY_HINT);
                 }
 
-                function renderLastDay() {
-                    if (!dashHistory) return;
-                    const since = Date.now() - 24 * 3600 * 1000;
-                    const runs = (pick(dashHistory, 'Runs') || []).filter(function (r) { return new Date(pick(r, 'EndUtc')).getTime() >= since; });
-                    const count = function (status) { return runs.filter(function (r) { return pick(r, 'Status') === status; }).length; };
-                    const failed = count('Failed'), stopped = count('Aborted'), cancelled = count('Cancelled');
-                    $('md-last-big').textContent = runs.length === 0 ? 'No tasks ran' : (runs.length === 1 ? '1 task ran' : runs.length + ' tasks ran');
-                    const parts = runs.length === 0 ? [] : [count('Completed') + ' completed'];
-                    if (failed) parts.push(failed + ' failed');
-                    if (stopped) parts.push(stopped + ' stopped');
-                    if (cancelled) parts.push(cancelled + ' cancelled');
-                    $('md-last-counts').textContent = parts.join(', ');
-                    const box = $('md-last');
-                    box.innerHTML = '';
-                    runs.filter(function (r) { return ['Failed', 'Aborted'].indexOf(pick(r, 'Status')) >= 0; }).slice(0, 3).forEach(function (r) {
-                        const f = el('div', 'md-fail-box');
-                        f.appendChild(el('strong', null, pick(r, 'TaskName') + (pick(r, 'Status') === 'Aborted' ? ' stopped' : ' failed')));
-                        f.appendChild(el('span', 'so-small', (pick(r, 'ErrorMessage') || 'No error message') + ' (' + fmtShort(pick(r, 'EndUtc')) + ')'));
-                        box.appendChild(f);
+                // ---------- Network ----------
+
+                function renderNet() {
+                    const big = $('md-net-big');
+                    const dl = $('md-net');
+                    dl.innerHTML = '';
+                    const net = pick(dash, 'Network');
+                    if (!net) {
+                        big.textContent = 'n/a';
+                        sectionError(dl, 'Network', 'dd');
+                        return;
+                    }
+                    const row = function (k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); };
+                    const test = pick(net, 'Test');
+                    const limit = pick(net, 'CurrentLimitMbps') || 0;
+                    const most = pick(net, 'MostStreams') || 0;
+                    big.textContent = test ? fmtNum(pick(test, 'UploadMbps')) + ' Mbps up' : 'No speed test yet';
+                    if (test) {
+                        row('Download', fmtNum(pick(test, 'DownloadMbps')) + ' Mbps');
+                        row('Latency', Math.round(pick(test, 'LatencyMs')) + ' ms');
+                        row('Tested', fmtShort(pick(test, 'TestedUtc')));
+                    }
+                    row('Remote limit', limit ? fmtNum(limit) + ' Mbps' : 'None');
+                    row('Most at once', most + (most === 1 ? ' stream' : ' streams') + ', home and away');
+                    const sug = pick(net, 'Suggested');
+                    if (sug) {
+                        const mbps = pick(sug, 'RecommendedLimitMbps');
+                        row('Suggested limit', (mbps ? mbps + ' Mbps' : 'None needed') + ' for ' + pick(sug, 'Viewers') + (pick(sug, 'Viewers') === 1 ? ' viewer' : ' viewers'));
+                    }
+                    if (test) row('HD IPTV streams', String(pick(test, 'IptvHdStreams') || 0));
+                }
+
+                // ---------- Repeated log errors ----------
+
+                function renderErrors() {
+                    const list = $('md-errors');
+                    list.innerHTML = '';
+                    if (sectionError(list, 'RepeatedErrors', 'li')) return;
+                    const errors = pick(dash, 'RepeatedErrors') || [];
+                    if (!errors.length) {
+                        list.appendChild(el('li', 'so-muted', 'No repeated errors today.'));
+                        return;
+                    }
+                    errors.forEach(function (e) {
+                        const li = el('li');
+                        li.appendChild(el('strong', null, pick(e, 'Source')));
+                        li.appendChild(el('span', 'so-small', pick(e, 'Message')));
+                        const last = pick(e, 'LastSeen');
+                        li.appendChild(el('span', 'so-small so-muted', pick(e, 'Count') + ' times' + (last ? ', last ' + fmtShort(last) : '')));
+                        list.appendChild(li);
                     });
+                }
+
+                // ---------- Busy hours and tasks ----------
+
+                function renderBusy() {
+                    const grid = $('md-busy');
+                    const summary = $('md-busy-summary');
+                    const focused = grid.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+                    grid.innerHTML = '';
+                    const busy = pick(dash, 'BusyHours');
+                    if (!busy) {
+                        summary.textContent = pick(pick(dash, 'Errors') || {}, 'BusyHours') || 'n/a';
+                        return;
+                    }
+                    const days = pick(busy, 'Days') || [];
+                    const inBusy = pick(busy, 'RunsInBusyHours') || 0;
+                    let peak = null;
+                    days.forEach(function (hours, d) {
+                        hours.forEach(function (hour, h) {
+                            const v = pick(hour, 'AverageStreams') || 0;
+                            if (v > 0 && (!peak || v > peak.v)) peak = { d: d, h: h, v: v };
+                        });
+                    });
+                    summary.textContent = (pick(busy, 'Ready')
+                        ? (inBusy === 1 ? '1 run' : inBusy + ' runs') + ' in busy hours last week.'
+                        : 'Still learning, ' + Math.round(pick(busy, 'HoursRecorded') || 0) + ' hours recorded. Busy hours show after 72 hours.') +
+                        (peak ? ' Most watched: ' + DAYS[peak.d] + ' ' + hm(peak.h * 60) + ', ' + fmtNum(peak.v) + ' on average.' : '') +
+                        (zoneNote() ? ' ' + zoneNote() : '');
+                    const max = peak ? peak.v : 1;
+                    grid.appendChild(el('span'));
+                    for (let h = 0; h < 24; h++) grid.appendChild(el('span', null, h % 3 === 0 ? hourLabel(h) : ''));
+                    days.forEach(function (hours, d) {
+                        grid.appendChild(el('span', null, DAYS[d]));
+                        hours.forEach(function (hour, h) {
+                            const v = pick(hour, 'AverageStreams') || 0;
+                            const runs = pick(hour, 'Runs') || [];
+                            const isBusy = pick(hour, 'Busy');
+                            const label = DAYS[d] + ' ' + hm(h * 60) + ': ' + fmtNum(v) + ' watching on average' + (isBusy ? ', busy' : '') +
+                                (runs.length ? '; ' + runs.map(function (r) {
+                                    const c = pick(r, 'Count');
+                                    return pick(r, 'TaskName') + ' (' + c + (c === 1 ? ' run' : ' runs') + ')';
+                                }).join(', ') : '');
+                            const cell = el(runs.length ? 'button' : 'span', 'md-busy-cell');
+                            if (v > 0) cell.style.background = 'rgba(0, 164, 220, ' + (0.15 + 0.85 * v / max).toFixed(2) + ')';
+                            if (isBusy) cell.classList.add(runs.length ? 'md-busy-clash' : 'md-busy-on');
+                            cell.title = label;
+                            if (runs.length) {
+                                cell.type = 'button';
+                                cell.dataset.key = d + '|' + h;
+                                cell.setAttribute('aria-label', label);
+                                cell.appendChild(el('span', 'md-busy-dot'));
+                                const show = function () { busyDetailKey = cell.dataset.key; $('md-busy-detail').textContent = label; };
+                                cell.addEventListener('click', show);
+                                cell.addEventListener('focus', show);
+                            }
+                            grid.appendChild(cell);
+                        });
+                    });
+                    busyDetailKey = keepPlace(grid, focused, busyDetailKey, 'md-busy-detail', BUSY_HINT);
+                }
+
+                // ---------- Why it transcodes ----------
+
+                // What in the library causes a reason, by the media report's count it pairs with.
+                const CAUSE = {
+                    DtsOrTrueHdOnly: 'Only DTS or TrueHD audio',
+                    ImageSubtitles: 'Picture subtitles (PGS, VobSub)',
+                    OldContainers: 'Older file types (AVI, WMV, MPEG)',
+                    Hdr: 'HDR video'
+                };
+
+                function renderWhy() {
+                    const list = $('md-why');
+                    const titles = $('md-why-titles');
+                    const summary = $('md-why-summary');
+                    list.innerHTML = '';
+                    titles.innerHTML = '';
+                    const tx = pick(dash, 'Transcodes');
+                    if (!tx) {
+                        summary.textContent = pick(pick(dash, 'Errors') || {}, 'Transcodes') || 'n/a';
+                        return;
+                    }
+                    const samples = pick(tx, 'Samples') || 0;
+                    const since = pick(tx, 'Since');
+                    const sinceText = since ? ' since ' + new Date(since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+                    const reportAt = pick(tx, 'MediaReportUtc');
+                    // Worded as on the Media report tab, which lists the same log.
+                    summary.textContent = samples
+                        ? 'Caught transcoding ' + (samples === 1 ? 'once' : samples + ' times') + sinceText + '. ' +
+                            (reportAt ? 'Library counts from the media report of ' + fmtShort(reportAt) + '.' : 'Build the media report to see what causes these.')
+                        : 'Nothing caught transcoding' + (sinceText || ' yet') + '. Medic checks playback every 5 minutes.';
+                    (pick(tx, 'Reasons') || []).forEach(function (r) {
+                        const share = pick(r, 'Share') || 0;
+                        const name = txReason(pick(r, 'Reason'));
+                        const li = el('li');
+                        const head = el('div', 'md-row md-space');
+                        head.appendChild(el('span', null, name));
+                        head.appendChild(el('strong', null, Math.round(share) + '%'));
+                        li.appendChild(head);
+                        const bar = el('div', 'md-bar');
+                        bar.setAttribute('role', 'img');
+                        bar.setAttribute('aria-label', name + ': ' + Math.round(share) + '% of transcoding checks');
+                        const fill = el('i');
+                        fill.style.width = Math.min(100, share) + '%';
+                        bar.appendChild(fill);
+                        li.appendChild(bar);
+                        const cause = pick(r, 'LibraryCause');
+                        const count = pick(r, 'LibraryCount');
+                        if (cause) {
+                            li.appendChild(el('span', 'so-small so-muted', (CAUSE[cause] || cause) +
+                                (count !== null && count !== undefined ? ': ' + count + (count === 1 ? ' file' : ' files') + ' in the library' : '')));
+                        }
+                        list.appendChild(li);
+                    });
+                    (pick(tx, 'Top') || []).forEach(function (t) {
+                        const li = el('li');
+                        li.appendChild(el('span', null, pick(t, 'Title')));
+                        li.appendChild(el('span', 'so-muted', (pick(t, 'Reasons') || []).map(txReason).join(', ')));
+                        titles.appendChild(li);
+                    });
+                }
+
+                // ---------- Disk trend and forecast ----------
+
+                // Days from one yyyy-MM-dd date to another.
+                function daysBetween(from, to) {
+                    return Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000);
+                }
+
+                function renderTrend() {
+                    const box = $('md-trend');
+                    box.innerHTML = '';
+                    const section = pick(dash, 'Disks');
+                    if (!section) {
+                        if (!sectionError(box, 'Disks')) box.appendChild(el('p', 'so-muted so-small', 'n/a'));
+                        return;
+                    }
+                    const drives = pick(section, 'Drives') || [];
+                    if (!drives.length) {
+                        box.appendChild(el('p', 'so-muted so-small', 'Disk data starts after the first daily reading.'));
+                        return;
+                    }
+                    // The server's date: Today's, or the build time in the server's zone when Today couldn't be built.
+                    const today = pick(pick(dash, 'Today'), 'Date') ||
+                        new Date(Date.parse(pick(dash, 'GeneratedUtc')) + (pick(dash, 'UtcOffsetMinutes') || 0) * 60000).toISOString().slice(0, 10);
+                    const freed = (pick(section, 'Freed') || []).map(function (f) { return pick(f, 'Day'); });
+                    const ns = 'http://www.w3.org/2000/svg';
+                    drives.forEach(function (d) {
+                        const wrap = el('div', 'md-trend-drive');
+                        const name = pick(d, 'Holds') || pick(d, 'Key');
+                        const free = pick(d, 'FreeGb') || 0;
+                        const total = pick(d, 'TotalGb') || 0;
+                        const rate = pick(d, 'GbPerDay');
+                        const days = pick(d, 'DaysToFull');
+                        const filling = days !== null && days !== undefined;
+                        const series = pick(d, 'Series') || [];
+                        const status = gb(free) + ' free' + (total ? ' of ' + gb(total) : '') +
+                            (rate === null || rate === undefined ? '' : filling ? ', using ' + fmtNum(rate) + ' GB a day, full in ' + daysText(days) : ', not filling');
+                        wrap.appendChild(el('strong', null, name));
+                        if (rate === null || rate === undefined) {
+                            wrap.appendChild(el('span', 'so-small', status + '. The trend shows after 3 days of readings.'));
+                            box.appendChild(wrap);
+                            return;
+                        }
+                        // 30 days back on the left; on the right, as far ahead as the drive lasts, up to 30 days.
+                        const ahead = filling ? Math.min(30, days) : 1;
+                        const span = 29 + ahead;
+                        const top = Math.max(total, Math.max.apply(null, series.map(function (p) { return pick(p, 'FreeGb'); })), 1);
+                        const x = function (offset) { return ((offset + 29) / span * 300).toFixed(1); };
+                        const y = function (value) { return (62 - Math.max(0, value) / top * 58).toFixed(1); };
+                        const svg = document.createElementNS(ns, 'svg');
+                        svg.setAttribute('viewBox', '0 0 300 64');
+                        svg.setAttribute('preserveAspectRatio', 'none');
+                        svg.setAttribute('role', 'img');
+                        svg.setAttribute('aria-label', name + ': ' + status + '.' + (freed.length ? ' Medic freed space on ' + freed.length + (freed.length === 1 ? ' day.' : ' days.') : ''));
+                        freed.forEach(function (day) {
+                            const at = daysBetween(today, day);
+                            if (at < -29 || at > 0) return;
+                            const mark = document.createElementNS(ns, 'line');
+                            mark.setAttribute('x1', x(at));
+                            mark.setAttribute('x2', x(at));
+                            mark.setAttribute('y1', '0');
+                            mark.setAttribute('y2', '64');
+                            mark.setAttribute('class', 'md-line-freed');
+                            svg.appendChild(mark);
+                        });
+                        const line = document.createElementNS(ns, 'polyline');
+                        line.setAttribute('points', series.map(function (p) { return x(daysBetween(today, pick(p, 'Day'))) + ',' + y(pick(p, 'FreeGb')); }).join(' '));
+                        line.setAttribute('class', 'md-line-value');
+                        svg.appendChild(line);
+                        if (filling) {
+                            const projection = document.createElementNS(ns, 'polyline');
+                            projection.setAttribute('points', x(0) + ',' + y(free) + ' ' + x(ahead) + ',' + y(free - rate * ahead));
+                            projection.setAttribute('class', 'md-line-projection');
+                            svg.appendChild(projection);
+                        }
+                        wrap.appendChild(svg);
+                        wrap.appendChild(el('span', 'so-small', status + '.'));
+                        box.appendChild(wrap);
+                    });
+                }
+
+                // ---------- People and access ----------
+
+                function renderPeople() {
+                    const big = $('md-people-big');
+                    const box = $('md-people');
+                    box.innerHTML = '';
+                    const people = pick(dash, 'People');
+                    if (!people) {
+                        big.textContent = 'n/a';
+                        sectionError(box, 'People');
+                        return;
+                    }
+                    const total = pick(people, 'Total') || 0;
+                    big.textContent = total + (total === 1 ? ' account' : ' accounts');
+                    const group = function (title, names, warn) {
+                        const g = el('div', 'md-people-group');
+                        g.appendChild(el('strong', names.length && warn ? warn : null, title + ': ' + names.length));
+                        if (names.length) g.appendChild(el('span', 'so-small so-muted', names.join(', ')));
+                        box.appendChild(g);
+                    };
+                    group('Inactive', pick(people, 'Inactive') || [], 'md-num-warn');
+                    group('No password', pick(people, 'NoPassword') || [], 'md-num-bad');
+                    group('Administrators', pick(people, 'AdminNames') || [], null);
+                    const roaming = pick(people, 'Roaming');
+                    if (roaming === null || roaming === undefined) {
+                        box.appendChild(el('p', 'so-small so-muted', 'Sign-ins from several places couldn\'t be checked this time.'));
+                    } else {
+                        group('Signed in from several places', roaming.map(function (r) { return pick(r, 'Name') + ' (' + pick(r, 'Addresses') + ' addresses)'; }), 'md-num-warn');
+                    }
                 }
 
                 // ---------- Schedule ----------
 
-                // Quiet for the Dashboard's background refresh: a failure there is retried on the next tick, so it
-                // mustn't leave an error on the page once Jellyfin answers again.
-                async function loadCalendar(quiet) {
+                async function loadCalendar() {
                     try {
                         cal = await getJson('/JellyfinMedic/Schedule/GetCalendar', { weekOffset: calWeek });
-                        calFetchedAt = Date.now();
                         renderTimeline();
-                        renderToday();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load the schedule', err);
-                        if (!quiet) showStatus('Couldn\'t load the schedule. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        showStatus('Couldn\'t load the schedule. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
                     }
                 }
 
@@ -2681,22 +3250,6 @@
                     }
                 }
 
-                // The Dashboard keeps its own list, so History's "Show errors only" can't change its counts.
-                async function loadDashHistory() {
-                    try {
-                        dashHistory = await getJson('/JellyfinMedic/Schedule/GetRunHistory', { errorsOnly: false });
-                        dashHistoryAt = Date.now();
-                        renderLastDay();
-                    } catch (err) {
-                        console.error('Jellyfin Medic: could not load run history', err);
-                        // Drop the old list too, so neither the tile nor a later redraw shows stale counts under the error.
-                        dashHistory = null;
-                        $('md-last-big').textContent = 'Couldn\'t load the runs';
-                        $('md-last-counts').textContent = '';
-                        $('md-last').innerHTML = '';
-                    }
-                }
-
                 function renderHistory() {
                     if (!history) return;
                     const sum = $('md-hist-summary');
@@ -3053,7 +3606,7 @@
                     try {
                         const result = await postJson('/JellyfinMedic/StopRunningTasks');
                         showStatus('Stopped ' + pick(result, 'Stopped') + ' task(s).', 'info');
-                        loadNow();
+                        loadLive();
                     } catch (e) {
                         showStatus('Couldn\'t stop the tasks. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
                     }
@@ -4157,11 +4710,11 @@
 
                 function startNowTimer() {
                     stopNowTimer();
-                    loadNow();
+                    loadLive();
                     nowTimer = setInterval(function () {
                         if (!shown() || !document.body.contains(page) || activeTab !== 'dashboard') { stopNowTimer(); return; }
-                        loadNow();
-                        refreshToday(true);
+                        loadLive();
+                        refreshDash(true);
                     }, 15000);
                 }
 
@@ -4183,7 +4736,7 @@
 
                 function resumePolling() {
                     updateActivity();
-                    if (activeTab === 'dashboard') { startNowTimer(); refreshToday(true); }
+                    if (activeTab === 'dashboard') { startNowTimer(); refreshDash(true); }
                     else if (activeTab === 'tracks') { pollTracks(); pollScan(); }
                     else if (activeTab === 'media') loadMedia();
                 }
@@ -4205,8 +4758,7 @@
                             loadCleanup();
                             loadWeekly();
                             loadExposureDefaults();
-                            await refreshToday();
-                            if (!dashHistory || Date.now() - dashHistoryAt > 5 * 60000) await loadDashHistory();
+                            await refreshDash();
                         } else if (name === 'schedule') {
                             await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
                             if (!usage) { usage = await getJson('/JellyfinMedic/Usage'); }
@@ -4300,9 +4852,10 @@
                         try { window.localStorage.setItem(CLOCK_KEY, clock); } catch (e) { /* ignore */ }
                         showClock();
                         if (report) { renderDashboard(); renderRecs(); }
-                        if (cal) { renderTimeline(); renderToday(); }
+                        if (cal) renderTimeline();
+                        if (dash) renderDash();
+                        if (live) { renderNow(); renderLoad(); }
                         if (history) renderHistory();
-                        renderLastDay();
                         if (usage) renderUsage();
                         if (plugins) renderPlugins();
                         if (speedResult) renderSpeed();
