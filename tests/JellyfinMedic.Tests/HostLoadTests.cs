@@ -23,6 +23,23 @@ public class HostLoadTests
     }
 
     [Fact]
+    public void Memory_counts_the_zfs_cache_above_its_minimum_as_free()
+    {
+        string[] meminfo = { "MemTotal:       16000000 kB", "MemAvailable:    2000000 kB" };
+        // ZFS keeps its cache (ARC) out of MemAvailable, though it gives it back down to c_min when programs need memory.
+        string[] arcstats =
+        {
+            "13 1 0x01 123 33456 1 2",
+            "name                            type data",
+            "c_min                           4    1024000000",
+            "size                            4    7168000000"
+        };
+
+        Assert.Equal(87.5, HostCounters.ParseMemory(meminfo));
+        Assert.Equal(50, HostCounters.ParseMemory(meminfo, arcstats));
+    }
+
+    [Fact]
     public void Only_whole_drives_are_counted()
     {
         var lines = new[]
