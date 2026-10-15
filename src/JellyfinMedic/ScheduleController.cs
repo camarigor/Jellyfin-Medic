@@ -193,6 +193,11 @@ public class ScheduleController : ControllerBase
         return Ok(new { TotalAuditedTasks = rows.Count, Changing = rows.Count(r => r.Changes), BusySummary = Busy().Summary, SchedulePlan = rows });
     }
 
+    /// <summary>Tasks with no time to run at, what each does, and whether Medic recommends turning it on.</summary>
+    [HttpGet("GetUntimedTasks")]
+    public ActionResult<List<UntimedTaskAdvice>> GetUntimedTasks() =>
+        Ok(SchedulePlanner.Untimed(VisibleTasks(), ScheduleStorage.LoadProfile(_appPaths), ScheduleStorage.LoadManaged(_appPaths)));
+
     /// <summary>Saves the owner's choice for one task: medic (let Medic schedule it), keep, or off.</summary>
     [HttpPost("SetChoice")]
     public ActionResult<object> SetChoice([FromQuery] string taskId, [FromQuery] string choice)
