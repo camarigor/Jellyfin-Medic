@@ -7,6 +7,17 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Memory on "Right now" shows its real share.** It always said 0%, so its warning colours never showed. Medic now sends the share with the reading.
+- **The Dashboard fills the width of the screen.** On a wide screen it left whole columns empty on the right. Tiles now sit in lines that always reach the right edge, two to a line on medium screens and one on phones, where Health, Right now and Top issues come first. Long names without spaces, such as a file path in a task's error, wrap inside their tile.
+- **"Last 24 hours" counts every run.** With "Show errors only" ticked on the History tab, the tile counted only the errors. It now has its own list, and says how many runs completed, failed, stopped or were cancelled; a stopped run is no longer called "failed".
+- **An old LoadGuard stop no longer shows as a warning.** The Dashboard showed the latest LoadGuard event however old it was. It now shows only the last day, and a stop stays a warning only until that task restarts.
+- **"Today's tasks" stays current.** "Next at" and the line for now stayed where they were when the schedule was first loaded. They now move with the clock, and the schedule is fetched again every 15 minutes and when the day changes.
+- **Details opens Checks at the issue.** It opened Checks at the top of the list. It now scrolls to the issue, focuses it and marks it.
+- **Ignoring an issue doesn't count it as fixed.** "This week" counted an issue you ignored as fixed, because ignored issues were left out of each day's record. Medic now records them, so "This week" says how many you ignored, and an issue you show again isn't counted as new.
+
 ## [1.0.19] – 2026-10-14
 
 ### Fixed
