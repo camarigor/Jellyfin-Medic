@@ -42,9 +42,13 @@ public sealed class LoadGuard : IHostedService, IDisposable
     private Timer? _timer;
     private int _busy;
 
-    // Tasks we stopped and intend to restart once there's headroom.
-    private readonly List<string> _deferred = new();
+    // Tasks we stopped and intend to restart once there's headroom, oldest first.
+    private readonly List<PausedTask> _deferred = new();
     private DateTime _lastActionUtc = DateTime.MinValue;
+
+    // The same list for the Dashboard, which can't reach this service. Replaced on every change and never
+    // changed afterwards, so readers need no lock.
+    private static PausedTask[] _paused = Array.Empty<PausedTask>();
 
     // When each running task started, from Jellyfin's TaskExecuting event, so "the one that started first"
     // really is. A running task's LastExecutionResult is its previous run, so it can't be used for this.
@@ -56,6 +60,9 @@ public sealed class LoadGuard : IHostedService, IDisposable
         _paths = paths;
         _logger = logger;
     }
+
+    /// <summary>Tasks LoadGuard stopped and will restart once memory recovers, oldest first.</summary>
+    internal static IReadOnlyList<PausedTask> Paused => Volatile.Read(ref _paused);
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -113,10 +120,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
                     try
                     {
                         _tasks.Cancel(worker);
-                        if (!_deferred.Contains(worker.Id.ToString(), StringComparer.Ordinal))
-                        {
-                            _deferred.Add(worker.Id.ToString());
-                        }
+                        Defer(worker);
 
                         Record("stopped", worker.Name, usedGb, limitGb);
                         _logger.LogWarning("Jellyfin Medic: memory at {Used:0}% of {Limit:0} GB with {Count} heavy tasks running; stopped '{Task}' to protect the server.", usedPercent, limitGb, heavyRunning.Count, worker.Name);
@@ -136,11 +140,11 @@ public sealed class LoadGuard : IHostedService, IDisposable
             bool settled = DateTime.UtcNow - _lastActionUtc > TimeSpan.FromMinutes(2);
             if (_deferred.Count > 0 && quietEnough && settled)
             {
-                string id = _deferred[0];
+                string id = _deferred[0].TaskId;
                 var worker = _tasks.ScheduledTasks.FirstOrDefault(t => t.Id.ToString() == id);
                 if (worker is null)
                 {
-                    _deferred.RemoveAt(0); // the task is gone (its plugin was removed)
+                    DropFirst(); // the task is gone (its plugin was removed)
                 }
                 else if (worker.State == TaskState.Idle)
                 {
@@ -148,14 +152,14 @@ public sealed class LoadGuard : IHostedService, IDisposable
                     try
                     {
                         _tasks.Execute(worker, new TaskOptions());
-                        _deferred.RemoveAt(0);
+                        DropFirst();
                         Record("restarted", worker.Name, usedGb, limitGb);
                         _logger.LogInformation("Jellyfin Medic: memory back to {Used:0}%; restarted deferred task '{Task}'.", usedPercent, worker.Name);
                         _lastActionUtc = DateTime.UtcNow;
                     }
                     catch (Exception ex)
                     {
-                        _deferred.RemoveAt(0); // starting it fails, so trying again every round wouldn't help
+                        DropFirst(); // starting it fails, so trying again every round wouldn't help
                         _logger.LogError(ex, "Jellyfin Medic: couldn't restart deferred task '{Task}'.", worker.Name);
                     }
                 }
@@ -178,6 +182,24 @@ public sealed class LoadGuard : IHostedService, IDisposable
     {
         // A task already running when Medic started has been going longest, so it counts as first.
         return _startedUtc.TryGetValue(worker.Id.ToString(), out var started) ? started : DateTime.MinValue;
+    }
+
+    /// <summary>Puts a task it just stopped on the restart list, once.</summary>
+    internal void Defer(IScheduledTaskWorker worker)
+    {
+        string id = worker.Id.ToString();
+        if (!_deferred.Any(d => d.TaskId == id))
+        {
+            _deferred.Add(new PausedTask { TaskId = id, TaskName = worker.Name, StoppedUtc = DateTime.UtcNow });
+            Volatile.Write(ref _paused, _deferred.ToArray());
+        }
+    }
+
+    /// <summary>Takes the oldest task off the restart list.</summary>
+    internal void DropFirst()
+    {
+        _deferred.RemoveAt(0);
+        Volatile.Write(ref _paused, _deferred.ToArray());
     }
 
     /// <summary>

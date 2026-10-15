@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using JellyfinMedic.Api;
 
@@ -139,6 +140,25 @@ public static class WeeklyLedger
             _ledger.Restarts.RemoveAll(r => r < DateTime.Now.AddDays(-60));
             _ledger.Restarts.Add(DateTime.Now);
             Save();
+        }
+    }
+
+    /// <summary>The days Medic freed space since a date (server local), oldest first, with the bytes and kinds of each.</summary>
+    public static List<FreedDay> FreedDays(DateTime since)
+    {
+        lock (Sync)
+        {
+            return _ledger.Freed
+                .Where(f => f.At >= since)
+                .GroupBy(f => f.At.Date)
+                .OrderBy(g => g.Key)
+                .Select(g => new FreedDay
+                {
+                    Day = g.Key.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    Bytes = g.Sum(f => f.Bytes),
+                    Kinds = g.Select(f => f.Kind).Distinct(StringComparer.Ordinal).ToList()
+                })
+                .ToList();
         }
     }
 

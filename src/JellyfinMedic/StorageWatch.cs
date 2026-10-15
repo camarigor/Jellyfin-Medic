@@ -42,6 +42,9 @@ public sealed class DiskSample
 
     public double FreeGb { get; set; }
 
+    // What the drive holds, e.g. "Films, Series". Empty in readings saved before it was recorded.
+    public string Holds { get; set; } = string.Empty;
+
     // A folder on that drive, so the background sampler can read it again tomorrow.
     public string Path { get; set; } = string.Empty;
 }
@@ -68,6 +71,7 @@ public static class StorageWatch
     public static List<DriveStatus> Drives(IEnumerable<(string Holds, string Path)> folders)
     {
         var byKey = new Dictionary<string, DriveStatus>(StringComparer.Ordinal);
+        var roots = new Lazy<List<string>>(DriveRoots);
         foreach (var (holds, path) in folders)
         {
             if (string.IsNullOrWhiteSpace(path) || SystemProbe.Space(path) is not { } space || space.TotalGb <= 0)
@@ -75,8 +79,9 @@ public static class StorageWatch
                 continue;
             }
 
-            // The mount point when it can be read; otherwise drives with the same size and free space are one.
-            string? mount = SystemProbe.Mount(path)?.MountPoint;
+            // The mount point when it can be read, else the volume that holds the folder (Windows, macOS). Only when
+            // neither can be read are drives with the same size and free space one.
+            string? mount = SystemProbe.Mount(path)?.MountPoint ?? VolumeRoot(path, roots.Value);
             string key = mount ?? string.Create(CultureInfo.InvariantCulture, $"{space.TotalGb:0.0}/{space.FreeGb:0.0}");
             if (byKey.TryGetValue(key, out var existing))
             {
@@ -105,9 +110,16 @@ public static class StorageWatch
             bool changed = false;
             foreach (var d in drives)
             {
-                if (!history.Any(h => h.Key == d.Key && h.Day == today))
+                var todays = history.FirstOrDefault(h => h.Key == d.Key && h.Day == today);
+                if (todays is null)
                 {
-                    history.Add(new DiskSample { Key = d.Key, Day = today, FreeGb = d.FreeGb, Path = d.ExamplePath });
+                    history.Add(new DiskSample { Key = d.Key, Day = today, FreeGb = d.FreeGb, Holds = d.Holds, Path = d.ExamplePath });
+                    changed = true;
+                }
+                else if (todays.Holds.Length == 0 && d.Holds.Length > 0)
+                {
+                    // Today's first reading came from the background sampler, which may not know what the drive holds.
+                    todays.Holds = d.Holds;
                     changed = true;
                 }
             }
@@ -142,21 +154,58 @@ public static class StorageWatch
         }
 
         _recordedDay = today;
+        RecordKnownNow(pluginConfigDir);
+    }
+
+    /// <summary>Reads the drives seen before again and saves today's reading of each, whatever the day.</summary>
+    internal static void RecordKnownNow(string pluginConfigDir)
+    {
         List<DiskSample> history;
         lock (Sync)
         {
             history = ScheduleStorage.ReadList<DiskSample>(HistoryPath(pluginConfigDir));
         }
 
-        var drives = history.Where(h => h.Path.Length > 0)
+        // Each folder goes through Drives again, so its drive is named as it is everywhere else today: readings once
+        // kept under a key that followed free space come back under the drive's own.
+        var drives = Drives(history.Where(h => h.Path.Length > 0)
             .GroupBy(h => h.Key)
-            .Select(g => g.OrderBy(h => h.Day).Last())
-            .Select(h => SystemProbe.Space(h.Path) is { } s ? new DriveStatus { Key = h.Key, ExamplePath = h.Path, FreeGb = s.FreeGb, TotalGb = s.TotalGb } : null)
-            .OfType<DriveStatus>()
-            .ToList();
+            .Select(g => (g.OrderBy(h => h.Day).LastOrDefault(h => h.Holds.Length > 0)?.Holds ?? string.Empty, g.OrderBy(h => h.Day).Last().Path)));
         if (drives.Count > 0)
         {
             Record(pluginConfigDir, drives);
+        }
+    }
+
+    /// <summary>
+    /// The longest of <paramref name="roots"/> that holds <paramref name="path"/>, or null. Where mount points can't be
+    /// read (Windows, macOS), this names the drive, and unlike its free space it stays the same as the drive fills.
+    /// </summary>
+    internal static string? VolumeRoot(string path, IEnumerable<string> roots) =>
+        roots.Where(root => root.Length > 0
+                            && path.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+                            && (path.Length == root.Length || root[^1] is '/' or '\\' || path[root.Length] is '/' or '\\'))
+            .OrderByDescending(root => root.Length)
+            .FirstOrDefault();
+
+    private static List<string> DriveRoots()
+    {
+        try
+        {
+            return DriveInfo.GetDrives().Select(d => d.RootDirectory.FullName).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new List<string>();
+        }
+    }
+
+    /// <summary>The daily readings of the last 30 days, every drive's. A damaged file reads as none and is set aside.</summary>
+    internal static List<DiskSample> History(string pluginConfigDir)
+    {
+        lock (Sync)
+        {
+            return ScheduleStorage.ReadList<DiskSample>(HistoryPath(pluginConfigDir));
         }
     }
 

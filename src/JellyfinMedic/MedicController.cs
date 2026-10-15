@@ -54,7 +54,7 @@ public class MedicController : ControllerBase
         ILoggerFactory loggerFactory)
     {
         _users = users;
-        _activity = ResolveActivityManager(services);
+        _activity = SecurityAuditor.ResolveActivityManager(services);
         _sessions = sessions;
         _installs = installs;
         _tasks = tasks;
@@ -839,33 +839,4 @@ public class MedicController : ControllerBase
     }
 
     private string TranscodePath() => SettingsReader.TranscodePath(_config.GetConfiguration("encoding"), _paths.CachePath);
-
-    // The activity manager's interface, under its name in this Jellyfin version. Looked up across the loaded
-    // assemblies once: the controller is created for every request, the Dashboard's frequent polls included.
-    private static readonly Lazy<Type[]> ActivityManagerTypes = new(() =>
-        new[] { "MediaBrowser.Model.Activity.IActivityManager", "Jellyfin.Data.IActivityManager" }
-            .Select(name => AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType(name)).FirstOrDefault(t => t is not null))
-            .OfType<Type>()
-            .ToArray());
-
-    private static object? ResolveActivityManager(IServiceProvider services)
-    {
-        foreach (var type in ActivityManagerTypes.Value)
-        {
-            try
-            {
-                var service = services.GetService(type);
-                if (service is not null)
-                {
-                    return service;
-                }
-            }
-            catch
-            {
-                // Not registered in this version; try the next name.
-            }
-        }
-
-        return null;
-    }
 }

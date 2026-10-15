@@ -43,6 +43,9 @@ public static class ServerNow
 
     public static void TaskFinished(string taskId) => RunningSince.TryRemove(taskId, out _);
 
+    /// <summary>When a running task started. One that started before Medic was watching counts from when it was first seen.</summary>
+    internal static DateTime RunningSinceUtc(string taskId) => RunningSince.GetOrAdd(taskId, _ => DateTime.UtcNow);
+
     /// <summary>
     /// Roughly how long a running task has left: from its progress so far, leaning on how long it
     /// usually takes while the progress is still too small to go on. Null when there's nothing to go on.
@@ -179,7 +182,7 @@ public static class ServerNow
         snap.RunningTasks = running.Select(t =>
             {
                 string id = t.Id.ToString();
-                var since = RunningSince.GetOrAdd(id, _ => DateTime.UtcNow); // started before Medic was watching: count from now
+                var since = RunningSinceUtc(id);
                 history.TryGetValue(id, out var rec);
                 double? typical = rec is { TotalRuns: > 0 } || t.LastExecutionResult is not null ? ScheduleStorage.TypicalMinutes(t, rec) : null;
                 var left = Remaining(t.CurrentProgress, DateTime.UtcNow - since, typical);
