@@ -105,7 +105,7 @@ public sealed class HostCounters
             TimeUtc = utcNow,
             CpuBusy = cpu?.Busy,
             CpuTotal = cpu?.Total,
-            MemoryPercent = ParseMemory(HostPlatform.Lines("/proc/meminfo")),
+            MemoryPercent = ParseMemory(HostPlatform.Lines("/proc/meminfo"), HostPlatform.Lines(ArcStatsPath)),
             DiskIoMs = ParseDisks(HostPlatform.Lines("/proc/diskstats"), name => Directory.Exists("/sys/block/" + name))
         };
     }
@@ -161,27 +161,59 @@ public sealed class HostCounters
         return (total - idle, total);
     }
 
-    /// <summary>Share of memory in use (not counting what can be freed at once, such as file cache).</summary>
-    internal static double? ParseMemory(IEnumerable<string> lines)
+    internal const string ArcStatsPath = "/proc/spl/kstat/zfs/arcstats";
+
+    /// <summary>
+    /// Share of memory in use, not counting what can be freed at once: the file cache, and ZFS's cache (ARC) above its
+    /// minimum, which MemAvailable leaves out though ZFS gives it back when programs need memory.
+    /// </summary>
+    internal static double? ParseMemory(IEnumerable<string> meminfo, IEnumerable<string>? arcstats = null) =>
+        MemoryKb(meminfo, arcstats) is { } kb ? UsedPercent(kb) : null;
+
+    /// <summary>Total memory and what can be used at once, in kB, counted as ParseMemory counts them.</summary>
+    internal static (long Total, long Available)? MemoryKb(IEnumerable<string> meminfo, IEnumerable<string>? arcstats = null)
     {
         long? total = null, available = null;
-        foreach (var line in lines)
+        foreach (var line in meminfo)
         {
             if (line.StartsWith("MemTotal:", StringComparison.Ordinal))
             {
-                total = Kb(line);
+                total = Number(line, 1);
             }
             else if (line.StartsWith("MemAvailable:", StringComparison.Ordinal))
             {
-                available = Kb(line);
+                available = Number(line, 1);
             }
         }
 
-        return total is > 0 && available is { } a ? Math.Round(Math.Clamp((total.Value - a) * 100.0 / total.Value, 0, 100), 1) : null;
+        if (total is not > 0 || available is not { } free)
+        {
+            return null;
+        }
 
-        static long? Kb(string line) =>
-            long.TryParse(line.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out long v) ? v : null;
+        // arcstats lines are "name type value", in bytes.
+        long? arcSize = null, arcMin = null;
+        foreach (var line in arcstats ?? Enumerable.Empty<string>())
+        {
+            if (line.StartsWith("size ", StringComparison.Ordinal))
+            {
+                arcSize = Number(line, 2);
+            }
+            else if (line.StartsWith("c_min ", StringComparison.Ordinal))
+            {
+                arcMin = Number(line, 2);
+            }
+        }
+
+        long arcFreeable = arcSize is { } size && arcMin is { } min ? Math.Max(0, size - min) / 1024 : 0;
+        return (total.Value, Math.Min(total.Value, free + arcFreeable));
+
+        static long? Number(string line, int field) =>
+            long.TryParse(line.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(field), NumberStyles.Integer, CultureInfo.InvariantCulture, out long v) ? v : null;
     }
+
+    internal static double UsedPercent((long Total, long Available) kb) =>
+        Math.Round(Math.Clamp((kb.Total - kb.Available) * 100.0 / kb.Total, 0, 100), 1);
 
     /// <summary>
     /// Milliseconds spent on I/O for each whole drive in /proc/diskstats. Partitions would count a drive
@@ -214,6 +246,25 @@ public sealed class HostCounters
         }
 
         return result;
+    }
+}
+
+/// <summary>The whole server's memory in use now, counted as the load profile counts it. Linux only.</summary>
+public static class ServerMemory
+{
+    /// <summary>Percent in use, with used and total GB; null off Linux or when /proc/meminfo can't be read.</summary>
+    public static double? UsedPercent(out double usedGb, out double totalGb)
+    {
+        usedGb = 0;
+        totalGb = 0;
+        if (!OperatingSystem.IsLinux() || HostCounters.MemoryKb(HostPlatform.Lines("/proc/meminfo"), HostPlatform.Lines(HostCounters.ArcStatsPath)) is not { } kb)
+        {
+            return null;
+        }
+
+        usedGb = Math.Round((kb.Total - kb.Available) / 1048576.0, 1);
+        totalGb = Math.Round(kb.Total / 1048576.0, 1);
+        return HostCounters.UsedPercent(kb);
     }
 }
 

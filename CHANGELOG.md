@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **A heavy task waits while the whole server is short of memory.** LoadGuard only watched Jellyfin's own memory, so a scan could start while another program, such as an encoder or a download client, was using most of the server's. Now, on Linux, a heavy task that starts while the whole server is past the memory ceiling waits until memory is back below it, or two hours at most; work already under way is left to finish. ZFS's cache (ARC) above its minimum counts as free memory here and in the server's load profile, as the system gives it back when programs need it.
+
 ## [1.0.20] – 2026-10-15
 
 ### Added
