@@ -89,6 +89,7 @@ public class ProfilesController : ControllerBase
         }
 
         plugin.SaveConfiguration();
+        _qbit.ForgetRefusal();
 
         // A blank key box means "keep the saved key" (for the same server); Remove clears it.
         if (request.ClearSonarrKey || (newSonarrHost && string.IsNullOrWhiteSpace(request.SonarrKey)))
