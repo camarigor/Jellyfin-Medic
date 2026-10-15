@@ -9,6 +9,8 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 - **Signing in to qBittorrent 5.2 works.** qBittorrent 5.2 changed how it answers a sign-in: it now sends back no text when the password is right, where older versions said "Ok.". Medic Profiles took that as a wrong password, so it kept saying the user name and password weren't accepted and waited 5 minutes before trying again, however often the details were re-entered. Both kinds of answer are now understood, as is 5.2's way of saying a password is wrong.
 - **Saving the settings tries qBittorrent again straight away.** After a refused sign-in, Medic Profiles waited 5 minutes before trying the same details again, even after the password was fixed in qBittorrent. Saving the settings (or pressing Block or Stop blocking) now tries again at once. If qBittorrent has banned the server's address after too many wrong passwords, the page says so and how to clear it.
 
+Thanks @camarigor (#119), who found and fixed the qBittorrent 5.2 sign-in first; the fix came in through #122.
+
 ## [1.1.2] – 2026-10-14
 
 ### Added

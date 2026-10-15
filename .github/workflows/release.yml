@@ -64,6 +64,19 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # Anyone besides the owner whose pull requests went into this release gets a line of thanks in the
+      # release notes and the manifest's changelog. A failure here only leaves the line out.
+      - name: Thank contributors
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if CREDITS=$(python3 scripts/release_credits.py "$GITHUB_REF_NAME" --changes CHANGES.md); then
+            if [ -n "$CREDITS" ]; then printf '\n%s\n' "$CREDITS" >> CHANGES.md; echo "$CREDITS"; fi
+          else
+            echo "::warning::Couldn't work out who to thank, so these release notes have no credits. Run the Refresh release notes workflow for $GITHUB_REF_NAME once this release is out."
+          fi
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:

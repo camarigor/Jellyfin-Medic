@@ -36,6 +36,8 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 ### Fixed
 - **An ignored finding stays ignored when a number in it changes.** Medic remembered an ignored finding by its title, and some titles include a count, a time or a percentage, such as "Jellyfin ran flat out 3 times this week", "2 plugin updates are available" or "The drive for Movies will be full in 3 weeks". When the number changed, the finding came back, and the weekly summary could list it as both new and fixed. These findings now have a fixed name that ignoring and the weekly summary use instead. Findings like these that you ignored before need ignoring once more.
 
+Thanks @camarigor (#111, #112, #114, #115) for the clean-up in this release: the unused code removed and the test Seerr kept off the network came in through #113.
+
 ## [1.0.18] – 2026-10-14
 
 ### Fixed

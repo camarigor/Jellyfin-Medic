@@ -37,6 +37,9 @@ jobs:
             dotnet test "$project" -c Release
           done
 
+      - name: Run release script tests
+        run: python3 -m unittest discover -s scripts/tests -v
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
