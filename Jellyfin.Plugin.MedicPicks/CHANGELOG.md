@@ -13,6 +13,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 - **Choices on the My picks page survive a damaged file.** A person's choices file that couldn't be read was written over by their next change (a Hide, say) or the nightly rebuild, so the titles they had hidden came back. It's now kept beside it, as the keys file already was, and new choices start.
 - **Each damaged file is kept.** A file set aside is now named with the time (`secrets.json.20261016-153000.bad`, say), so a second damaged keys file no longer replaces the first `secrets.json.bad`.
 - **Saved files reach the disk before they replace the old ones.** Picks, choices and the keys file are written to a temporary file and then swapped in; that file is now flushed to disk first, as Jellyfin Medic's own files are, so a power cut at the wrong moment can't leave an empty file in its place on file systems that would otherwise allow it.
+- **An episode with no series no longer stops a person's picks from updating.** Jellyfin makes a video at the root of a TV library an episode that belongs to no series, and building the picks of anyone who had watched one failed: they kept their old picks (someone new got none), and only the log said why. Such episodes are now left out of what counts as watched. The My picks page also said "Updated just now" after an update that had failed; it now says the picks couldn't be updated, and shows them as they were.
 
 ## [1.2.4] – 2026-10-14
 
