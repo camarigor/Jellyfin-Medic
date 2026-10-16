@@ -2060,6 +2060,67 @@ await check('admin banner on the home page for a serious error, and it can be di
     expect(ours.length === 0, ours.join(' | '));
 });
 
+await check('admin banner goes away on signing out, and an answer that arrives late isn\'t shown to the next person', async () => {
+    // Served by the test: the admin dismissed the real alert above, and the server remembers that on every device.
+    const alert = { Id: 'critical:e2e-sign-out', Kind: 'critical', Title: 'Test alert for admins', Detail: 'Served by the e2e test.' };
+    const name = 'e2e-viewer';
+    const made = await api('POST', '/Users/New', { Name: name, Password: 'e2e-pass' });
+    expect(made.status === 200, 'user not created: ' + made.text);
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await ctx.newPage();
+        let held = null; // a list while answers are kept back, so they arrive late
+        await p.route('**/JellyfinMedic/Alerts', async (route) => {
+            if (held) held.push(route);
+            else await route.fulfill({ json: [alert] });
+        });
+        // Only the visible form: the web app can keep an earlier sign-in page, hidden, after signing out.
+        const signIn = async (user, password) => {
+            await p.waitForSelector('#txtManualName:visible', { timeout: 60000 });
+            await p.fill('#txtManualName:visible', user);
+            await p.fill('#txtManualPassword:visible', password);
+            await p.click('.manualLoginForm button[type="submit"]:visible');
+            await p.waitForURL(/#\/home/, { timeout: 60000 });
+        };
+        const signOut = async () => {
+            await p.click('button[aria-controls="app-user-menu"]');
+            await p.locator('#app-user-menu [role="menuitem"]', { hasText: /sign out/i }).click();
+            await p.waitForSelector('#txtManualName:visible', { timeout: 60000 });
+        };
+        const box = p.locator('#jellyfin-medic-banners');
+        const shown = () => p.evaluate(() => document.getElementById('jellyfin-medic-banners')?.textContent || '');
+        const problems = [];
+
+        await p.goto(JF + '/web/index.html#/login');
+        await signIn('admin', 'admin');
+        expect(await box.waitFor({ timeout: 30000 }).then(() => true, () => false), 'no banner for the admin after signing in, on ' + p.url());
+        await signOut();
+        await box.waitFor({ state: 'detached', timeout: 5000 }).catch(() => { /* reported below */ });
+        const stayed = await shown();
+        if (stayed) problems.push('the banner stayed on the sign-in screen after signing out: ' + stayed);
+
+        // A fresh page, so what follows doesn't depend on the sign-out above being handled.
+        await p.reload();
+        held = [];
+        const asked = p.waitForRequest('**/JellyfinMedic/Alerts', { timeout: 30000 }).then(() => true, () => false);
+        await signIn('admin', 'admin');
+        expect(await asked, 'the banner didn\'t ask for alerts after the admin signed in again');
+        await signOut();
+        await signIn(name, 'e2e-pass');
+        // Released only once the banner has seen who is signed in now, half a second after the page shows.
+        await p.waitForTimeout(3000);
+        for (const route of held) await route.fulfill({ json: [alert] });
+        await box.waitFor({ timeout: 3000 }).catch(() => { /* not shown, as it should be */ });
+        const late = await shown();
+        if (late) problems.push(`the admin's answer, held back until ${name} (not an admin) had signed in, was shown to them: ` + late);
+        expect(problems.length === 0, problems.join('; '));
+        return 'removed on signing out; the late answer was dropped';
+    } finally {
+        await ctx.close();
+        await api('DELETE', `/Users/${made.json.Id}`);
+    }
+});
+
 await check('Picks: 30 + a genre explains a short list, and "Show me different ones" moves on', async () => {
     await page.goto(JF + '/MedicPicks/Page');
     await page.waitForSelector('#prefs:not([hidden])', { timeout: 30000 });
