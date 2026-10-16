@@ -1514,21 +1514,39 @@
                 async function loadLive() {
                     try {
                         live = await getJson('/JellyfinMedic/Dashboard/Live');
-                        nowData = pick(live, 'Now');
-                        renderNow();
-                        renderLoad();
-                    } catch (e) { /* the tiles stay as they were */ }
+                    } catch (e) {
+                        return; // the tiles stay as they were
+                    }
+                    nowData = pick(live, 'Now');
+                    drawPanel(renderNow, 'md-cpu');
+                    drawPanel(renderLoad, 'md-load-ffmpeg');
                 }
 
+                // Each panel with the element that says so when it can't be drawn.
+                const PANELS = [
+                    [renderDisks, 'md-disks-text'], [renderToday, 'md-today-summary'], [renderNet, 'md-net-big'], [renderErrors, 'md-errors'],
+                    [renderBusy, 'md-busy-summary'], [renderWhy, 'md-why-summary'], [renderTrend, 'md-trend'], [renderPeople, 'md-people-big']
+                ];
+
                 function renderDash() {
-                    renderDisks();
-                    renderToday();
-                    renderNet();
-                    renderErrors();
-                    renderBusy();
-                    renderWhy();
-                    renderTrend();
-                    renderPeople();
+                    PANELS.forEach(function (panel) { drawPanel(panel[0], panel[1]); });
+                }
+
+                // Draws one panel on its own: data it doesn't expect stops only that panel, which says so, and not the ones after it.
+                function drawPanel(render, target) {
+                    try {
+                        render();
+                    } catch (err) {
+                        console.error('Jellyfin Medic: could not draw a Dashboard panel', err);
+                        const box = $(target);
+                        const message = 'Couldn\'t show this panel. The browser console has the details.';
+                        if (box.tagName === 'UL') {
+                            box.innerHTML = '';
+                            box.appendChild(el('li', 'md-bad-text', message));
+                        } else {
+                            box.textContent = message;
+                        }
+                    }
                 }
 
                 // A section the server couldn't build: its message in place of the panel. True when there was one.
@@ -1738,10 +1756,15 @@
                     const day = pick(dash, 'Today');
                     if (!day) {
                         summary.textContent = pick(pick(dash, 'Errors') || {}, 'Today') || (dash ? 'n/a' : 'Loading…');
+                        // Nothing to choose or to place in time until the data comes back.
                         $('md-day-repeats').textContent = '';
+                        $('md-day-detail').textContent = '';
+                        $('md-day-zone').textContent = '';
+                        dayDetailKey = null;
                         return;
                     }
                     summary.textContent = todaySummary(pick(day, 'Summary') || {});
+                    if (!$('md-day-detail').textContent) $('md-day-detail').textContent = DAY_HINT;
                     $('md-day-zone').textContent = zoneNote();
                     const planned = el('span', 'md-day-lane', 'Planned');
                     planned.style.top = '6px';
@@ -1826,7 +1849,11 @@
                     const net = pick(dash, 'Network');
                     if (!net) {
                         big.textContent = 'n/a';
-                        sectionError(dl, 'Network', 'dd');
+                        const message = pick(pick(dash, 'Errors') || {}, 'Network');
+                        if (message) {
+                            dl.appendChild(el('dt', null, 'Error'));
+                            dl.appendChild(el('dd', 'md-bad-text', message));
+                        }
                         return;
                     }
                     const row = function (k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); };
@@ -1880,8 +1907,11 @@
                     const busy = pick(dash, 'BusyHours');
                     if (!busy) {
                         summary.textContent = pick(pick(dash, 'Errors') || {}, 'BusyHours') || 'n/a';
+                        $('md-busy-detail').textContent = '';
+                        busyDetailKey = null;
                         return;
                     }
+                    if (!$('md-busy-detail').textContent) $('md-busy-detail').textContent = BUSY_HINT;
                     const days = pick(busy, 'Days') || [];
                     const inBusy = pick(busy, 'RunsInBusyHours') || 0;
                     let peak = null;
@@ -4557,7 +4587,7 @@
                         if (report) { renderDashboard(); renderRecs(); }
                         if (cal) renderTimeline();
                         if (dash) renderDash();
-                        if (live) { renderNow(); renderLoad(); }
+                        if (live) { drawPanel(renderNow, 'md-cpu'); drawPanel(renderLoad, 'md-load-ffmpeg'); }
                         if (history) renderHistory();
                         if (usage) renderUsage();
                         if (plugins) renderPlugins();

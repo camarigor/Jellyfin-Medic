@@ -1389,9 +1389,55 @@ await check('Dashboard panels: a section the server couldn\'t build shows its me
         await page.waitForFunction(() => /IOException/.test(document.getElementById('md-net')?.textContent || ''), null, { timeout: 30000 });
         const summary = await page.textContent('#md-today-summary');
         expect(/planned/.test(summary), 'Today did not render beside the broken section: ' + summary);
+        const rows = await page.evaluate(() => ({ dt: document.querySelectorAll('#md-net dt').length, dd: document.querySelectorAll('#md-net dd').length }));
+        expect(rows.dt === rows.dd, `Network's message: ${rows.dd} values for ${rows.dt} names`);
         return 'Network shows the message; Today: ' + summary;
     } finally {
         await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
+await check('Dashboard panels: a panel that fails to draw says so, and the panels after it still render', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    // A Today section of a shape the page doesn't expect makes that panel throw while drawing.
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Today: { ...data.Today, Planned: 'not a list' } } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => /Couldn't show this panel/.test(document.getElementById('md-today-summary')?.textContent || ''), null, { timeout: 30000 });
+        const seen = await page.evaluate(() => ({
+            later: ['md-net-big', 'md-busy-summary', 'md-people-big'].map((id) => document.getElementById(id).textContent),
+            banner: (() => { const b = document.querySelector('#JellyfinMedicPage #so-status'); return b && !b.hidden ? b.textContent : ''; })()
+        }));
+        expect(seen.later.every((t) => !/Loading/.test(t)) && seen.banner === '', 'after the failed panel: ' + JSON.stringify(seen));
+        return 'Today says it failed; ' + seen.later.join(' | ').slice(0, 80);
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
+await check('Dashboard panels: a section the server couldn\'t build hides its hints until its data comes back', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const failed = 'Couldn\'t be read (IOException). The Jellyfin log has the details.';
+    const broken = { ...data, Today: null, BusyHours: null, Errors: { Today: failed, BusyHours: failed } };
+    let served = 0;
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    await ctx.clock.install();
+    try {
+        const p = await adminPage(ctx);
+        await p.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: served++ === 0 ? broken : data }));
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        await p.waitForFunction(() => /IOException/.test(document.getElementById('md-today-summary')?.textContent || ''), null, { timeout: 30000 });
+        const hints = () => p.evaluate(() => ['md-day-detail', 'md-day-zone', 'md-busy-detail'].map((id) => document.getElementById(id).textContent));
+        const hidden = await hints();
+        expect(hidden.every((t) => t === ''), 'hints beside a failed section: ' + JSON.stringify(hidden));
+        // The next fetch, after 5 minutes, brings the data back.
+        await p.clock.fastForward('05:30');
+        await p.waitForTimeout(2000);
+        const back = await hints();
+        expect(served >= 2 && /to see its details/.test(back[0]) && /to see its runs/.test(back[2]), 'after the data came back: ' + JSON.stringify(back));
+        return 'hidden while failed, back with the data';
+    } finally {
+        await ctx.close();
     }
 });
 
