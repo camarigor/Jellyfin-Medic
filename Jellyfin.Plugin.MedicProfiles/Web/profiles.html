@@ -47,7 +47,7 @@
 
             <!-- Indexers -->
             <section class="mp-panel" data-panel="indexers" role="tabpanel" hidden>
-                <p class="mp-muted">Each indexer Sonarr and Radarr search, and whether it's working. Indexers added by Prowlarr show here too.</p>
+                <p class="mp-muted">Each indexer Sonarr and Radarr search, and whether they've paused it after failures. Indexers added by Prowlarr show here too.</p>
                 <ul id="mp-indexer-warnings" class="mp-list"></ul>
                 <ul id="mp-indexers" class="mp-list"></ul>
                 <p id="mp-indexers-empty" class="mp-muted" hidden>No indexers found.</p>
@@ -751,7 +751,7 @@
                             title.appendChild(el('span', 'mp-badge', appName(r.app)));
                             title.appendChild(document.createTextNode(r.name + (r.protocol ? ' (' + r.protocol + ')' : '')));
                             li.appendChild(title);
-                            const state = r.state === 'failing' ? 'Failing' : r.state === 'off' ? 'Switched off' : 'Working';
+                            const state = r.state === 'failing' ? 'Failing' : r.state === 'off' ? 'Switched off' : 'Enabled';
                             li.appendChild(el('p', 'mp-note ' + (r.state === 'failing' ? 'bad' : r.state === 'off' ? '' : 'ok'), state + (r.detail ? ': ' + r.detail : '')));
                             list.appendChild(li);
                         });

@@ -10,6 +10,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 - **The action history survives a damaged file.** A history file that couldn't be read was written over by the next action on the Downloads tab, losing every earlier action in it. It's now kept beside it, as the keys file already was, and a new history starts.
 - **Each damaged file is kept.** A file set aside is now named with the time (`secrets.json.20261016-153000.bad`, say), so a second damaged keys file no longer replaces the first `secrets.json.bad`.
 - **Saved files reach the disk before they replace the old ones.** The keys file and the action history are written to a temporary file and then swapped in; that file is now flushed to disk first, as Jellyfin Medic's own files are, so a power cut at the wrong moment can't leave an empty file in its place on file systems that would otherwise allow it.
+- **The Indexers tab shows which indexers are failing.** It asked Sonarr and Radarr for a status list only Prowlarr has, so every enabled indexer showed as working, even while paused after failures. Failing indexers now come from Sonarr's and Radarr's own health checks, in any interface language, and the rest show as enabled. How long an indexer stays paused isn't shown any more, as neither app reports it.
 
 ## [1.1.3] – 2026-10-15
 
