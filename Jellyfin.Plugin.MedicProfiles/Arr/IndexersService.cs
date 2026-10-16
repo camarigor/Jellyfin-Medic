@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Medic.Shared;
 
 namespace Jellyfin.Plugin.MedicProfiles.Arr;
 
@@ -23,9 +24,9 @@ public sealed class IndexerRow
 }
 
 /// <summary>
-/// Indexer status from Sonarr and Radarr: which indexers are failing (and paused until when), which
-/// are switched off, and the indexer warnings from each app's health check. Indexers added by
-/// Prowlarr show here too, as Prowlarr syncs them into Sonarr and Radarr.
+/// Indexer status from Sonarr and Radarr: which indexers are failing, which are switched off, and the
+/// indexer warnings from each app's health check. Indexers added by Prowlarr show here too, as
+/// Prowlarr syncs them into Sonarr and Radarr.
 /// </summary>
 public class IndexersService
 {
@@ -53,17 +54,39 @@ public class IndexersService
                 continue;
             }
 
-            // Failing indexers: Sonarr and Radarr pause them for longer after each failure.
-            var status = new Dictionary<int, (DateTime? Since, DateTime? Till)>();
-            using (var st = await _arr.GetAsync(app, "indexerstatus", ct).ConfigureAwait(false))
+            // Sonarr and Radarr have no indexer status route (only Prowlarr does), so failing indexers come
+            // from the two health checks that list them. Their messages are translated, so only the names
+            // in them are read; an error names none and means every indexer in use is failing.
+            var names = indexers.Json.RootElement.EnumerateArray().Select(i => Json.Text(i, "name") ?? string.Empty).ToList();
+            var failing = new Dictionary<string, bool>(StringComparer.Ordinal); // name, and whether for more than 6 hours
+            bool? allFailingLongTerm = null;
+            using var health = await _arr.GetAsync(app, "health", ct).ConfigureAwait(false);
+            if (health.Ok && health.Json?.RootElement.ValueKind == JsonValueKind.Array)
             {
-                if (st.Ok && st.Json?.RootElement.ValueKind == JsonValueKind.Array)
+                foreach (var h in health.Json.RootElement.EnumerateArray())
                 {
-                    foreach (var s in st.Json.RootElement.EnumerateArray())
+                    string source = Json.Text(h, "source") ?? string.Empty;
+                    string message = Json.Text(h, "message") ?? string.Empty;
+                    if (source.Contains("Indexer", StringComparison.OrdinalIgnoreCase) && message.Length > 0)
                     {
-                        if (Json.Int(s, "indexerId") is { } id)
+                        warnings.Add(name + ": " + message);
+                    }
+
+                    bool longTerm = source.Equals("IndexerLongTermStatusCheck", StringComparison.OrdinalIgnoreCase);
+                    if (!longTerm && !source.Equals("IndexerStatusCheck", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(Json.Text(h, "type"), "error", StringComparison.OrdinalIgnoreCase))
+                    {
+                        allFailingLongTerm = longTerm || allFailingLongTerm == true;
+                    }
+                    else
+                    {
+                        foreach (string listed in NamesListedIn(message, names))
                         {
-                            status[id] = (Json.Date(s, "initialFailure") ?? Json.Date(s, "mostRecentFailure"), Json.Date(s, "disabledTill"));
+                            failing[listed] = longTerm || failing.GetValueOrDefault(listed);
                         }
                     }
                 }
@@ -79,11 +102,11 @@ public class IndexersService
                 };
 
                 bool used = Json.Bool(i, "enableRss") || Json.Bool(i, "enableAutomaticSearch") || Json.Bool(i, "enableInteractiveSearch");
-                if (Json.Int(i, "id") is { } id && status.TryGetValue(id, out var s) && (s.Till is null || s.Till > DateTime.UtcNow))
+                if (used && (allFailingLongTerm is not null || failing.ContainsKey(row.Name)))
                 {
+                    bool longTerm = allFailingLongTerm == true || failing.GetValueOrDefault(row.Name);
                     row.State = "failing";
-                    row.Detail = "Failing" + (s.Since is { } since ? " since " + since.ToLocalTime().ToString("d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture) : string.Empty)
-                        + (s.Till is { } till ? $". {name} won't use it until " + till.ToLocalTime().ToString("d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture) + "." : ".");
+                    row.Detail = $"{name} has paused it after failures" + (longTerm ? " for more than 6 hours." : ".");
                 }
                 else if (!used)
                 {
@@ -97,20 +120,36 @@ public class IndexersService
 
                 rows.Add(row);
             }
+        }
 
-            using var health = await _arr.GetAsync(app, "health", ct).ConfigureAwait(false);
-            if (health.Ok && health.Json?.RootElement.ValueKind == JsonValueKind.Array)
+        return (rows.OrderBy(r => r.State == "failing" ? 0 : r.State == "off" ? 2 : 1).ThenBy(r => r.App).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList(), warnings, errors);
+    }
+
+    /// <summary>
+    /// The indexer names a health message lists. Sonarr and Radarr put them last, joined by ", ", after a
+    /// sentence in the interface's language (Finnish adds a full stop). A name only counts when ", " or the
+    /// end of the message follows it, and longer names are matched first, so "Geek" isn't found in "NZB Geek".
+    /// </summary>
+    private static List<string> NamesListedIn(string message, IReadOnlyCollection<string> names)
+    {
+        string text = message.TrimEnd();
+        var taken = new bool[text.Length];
+        var listed = new List<string>();
+        foreach (string candidate in names.Where(n => n.Length > 0).Distinct(StringComparer.Ordinal).OrderByDescending(n => n.Length))
+        {
+            for (int at = text.IndexOf(candidate, StringComparison.Ordinal); at >= 0; at = text.IndexOf(candidate, at + 1, StringComparison.Ordinal))
             {
-                foreach (var h in health.Json.RootElement.EnumerateArray())
+                string rest = text[(at + candidate.Length)..];
+                bool endsThere = rest.Length == 0 || rest == "." || rest.StartsWith(", ", StringComparison.Ordinal);
+                if (endsThere && !taken.AsSpan(at, candidate.Length).Contains(true))
                 {
-                    if ((Json.Text(h, "source") ?? string.Empty).Contains("Indexer", StringComparison.OrdinalIgnoreCase) && Json.Text(h, "message") is { Length: > 0 } message)
-                    {
-                        warnings.Add(name + ": " + message);
-                    }
+                    Array.Fill(taken, true, at, candidate.Length);
+                    listed.Add(candidate);
+                    break;
                 }
             }
         }
 
-        return (rows.OrderBy(r => r.State == "failing" ? 0 : r.State == "off" ? 2 : 1).ThenBy(r => r.App).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList(), warnings, errors);
+        return listed;
     }
 }
