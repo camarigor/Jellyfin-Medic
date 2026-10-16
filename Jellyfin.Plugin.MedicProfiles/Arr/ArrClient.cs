@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Net;
+using Medic.Shared;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicProfiles.Arr;
@@ -34,6 +35,9 @@ public sealed class ArrResult : IDisposable
 /// </summary>
 public class ArrClient
 {
+    // A long queue page can take Sonarr or Radarr a while; past this, they count as out of reach.
+    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(30);
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ArrStore _store;
     private readonly ILogger<ArrClient> _logger;
@@ -85,8 +89,7 @@ public class ArrClient
             }
 
             using var client = _httpClientFactory.CreateClient(NamedClient.Default);
-            client.Timeout = TimeSpan.FromSeconds(30);
-            using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await ServiceHttp.SendAsync(client, request, CallTimeout, Name(app), ct).ConfigureAwait(false);
             string text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             int status = (int)response.StatusCode;
             if (response.IsSuccessStatusCode)
@@ -98,7 +101,7 @@ public class ArrClient
             {
                 401 => $"{Name(app)} didn't accept the API key. Copy it again from {Name(app)} → Settings → General.",
                 404 => $"{Name(app)} says that wasn't found. It may have been removed already.",
-                _ => ErrorFrom(text) is { } err ? $"{Name(app)} says: {err}" : $"{Name(app)} answered with {status}."
+                _ => ServiceHttp.ErrorMessage(text) is { } err ? $"{Name(app)} says: {err}" : $"{Name(app)} answered with {status}."
             };
             return new ArrResult { Status = status, Message = message };
         }
@@ -119,30 +122,5 @@ public class ArrClient
         {
             return null;
         }
-    }
-
-    // Sonarr and Radarr send either {"message": "..."} or a list of validation errors.
-    private static string? ErrorFrom(string text)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(text);
-            var root = doc.RootElement;
-            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String)
-            {
-                return m.GetString();
-            }
-
-            if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0
-                && root[0].TryGetProperty("errorMessage", out var e) && e.ValueKind == JsonValueKind.String)
-            {
-                return e.GetString();
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        return null;
     }
 }

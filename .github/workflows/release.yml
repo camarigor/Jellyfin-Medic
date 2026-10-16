@@ -10,10 +10,12 @@ on:
 permissions:
   contents: write
 
-# Shared with the Picks and Profiles releases, so their manifest.json pushes take turns.
+# Shared with the Picks and Profiles releases, so their manifest.json pushes take turns. "queue: max"
+# lets every run wait for its turn: with the default queue, a newer run cancels the one already waiting.
 concurrency:
   group: manifest-update
   cancel-in-progress: false
+  queue: max
 
 # What the plugin catalogue shows, written to manifest.json by scripts/update_manifest.py (the same
 # script the Picks and Profiles releases use).

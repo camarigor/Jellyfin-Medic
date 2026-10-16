@@ -81,7 +81,8 @@
                 <div class="inputContainer">
                     <input is="emby-input" type="url" id="JellyseerrUrl" label="Seerr address" />
                     <div class="fieldDescription">Seerr is the merged Overseerr and Jellyseerr. The address this server reaches it
-                        at. Save key and Test Seerr save it too.</div>
+                        at. Save key and Test Seerr save it too. Moving it to another server removes the saved key, so paste
+                        the key again with the new address.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="url" id="SeerrLinkUrl" label="Seerr address for viewers (optional)" />
@@ -165,7 +166,7 @@
 
             <h3>Contact</h3>
             <p class="fieldDescription">
-                Found a bug or have an idea? <a href="https://github.com/P1zzm1ssile/Jellyfin-Medic/issues/new?title=%5BMedic%20Picks%5D%20" target="_blank" rel="noopener">Report it on GitHub</a>,
+                Found a bug or have an idea? <a href="https://github.com/P1zzm1ssile/Jellyfin-Medic/issues/new/choose" target="_blank" rel="noopener">Report it on GitHub</a>,
                 where you can follow the fix, or <a href="https://github.com/P1zzm1ssile/Jellyfin-Medic/issues" target="_blank" rel="noopener">see the open issues</a>.
                 For anything that doesn't belong on a public page, email <a href="mailto:p1zzm1ssilerepo@gmail.com?subject=Medic%20Picks">p1zzm1ssilerepo@gmail.com</a>.
             </p>
@@ -291,18 +292,23 @@
                 });
             }
 
-            // Keys typed but not yet saved with their own button are saved too.
-            function saveTypedKeys() {
-                var jobs = [];
+            // Saves the settings and any key typed but not yet saved with its own button: the TMDb key first,
+            // so a build started by switching Discover on can use it, and the Seerr key last, because saving
+            // a Seerr address on another server removes the key saved for the old one.
+            function saveAll() {
                 var tmdb = $('TmdbKey').value.trim();
                 var seerr = $('SeerrKey').value.trim();
-                if (tmdb) {
-                    jobs.push(postKey(tmdb).then(function () { $('TmdbKey').value = ''; }));
-                }
-                if (seerr) {
-                    jobs.push(postSeerrKey(seerr).then(function () { $('SeerrKey').value = ''; }));
-                }
-                return Promise.all(jobs);
+                return (tmdb ? postKey(tmdb).then(function () { $('TmdbKey').value = ''; }) : Promise.resolve())
+                    .then(saveSettings)
+                    .then(function (result) {
+                        if (!seerr) {
+                            return result;
+                        }
+                        return postSeerrKey(seerr).then(function () {
+                            $('SeerrKey').value = '';
+                            return result;
+                        });
+                    });
             }
 
             $('MedicPicksConfigForm').addEventListener('submit', function (e) {
@@ -311,8 +317,7 @@
                 if ($('TmdbKey').value.trim()) {
                     $('EnableDiscover').checked = true;
                 }
-                saveTypedKeys()
-                    .then(saveSettings)
+                saveAll()
                     .then(function (result) {
                         refreshStatus();
                         Dashboard.processPluginConfigurationUpdateResult(result);
@@ -339,7 +344,8 @@
                     Dashboard.alert('Paste your Seerr API key first.');
                     return;
                 }
-                postSeerrKey(key).then(saveSettings).then(function () {
+                // The address first: saving one on another server removes the old server's key.
+                saveSettings().then(function () { return postSeerrKey(key); }).then(function () {
                     $('SeerrKey').value = '';
                     refreshStatus();
                     Dashboard.alert($('JellyseerrUrl').value.trim()
@@ -357,8 +363,7 @@
 
             $('TestSeerr').addEventListener('click', function () {
                 // Save first, so the test uses the address and key as they are on screen now.
-                saveTypedKeys()
-                    .then(saveSettings)
+                saveAll()
                     .then(function () {
                         refreshStatus();
                         return ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('MedicPicks/Admin/TestSeerr'), dataType: 'json' });

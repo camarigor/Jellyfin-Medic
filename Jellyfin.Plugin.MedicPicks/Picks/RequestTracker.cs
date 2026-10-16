@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Library;
+using static Medic.Shared.Json;
 
 namespace Jellyfin.Plugin.MedicPicks.Picks;
 
@@ -377,21 +378,4 @@ public class RequestTracker
     }
 
     private sealed record Download(string Status, long Size, long SizeLeft, DateTime? Eta, int? Season, int? Episode);
-
-    private static string? Text(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static int? Int(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? (int)d : null;
-
-    private static long Long(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? (long)d : 0;
-
-    private static bool Bool(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
-
-    private static DateTime? Date(JsonElement e, string name) =>
-        Text(e, name) is { } s && DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var d)
-            ? d
-            : null;
 }

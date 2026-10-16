@@ -6,6 +6,8 @@ namespace JellyfinMedic.Tests;
 /// <summary>A scheduled task as the planner sees it: a name, its triggers and how long its last run took.</summary>
 internal sealed class FakeTaskWorker : IScheduledTaskWorker
 {
+    private IReadOnlyList<TaskTriggerInfo> _triggers = Array.Empty<TaskTriggerInfo>();
+
     public FakeTaskWorker(string name, string key, double lastRunMinutes, params TaskTriggerInfo[] triggers)
     {
         Name = name;
@@ -42,7 +44,14 @@ internal sealed class FakeTaskWorker : IScheduledTaskWorker
 
     public double? CurrentProgress => null;
 
-    public IReadOnlyList<TaskTriggerInfo> Triggers { get; set; }
+    public IReadOnlyList<TaskTriggerInfo> Triggers
+    {
+        get => _triggers;
+        set => _triggers = FailTriggerSaves ? throw new IOException("The task's triggers couldn't be saved.") : value;
+    }
+
+    /// <summary>Makes setting the triggers throw, as Jellyfin does when it can't write them to disk.</summary>
+    public bool FailTriggerSaves { get; set; }
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
 
