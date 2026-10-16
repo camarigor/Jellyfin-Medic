@@ -841,6 +841,40 @@ await check('Medic Picks approves and declines requests as the admin\'s own Seer
     }
 });
 
+await check('Medic Picks "My requests" skips a season entry it can\'t read instead of failing', async () => {
+    // A season list holding something other than season entries; only season 2 is one, so only its download counts.
+    const seerrServer = await fakeArr.startSeerr(18995);
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18995', ShowRequests: true });
+    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+    fakeArr.seerr.extraRequests.push({
+        id: 13, status: 2, type: 'tv', createdAt: '2026-10-03T10:00:00.000Z', requestedBy: { id: 42 },
+        seasons: [1, null, { seasonNumber: 2 }],
+        media: {
+            tmdbId: 1399, mediaType: 'tv', status: 3,
+            downloadStatus: [
+                { status: 'downloading', size: 100, sizeLeft: 50, episode: { seasonNumber: 2, episodeNumber: 1 } },
+                { status: 'downloading', size: 100, sizeLeft: 0, episode: { seasonNumber: 3, episodeNumber: 1 } }
+            ]
+        }
+    });
+    try {
+        const mine = await api('GET', '/MedicPicks/Me/Requests');
+        expect(mine.status === 200, `My requests: ${mine.status} ${mine.text.slice(0, 200)}`);
+        const row = (mine.json?.requests || []).find((r) => r.id === 13);
+        expect(row?.progress === 50, 'request 13: ' + JSON.stringify(row));
+        const waiting = await api('GET', '/MedicPicks/Admin/Requests');
+        expect(waiting.status === 200, `requests waiting for approval: ${waiting.status} ${waiting.text.slice(0, 200)}`);
+        return 'season 2 counted, the rest skipped';
+    } finally {
+        fakeArr.seerr.extraRequests.length = 0;
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        seerrServer.close();
+    }
+});
+
 await check('Medic Picks shows only your own requests and keeps Discover-off accounts from requesting', async () => {
     // This Seerr ignores ?requestedBy= and lists someone else's request too; Medic Picks must drop it.
     const seerrServer = await fakeArr.startSeerr(18993);
