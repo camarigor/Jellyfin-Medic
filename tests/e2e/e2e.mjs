@@ -564,11 +564,14 @@ await check('track cleanup leaves excluded films alone', async () => {
 const fs = await import('node:fs');
 const movies = `${process.env.WORK}/media/movies`;
 
-// A short film with an audio track per language, in that order.
+// A short film with an audio track per language, in that order. "eng:Commentary" also gives the track a title.
 function makeFilm(file, languages, seconds) {
     const inputs = languages.flatMap((_, i) => ['-f', 'lavfi', '-i', `sine=frequency=${300 + i * 200}:duration=${seconds}`]);
     const maps = languages.flatMap((_, i) => ['-map', String(i + 1)]);
-    const tags = languages.flatMap((l, i) => [`-metadata:s:a:${i}`, `language=${l}`]);
+    const tags = languages.flatMap((entry, i) => {
+        const [language, title] = entry.split(/:(.*)/s);
+        return [`-metadata:s:a:${i}`, `language=${language}`, ...(title ? [`-metadata:s:a:${i}`, `title=${title}`] : [])];
+    });
     execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `testsrc=size=320x180:rate=10:duration=${seconds}`,
         ...inputs, '-map', '0', ...maps, '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', ...tags, file]);
 }
@@ -718,6 +721,16 @@ await check('track cleanup keeps the file\'s owner and permissions', async () =>
             `now ${(after.mode & 0o777).toString(8)} ${after.uid}:${after.gid}, was 660 ${before.uid}:${before.gid}`);
         return 'mode 660 and owner kept';
     });
+});
+
+await check('track cleanup keeps the film\'s own audio when only a commentary is in your language', async () => {
+    // Scan only: the runs above are done, so nothing changes this file.
+    await addFilm('Track Extras (2021)', ['jpn', 'eng:Commentary', 'fre:Commentary'], 4);
+    const plan = ((await ok('/JellyfinMedic/Tracks/Scan')).Sample || []).find((p) => /Track Extras/.test(p.Path || ''));
+    expect(plan, 'the French commentary should be planned to go');
+    const kept = plan.Tracks.filter((t) => t.Kind === 'audio' && t.Keep).map((t) => `${t.Language}:${t.Title}`).join(',');
+    expect(kept === 'jpn:,eng:Commentary', 'kept audio: ' + kept);
+    return 'kept ' + kept;
 });
 
 await check('Medic Picks builds picks from watch history', async () => {
