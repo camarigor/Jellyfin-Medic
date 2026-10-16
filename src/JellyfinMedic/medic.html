@@ -84,16 +84,21 @@
                                 <button type="button" class="so-btn so-btn-plain md-goto" data-goto="schedule">Open the schedule</button>
                             </div>
                             <p id="md-today-summary" class="md-today-summary">Loading…</p>
-                            <div id="md-day" class="md-day" role="group" aria-label="Today's planned and actual runs"></div>
-                            <div id="md-day-axis" class="md-axis"></div>
+                            <div class="md-day-wrap">
+                                <div class="md-day-lanes" aria-hidden="true"><span>Planned</span><span>Ran</span></div>
+                                <div id="md-day" class="md-day" role="group" aria-label="Today's planned and actual runs"></div>
+                            </div>
+                            <div id="md-day-axis" class="md-axis md-day-axis"></div>
                             <p id="md-day-repeats" class="so-small so-muted"></p>
                             <div class="md-legend">
                                 <span><i class="md-sw md-sw-planned"></i>Planned</span>
                                 <span><i class="md-sw md-sw-ran"></i>Ran</span>
                                 <span><i class="md-sw md-sw-failed"></i>Failed</span>
+                                <span><i class="md-sw md-sw-stopped"></i>Stopped</span>
                                 <span><i class="md-sw md-hatch"></i>Moved after a failure</span>
                                 <span><i class="md-sw md-sw-spike"></i>Heavy use</span>
                                 <span><i class="md-sw md-sw-guard"></i>LoadGuard</span>
+                                <span class="so-muted">Runs take their task's colour, as on the Schedule tab</span>
                             </div>
                             <p id="md-day-detail" class="so-small">Choose a run or a mark to see its details.</p>
                             <p id="md-day-zone" class="so-small so-muted"></p>
@@ -1766,12 +1771,6 @@
                     summary.textContent = todaySummary(pick(day, 'Summary') || {});
                     if (!$('md-day-detail').textContent) $('md-day-detail').textContent = DAY_HINT;
                     $('md-day-zone').textContent = zoneNote();
-                    const planned = el('span', 'md-day-lane', 'Planned');
-                    planned.style.top = '6px';
-                    box.appendChild(planned);
-                    const ran = el('span', 'md-day-lane', 'Ran');
-                    ran.style.top = '38px';
-                    box.appendChild(ran);
                     const category = {};
                     const backedOff = {};
                     (pick(day, 'Planned') || []).forEach(function (p) {
@@ -1815,6 +1814,11 @@
                             if (status === 'Running') b.classList.add('md-run-running');
                         }
                         box.appendChild(b);
+                        if (b.offsetLeft + b.offsetWidth > box.clientWidth) {
+                            // Wider than its run so its word fits: late in the day it would run off the right edge.
+                            b.style.left = 'auto';
+                            b.style.right = '0';
+                        }
                     });
                     $('md-day-repeats').textContent = Object.keys(repeats).length === 0 ? ''
                         : 'Repeats through the day: ' + Object.keys(repeats).map(function (id) {
