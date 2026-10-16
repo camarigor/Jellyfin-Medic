@@ -13,6 +13,8 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 - **Choices on the My picks page survive a damaged file.** A person's choices file that couldn't be read was written over by their next change (a Hide, say) or the nightly rebuild, so the titles they had hidden came back. It's now kept beside it, as the keys file already was, and new choices start.
 - **Each damaged file is kept.** A file set aside is now named with the time (`secrets.json.20261016-153000.bad`, say), so a second damaged keys file no longer replaces the first `secrets.json.bad`.
 - **Saved files reach the disk before they replace the old ones.** Picks, choices and the keys file are written to a temporary file and then swapped in; that file is now flushed to disk first, as Jellyfin Medic's own files are, so a power cut at the wrong moment can't leave an empty file in its place on file systems that would otherwise allow it.
+- **Seerr accounts are looked up again on a new Seerr.** Medic Picks remembers each person's Seerr account for 10 minutes, but not which Seerr it came from, so after the address moved to another Seerr (and its key was saved) requests and approvals could be made as whoever had that account number there, and My requests could show their requests. Remembered accounts now belong to the address they were found at.
+- **A Seerr address saved without http:// works.** An address such as `seerr:5055` was saved as typed, and My requests then failed with a server error. Both Seerr addresses now get `http://` added when the settings are saved. An address saved earlier without it makes My requests say Seerr can't be reached until the settings are saved again.
 
 ## [1.2.4] – 2026-10-14
 
