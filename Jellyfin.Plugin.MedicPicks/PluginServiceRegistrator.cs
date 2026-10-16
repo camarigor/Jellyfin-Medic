@@ -21,6 +21,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<RequestTracker>();
         serviceCollection.AddSingleton<PicksEngine>();
 
+        // Removes the saved Seerr key when the Seerr address moves to another server (see Picks/SeerrKeyGuard.cs).
+        serviceCollection.AddHostedService<SeerrKeyGuard>();
+
         // Adds the "My picks" link to everyone's web menu (see Web/MenuLink.cs).
         serviceCollection.AddTransient<IStartupFilter, MenuLinkStartupFilter>();
     }

@@ -1,5 +1,4 @@
 using Jellyfin.Plugin.MedicPicks.Picks;
-using MediaBrowser.Common.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MedicPicks.Tests;
@@ -11,7 +10,7 @@ public sealed class PicksStoreTests : IDisposable
 
     public PicksStoreTests()
     {
-        _store = new PicksStore(new Paths(_root), NullLogger<PicksStore>.Instance);
+        _store = new PicksStore(new TestPaths(_root), NullLogger<PicksStore>.Instance);
     }
 
     [Fact]
@@ -56,45 +55,4 @@ public sealed class PicksStoreTests : IDisposable
     }
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
-
-    private sealed class Paths(string root) : IApplicationPaths
-    {
-        public string ProgramDataPath => root;
-
-        public string WebPath => Path.Combine(root, "web");
-
-        public string ProgramSystemPath => Path.Combine(root, "system");
-
-        public string DataPath => Path.Combine(root, "data");
-
-        public string ImageCachePath => Path.Combine(root, "cache", "images");
-
-        public string PluginsPath => Path.Combine(root, "plugins");
-
-        public string PluginConfigurationsPath => Path.Combine(root, "plugins", "configurations");
-
-        public string LogDirectoryPath => Path.Combine(root, "log");
-
-        public string ConfigurationDirectoryPath => Path.Combine(root, "config");
-
-        public string SystemConfigurationFilePath => Path.Combine(root, "config", "system.xml");
-
-        public string CachePath => Path.Combine(root, "cache");
-
-        public string TempDirectory => Path.Combine(root, "temp");
-
-        public string VirtualDataPath => Path.Combine(root, "data");
-
-        public string TrickplayPath => Path.Combine(root, "data", "trickplay");
-
-        public string BackupPath => Path.Combine(root, "backups");
-
-        public void MakeSanityCheckOrThrow()
-        {
-        }
-
-        public void CreateAndCheckMarker(string path, string markerName, bool recursive = false)
-        {
-        }
-    }
 }

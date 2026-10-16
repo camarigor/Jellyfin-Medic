@@ -738,9 +738,10 @@ await check('Medic Picks "My requests" says Seerr is out of reach instead of fai
     await new Promise((resolve) => silent.listen(18991, '0.0.0.0', resolve));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     const myRequests = async (url) => {
+        // Each address is another server, which removes the saved key, so the key is saved after it.
         await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: url, ShowRequests: true });
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
         const started = Date.now();
         const r = await api('GET', '/MedicPicks/Me/Requests');
         return { ...r, seconds: (Date.now() - started) / 1000 };
@@ -790,6 +791,26 @@ await check('Medic Picks gives people only a Seerr address they can open', async
         return 'public address in links; javascript: never';
     } finally {
         await api('POST', `/Plugins/${id}/Configuration`, cfg);
+    }
+});
+
+await check('Medic Picks removes the saved Seerr key when the Seerr address moves to another server', async () => {
+    // A saved key is only ever sent to the server it was entered for, as Medic Profiles does with its keys.
+    const id = 'b34ec5d1-b70f-435f-b77d-9b76979b03c7';
+    const cfg = await ok(`/Plugins/${id}/Configuration`);
+    const saveAddress = (url) => api('POST', `/Plugins/${id}/Configuration`, { ...cfg, JellyseerrUrl: url });
+    const keySaved = async () => (await ok('/MedicPicks/Admin/Status')).seerrKeySet;
+    try {
+        await saveAddress('http://seerr.example:5055');
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+        await saveAddress('http://SEERR.example:5055/seerr/');
+        expect(await keySaved(), 'the key was removed when only the path changed');
+        await saveAddress('http://elsewhere.example:5055');
+        expect(!(await keySaved()), 'the key was kept for another server');
+        return 'kept for a new path, removed for another server';
+    } finally {
+        await api('POST', `/Plugins/${id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
     }
 });
 
@@ -1050,6 +1071,39 @@ await check('Medic Picks settings: the user boxes show, and a key that isn\'t sa
     } finally {
         await page.unroute(tmdbKey);
         await page.keyboard.press('Escape');
+    }
+});
+
+await check('Medic Picks settings: a Seerr key typed with another server\'s address is the one kept', async () => {
+    // Saving the new address removes the old server's key, so the page must save the typed key after it.
+    const id = 'b34ec5d1-b70f-435f-b77d-9b76979b03c7';
+    const cfg = await ok(`/Plugins/${id}/Configuration`);
+    const typeNewServer = async (url) => {
+        await api('POST', `/Plugins/${id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://seerr.example:5055' });
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-old-seerr-key' });
+        await page.goto(JF + '/web/index.html#/configurationpage?name=Medic%20Picks');
+        await page.reload();
+        await page.waitForFunction(() => (document.querySelector('#SeerrKeyStatus')?.textContent || '').startsWith('A Seerr key is saved'), null, { timeout: 30000 });
+        await page.fill('#JellyseerrUrl', url);
+        await page.fill('#SeerrKey', 'e2e-new-seerr-key');
+    };
+    const keySaved = async () => (await ok('/MedicPicks/Admin/Status')).seerrKeySet;
+    try {
+        await typeNewServer('http://elsewhere.example:5055');
+        await page.click('#SaveSeerrKey');
+        await page.getByText('Seerr key and address saved.').waitFor({ timeout: 10000 });
+        await page.keyboard.press('Escape');
+        expect(await keySaved(), 'Save key: no key left after saving it with the new address');
+
+        await typeNewServer('http://elsewhere.example:5056');
+        const saved = page.waitForResponse((r) => r.url().includes('/MedicPicks/Admin/Status'));
+        await page.click('#MedicPicksConfigPage button[type="submit"]');
+        await saved;
+        expect(await keySaved(), 'Save: no key left after saving it with the new address');
+        return 'kept by Save key and by Save';
+    } finally {
+        await api('POST', `/Plugins/${id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
     }
 });
 
