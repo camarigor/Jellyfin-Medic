@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Track cleanup and "Free up disk space" leave links alone.** Track cleanup counted a file's hard links with a `stat` option that macOS and BSD don't have, and cleaned the file whenever the count couldn't be read, so on those systems a file a torrent client seeds took more space after cleaning, not less. It now asks the way macOS and BSD expect when the first way fails, and leaves the file alone, with a note in the run's results, when the count still can't be read. Symlinked files are left alone too, Windows included: cleaning one replaced the link with a full copy (moving the link into .medic-originals when originals are kept) and never changed the file it points to. On Windows the link count still isn't checked. "Free up disk space" no longer follows links inside the folders it cleans, so it can't list or delete files, or remove empty folders, outside them; a transcode folder that is itself a link is still cleaned.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added

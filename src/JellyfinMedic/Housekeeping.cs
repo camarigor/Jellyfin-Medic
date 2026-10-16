@@ -290,7 +290,7 @@ public static class Housekeeping
     {
         try
         {
-            foreach (var dir in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories).OrderByDescending(d => d.Length))
+            foreach (var dir in Directory.EnumerateDirectories(root, "*", AllReadable).OrderByDescending(d => d.Length))
             {
                 try
                 {
@@ -311,8 +311,15 @@ public static class Housekeeping
         }
     }
 
-    // Folders that can't be read are skipped rather than stopping the whole walk.
-    private static readonly EnumerationOptions AllReadable = new() { RecurseSubdirectories = true, IgnoreInaccessible = true };
+    // Folders that can't be read are skipped rather than stopping the whole walk. Hidden and system entries stay
+    // skipped, as by default, and links are skipped too, so a walk never lists or deletes anything outside the
+    // folder it cleans. The folder a walk starts from is always read, even when it's a link.
+    private static readonly EnumerationOptions AllReadable = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+        AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint
+    };
 
     /// <summary>
     /// Every file under the folder, read in full here: walking lazily would let a folder that can't be
