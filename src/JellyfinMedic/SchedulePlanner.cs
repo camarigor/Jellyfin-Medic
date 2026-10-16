@@ -40,7 +40,8 @@ public sealed class PlannedTask
     // Set when Medic will run the task itself (monthly).
     public ManagedRun? Managed { get; set; }
 
-    public int StartMinutes { get; set; } = int.MaxValue;
+    // Minutes after midnight, or -1 when the task isn't given a time (left alone, turned off, or no free slot).
+    public int StartMinutes { get; set; } = -1;
 
     /// <summary>The owner's choice for this task: medic, keep or off.</summary>
     public string Choice { get; set; } = ScheduleStorage.ChoiceMedic;
@@ -261,9 +262,11 @@ public static class SchedulePlanner
             planned.Add(Place(grid, busy, night, candidate, cadence));
         }
 
-        // In the order the night runs (noon to noon), so 23:00 comes before 01:00.
+        // In the order the night runs (noon to noon), so 23:00 comes before 01:00. Tasks that found no free
+        // slot have no time, so they go after the rest.
         return planned
-            .OrderBy(p => (p.StartMinutes - (NoonCell * CellMinutes) + (24 * 60)) % (24 * 60))
+            .OrderBy(p => p.StartMinutes < 0)
+            .ThenBy(p => (p.StartMinutes - (NoonCell * CellMinutes) + (24 * 60)) % (24 * 60))
             .ThenBy(p => p.Worker.Name, StringComparer.OrdinalIgnoreCase)
             .Concat(leftAlone.OrderBy(p => p.Worker.Name, StringComparer.OrdinalIgnoreCase))
             .ToList();

@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **A monthly task moved to a later day doesn't run twice that month, and Preview lists tasks with no free slot last.** Medic only counted a monthly run on or after the task's current day and time, so a task that had already run that month on its old day ran again on its new, later one, and the calendar on the Schedule tab showed it there. Any run that month now counts, so the task waits for the next month. The same goes for a task made monthly during a month, even when its day that month is still ahead. A monthly task restored from a backup keeps this month's run when its day is still ahead, unless it already ran that month. In Preview changes, a task with no free slot was listed first; it now comes after the tasks Medic planned.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added

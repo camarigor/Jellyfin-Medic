@@ -115,17 +115,19 @@ public sealed class ManagedScheduleRunner : IHostedService, IDisposable
         }
     }
 
-    private static bool IsDue(ManagedRun run, DateTime now)
+    internal static bool IsDue(ManagedRun run, DateTime now)
     {
         var slot = TimeSpan.FromTicks(run.TimeOfDayTicks);
-        var dueThisMonth = ScheduleStorage.FirstWeekdayOfMonth(now.Year, now.Month, run.Weekday).Add(slot);
+        var dueThisMonth = DueThisMonth(run, now);
 
         if (now < dueThisMonth)
         {
             return false;
         }
 
-        if (run.LastStartedLocal.HasValue && run.LastStartedLocal.Value >= dueThisMonth)
+        // Any start this month counts, even one before this slot: a run on the day the task had before it
+        // was moved to a later one, or the time it was handed to Medic (its first run is next month).
+        if (run.LastStartedLocal.HasValue && run.LastStartedLocal.Value >= new DateTime(now.Year, now.Month, 1))
         {
             return false; // Already done this month.
         }
@@ -134,4 +136,7 @@ public sealed class ManagedScheduleRunner : IHostedService, IDisposable
         var timeOfDay = now.TimeOfDay;
         return timeOfDay >= slot && timeOfDay < slot + CatchUpWindow;
     }
+
+    internal static DateTime DueThisMonth(ManagedRun run, DateTime now) =>
+        ScheduleStorage.FirstWeekdayOfMonth(now.Year, now.Month, run.Weekday).AddTicks(run.TimeOfDayTicks);
 }
