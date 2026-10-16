@@ -1,10 +1,10 @@
 using System;
 using System.Globalization;
 using System.IO;
-using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MediaBrowser.Common.Configuration;
+using Medic.Shared;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicPicks.Picks;
@@ -26,17 +26,16 @@ public class PicksStore
     private readonly string _root;
     private readonly ILogger<PicksStore> _logger;
     private readonly object _lock = new();
-    private volatile bool _checkedPrivate;
+    private readonly PrivateJsonFile<Secrets> _secrets;
 
     public PicksStore(IApplicationPaths applicationPaths, ILogger<PicksStore> logger)
     {
         _root = Path.Combine(applicationPaths.DataPath, "medic-picks");
         _logger = logger;
+        _secrets = new PrivateJsonFile<Secrets>(Path.Combine(_root, "secrets.json"), JsonOptions, logger, "Medic Picks");
     }
 
     private string UsersDir => Path.Combine(_root, "users");
-
-    private string SecretsPath => Path.Combine(_root, "secrets.json");
 
     public UserPicks? Load(Guid userId)
     {
@@ -64,58 +63,15 @@ public class PicksStore
     {
         Directory.CreateDirectory(UsersDir);
         var path = Path.Combine(UsersDir, userId.ToString("N") + ".json");
-        WriteAtomic(path, JsonSerializer.Serialize(picks, JsonOptions));
+        Write(path, JsonSerializer.Serialize(picks, JsonOptions));
     }
 
-    // Writes to a temporary file first, so a crash mid-write can't leave a half-written file behind.
-    // The keys file holds the TMDb and Seerr keys, so only the account Jellyfin runs as can read it.
-    private void WriteAtomic(string path, string json, bool secret = false)
+    // Under the store's lock, as two writers of one file would share its temporary file.
+    private void Write(string path, string json)
     {
-        var tmp = path + ".tmp";
         lock (_lock)
         {
-            if (secret && !OperatingSystem.IsWindows())
-            {
-                File.Delete(tmp);
-                var options = new FileStreamOptions
-                {
-                    Mode = FileMode.CreateNew,
-                    Access = FileAccess.Write,
-                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
-                };
-                using (var writer = new StreamWriter(tmp, options))
-                {
-                    writer.Write(json);
-                }
-            }
-            else
-            {
-                File.WriteAllText(tmp, json);
-            }
-
-            File.Move(tmp, path, true);
-        }
-    }
-
-    // Keys files saved by earlier versions could be read by any account on the server. Tighten them when read.
-    private void KeepPrivate(string path)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-        try
-        {
-            if (File.GetUnixFileMode(path) != Private)
-            {
-                File.SetUnixFileMode(path, Private);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Medic Picks: could not make the keys file private");
+            AtomicFile.Write(path, json);
         }
     }
 
@@ -124,103 +80,40 @@ public class PicksStore
         return Directory.Exists(UsersDir) ? Directory.GetFiles(UsersDir, "*.json").Length : 0;
     }
 
-    public string? GetTmdbKey() => ReadSecrets().TmdbKey;
+    // The keys file holds the TMDb and Seerr keys: see Medic.Shared.PrivateJsonFile for how it's kept.
+    public string? GetTmdbKey() => Clean(_secrets.Read().TmdbKey);
 
-    public void SetTmdbKey(string? key) => UpdateSecrets(s => s.TmdbKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim());
+    public void SetTmdbKey(string? key) => _secrets.Update(s => s.TmdbKey = Clean(key));
 
-    public string? GetSeerrKey() => ReadSecrets().SeerrKey;
+    public string? GetSeerrKey() => Clean(_secrets.Read().SeerrKey);
 
-    public void SetSeerrKey(string? key) => UpdateSecrets(s => s.SeerrKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim());
+    public void SetSeerrKey(string? key) => _secrets.Update(s => s.SeerrKey = Clean(key));
 
-    // Read, change and write as one step, so saving both keys at once can't lose one of them.
-    private void UpdateSecrets(Action<Secrets> change)
-    {
-        lock (_lock)
-        {
-            Secrets secrets;
-            try
-            {
-                secrets = ParseSecrets() ?? new Secrets();
-            }
-            catch (JsonException ex)
-            {
-                // Don't overwrite a damaged keys file with only the new key: keep it aside for the admin.
-                var damaged = SecretsPath + ".bad";
-                File.Move(SecretsPath, damaged, true);
-                _logger.LogWarning(ex, "Medic Picks: the keys file couldn't be read, so it was kept as {Path} and a new one started", damaged);
-                secrets = new Secrets();
-            }
-
-            change(secrets);
-            WriteSecrets(secrets);
-        }
-    }
-
-    private Secrets ReadSecrets()
-    {
-        try
-        {
-            return ParseSecrets() ?? new Secrets();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Medic Picks: could not read the keys file");
-            return new Secrets();
-        }
-    }
-
-    // The keys file's contents, or null when there isn't one yet. Throws when it can't be read.
-    private Secrets? ParseSecrets()
-    {
-        if (!File.Exists(SecretsPath))
-        {
-            return null;
-        }
-
-        if (!_checkedPrivate)
-        {
-            KeepPrivate(SecretsPath); // once: files written since are created private
-            _checkedPrivate = true;
-        }
-
-        var secrets = JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
-        secrets.TmdbKey = string.IsNullOrWhiteSpace(secrets.TmdbKey) ? null : secrets.TmdbKey.Trim();
-        secrets.SeerrKey = string.IsNullOrWhiteSpace(secrets.SeerrKey) ? null : secrets.SeerrKey.Trim();
-        return secrets;
-    }
-
-    private void WriteSecrets(Secrets secrets)
-    {
-        Directory.CreateDirectory(_root);
-        WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions), secret: true);
-    }
+    private static string? Clean(string? key) => string.IsNullOrWhiteSpace(key) ? null : key.Trim();
 
     // ---------- Each person's own choices on the My picks page ----------
 
     private string PrefsDir => Path.Combine(_root, "preferences");
 
+    private string PrefsPath(Guid userId) => Path.Combine(PrefsDir, userId.ToString("N") + ".json");
+
     public UserPreferences LoadPreferences(Guid userId)
     {
         try
         {
-            var path = Path.Combine(PrefsDir, userId.ToString("N") + ".json");
-            if (File.Exists(path))
-            {
-                return (JsonSerializer.Deserialize<UserPreferences>(File.ReadAllText(path), JsonOptions) ?? new UserPreferences()).Normalise();
-            }
+            return ReadPreferences(PrefsPath(userId));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Medic Picks: could not read preferences for user {UserId}", userId);
+            return new UserPreferences();
         }
-
-        return new UserPreferences();
     }
 
     public void SavePreferences(Guid userId, UserPreferences prefs)
     {
         Directory.CreateDirectory(PrefsDir);
-        WriteAtomic(Path.Combine(PrefsDir, userId.ToString("N") + ".json"), JsonSerializer.Serialize(prefs, JsonOptions));
+        Write(PrefsPath(userId), JsonSerializer.Serialize(prefs, JsonOptions));
     }
 
     /// <summary>
@@ -231,11 +124,31 @@ public class PicksStore
     {
         lock (_lock)
         {
-            var updated = change(LoadPreferences(userId)).Normalise();
+            string path = PrefsPath(userId);
+            UserPreferences current;
+            try
+            {
+                current = ReadPreferences(path);
+            }
+            catch (JsonException ex)
+            {
+                // Saving over it would lose everything in it, the titles hidden among them.
+                string aside = AtomicFile.SetAside(path);
+                _logger.LogWarning(ex, "Medic Picks: the preferences for user {UserId} couldn't be read, so they were kept as {Aside} and new ones started", userId, aside);
+                current = new UserPreferences();
+            }
+
+            var updated = change(current).Normalise();
             SavePreferences(userId, updated);
             return updated;
         }
     }
+
+    // One person's choices, or new ones when they have none yet. Throws when the file can't be read.
+    private static UserPreferences ReadPreferences(string path) =>
+        File.Exists(path)
+            ? (JsonSerializer.Deserialize<UserPreferences>(File.ReadAllText(path), JsonOptions) ?? new UserPreferences()).Normalise()
+            : new UserPreferences();
 
     /// <summary>
     /// Saves picks without anything the person has hidden, as their choices stand at the moment of saving:
