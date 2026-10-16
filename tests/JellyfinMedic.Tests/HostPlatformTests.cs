@@ -99,6 +99,18 @@ public sealed class HostPlatformTests
         Assert.False(HostPlatform.IsContainerKind(HostKind.Linux));
     }
 
+    [Theory]
+    [InlineData(HostKind.Docker, true)]
+    [InlineData(HostKind.Unraid, true)]
+    [InlineData(HostKind.TrueNas, true)]
+    [InlineData(HostKind.Kubernetes, true)]
+    [InlineData(HostKind.ProxmoxLxc, false)] // an LXC keeps the hostname it's given
+    [InlineData(HostKind.Linux, false)]
+    public void Only_hosts_that_name_themselves_at_random_get_the_server_name_tip(HostKind kind, bool random)
+    {
+        Assert.Equal(random, HostPlatform.HostnameIsRandomKind(kind));
+    }
+
     private void File(string path, params string[] lines) => _files[path] = lines;
 
     private HostKind Detect() => HostPlatform.DetectLinux(

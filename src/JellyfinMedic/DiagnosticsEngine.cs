@@ -892,10 +892,10 @@ public sealed class DiagnosticsEngine
 
         CheckBitrateAgainstSpeedTest(bitrate ?? 0);
 
-        if (hw.InDocker && string.IsNullOrWhiteSpace(_config.Configuration.ServerName))
+        if (hw.RandomHostname && string.IsNullOrWhiteSpace(_config.Configuration.ServerName))
         {
             Add(AreaServer, Sev.Tip, "The server has no name", "(not set)", "A name such as \"Tower Jellyfin\"",
-                "In Docker an unnamed server shows the container's random ID in apps, which also changes if the container is recreated.",
+                "In a container an unnamed server shows the container's random ID in apps, which also changes if the container is recreated.",
                 WhereGeneral);
         }
 

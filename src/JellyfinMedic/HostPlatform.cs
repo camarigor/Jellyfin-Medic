@@ -36,6 +36,11 @@ public static class HostPlatform
 
     internal static bool IsDockerLikeKind(HostKind kind) => kind is HostKind.Unraid or HostKind.TrueNas or HostKind.Docker;
 
+    /// <summary>A container whose hostname is its random ID or pod name, so an unnamed server shows that in apps.</summary>
+    public static bool HostnameIsRandom => HostnameIsRandomKind(Kind);
+
+    internal static bool HostnameIsRandomKind(HostKind kind) => IsDockerLikeKind(kind) || kind == HostKind.Kubernetes;
+
     public static string Label => Kind switch
     {
         HostKind.Unraid => "Unraid (Docker)",
