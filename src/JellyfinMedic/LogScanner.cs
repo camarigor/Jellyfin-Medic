@@ -215,12 +215,13 @@ public static class LogScanner
         }
     }
 
-    private static string Normalise(string message)
+    internal static string Normalise(string message)
     {
-        string text = Query.Replace(message, string.Empty);
+        // Secrets go first: with its digits turned into #, a token no longer looks like one and would show.
+        string text = SettingsReader.MaskSecrets(message);
+        text = Query.Replace(text, string.Empty);
         text = Ids.Replace(text, "…");
-        text = Numbers.Replace(text, "#");
-        text = SettingsReader.MaskSecrets(text).Trim();
+        text = Numbers.Replace(text, "#").Trim();
         return text.Length > 600 ? text[..600] + "…" : text;
     }
 }

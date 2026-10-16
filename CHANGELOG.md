@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Secrets stay hidden in repeated log errors, home page banners and scripts in the support export.** Medic turned digits in a repeated log error into # before hiding secrets, and a secret with # in it no longer looked like one, so Telegram bot tokens, web tokens (JWT) and credentials after Bearer, Basic or Digest that held a digit showed on the Dashboard and in Checks. The banner for a serious error, and its entry in Checks, quoted the log line without hiding anything. The support export only hid a secret inside a script, such as JavaScript Injector's, when it was in double quotes, and missed X-Api-Key headers there, so `apiKey: '...'` or a value in backticks showed. All of these are hidden now. In the export a hidden value keeps its own quotes, and a value without quotes, which in a script is code, is left as it is. A repeated error that held such a secret now reads differently, so if you ignored it, it needs ignoring once more.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
