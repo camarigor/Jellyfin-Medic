@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **A Dashboard panel that fails no longer stops the others.** The panels were drawn one after another, so data a panel didn't expect left every panel after it on "Loading" and reported the whole load as failed. Each panel now draws on its own and, if it can't, says so in its place. A section the server couldn't build also hides its hints and the time zone note until its data comes back, and Network shows its message as a proper row.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
