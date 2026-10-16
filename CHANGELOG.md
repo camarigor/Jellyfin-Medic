@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **An admin's home page banners go away when they sign out.** Jellyfin's web app doesn't reload when someone signs out, so the banners stayed on the sign-in screen, and banners still on their way when an admin signed out could show to whoever signed in next, admin or not. Signing out now removes them, and banners that arrive after a sign-out are dropped. Banners each person dismissed stay dismissed.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
