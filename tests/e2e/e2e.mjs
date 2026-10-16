@@ -734,20 +734,39 @@ await check('track cleanup keeps the film\'s own audio when only a commentary is
 });
 
 await check('Medic Picks builds picks from watch history', async () => {
-    const items = (await ok(`/Items?Recursive=true&IncludeItemTypes=Movie&SortBy=SortName&UserId=${ctx.userId}`)).Items;
-    for (const item of items.slice(0, 4)) await api('POST', `/UserPlayedItems/${item.Id}?userId=${ctx.userId}`);
+    // run.sh gives Samples 1, 2 and 11 the director Ada Example. Watching 1, 2, 5 and 6 makes Comedy and
+    // Thriller the strongest genres (Samples 9 and 10 have two of them each) and leaves Samples 3 and 11 with
+    // the same genres (Horror, Romance) and the same default rating, so only the director can put 11 above 3.
+    const items = (await ok(`/Items?Recursive=true&IncludeItemTypes=Movie&UserId=${ctx.userId}`)).Items;
+    const byName = new Map(items.map((item) => [item.Name, item]));
+    for (const n of [1, 2, 5, 6]) {
+        const item = byName.get(`Sample ${n}`);
+        expect(item, `Sample ${n} is not in the library`);
+        await api('POST', `/UserPlayedItems/${item.Id}?userId=${ctx.userId}`);
+    }
+    const before = (await ok('/MedicPicks/Me')).generatedUtc;
     const tasks = await ok('/ScheduledTasks');
     const build = tasks.find((t) => t.Key === 'MedicPicksBuild' || /personal picks/i.test(t.Name));
     expect(build, 'Build personal picks task missing');
     await api('POST', `/ScheduledTasks/Running/${build.Id}`);
     let me = null;
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 60 && !(me?.generatedUtc && me.generatedUtc !== before && me.inLibrary?.length); i++) {
         await sleep(1000);
         me = (await api('GET', '/MedicPicks/Me')).json;
-        const n = me?.inLibrary?.length ?? 0;
-        if (n > 0) return `${n} picks`;
     }
-    throw new Error('no picks after a minute: ' + JSON.stringify(me).slice(0, 300));
+    expect(me?.generatedUtc && me.generatedUtc !== before && me.inLibrary?.length, 'no new picks after a minute: ' + JSON.stringify(me).slice(0, 300));
+    const picks = me.inLibrary;
+    const rank = (n) => picks.findIndex((p) => p.name === `Sample ${n}`);
+    const order = picks.map((p) => p.name).join(', ');
+    expect([1, 2, 5, 6].every((n) => rank(n) === -1), 'a watched film was picked: ' + order);
+    // Genres: the two films in both favourite genres come first.
+    expect(rank(9) >= 0 && rank(10) >= 0 && Math.max(rank(9), rank(10)) <= 1, 'Samples 9 and 10 are not the top two: ' + order);
+    expect(/^You watch a lot of /.test(picks[rank(9)].reason), 'Sample 9 reason: ' + picks[rank(9)].reason);
+    // People: the director lifts Sample 11 above Sample 3, its twin in genres.
+    expect(rank(11) >= 0 && rank(3) >= 0 && rank(11) < rank(3), 'Sample 11 does not rank above Sample 3: ' + order);
+    const reason = picks[rank(11)].reason;
+    expect(reason === 'Directed by Ada Example, whose work you\'ve watched', 'Sample 11 reason: ' + reason);
+    return `${picks.length} picks: ${order.split(', ').slice(0, 4).join(', ')}, ...`;
 });
 
 await check('My picks page is served with no-cache', async () => {
@@ -2083,21 +2102,20 @@ await check('admin banner on the home page for a serious error, and it can be di
     // Written from inside the container: the log belongs to Jellyfin's user, not the one running the tests.
     const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    // A warning that only mentions the words must not count (Jellyfin logs these routinely).
-    const warning = `[${now}.000 +00:00] [WRN] [28] Jellyfin.Server.Implementations.Item.BaseItemRepository: Skipping item with unknown type. This may indicate a removed plugin or database corruption.`;
-    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo "$1" >> "$2"`, 'sh', warning, newest]);
-    await sleep(1000);
-    expect(!((await api('GET', '/JellyfinMedic/Alerts')).json || []).some((a) => a.Kind === 'critical'), 'a warning raised a banner');
     // "What's new" was seen on Medic's page above, so its home banner is gone too.
     expect(!((await api('GET', '/JellyfinMedic/Alerts')).json || []).some((a) => a.Kind === 'whatsnew'), '"What\'s new" banner still showing after seeing it in Medic');
+    // A warning with words that would raise the full-disk banner must not count: only errors do. Both lines
+    // go in at once, so the result that shows the database error was read after the warning too.
+    const warning = `[${now}.000 +00:00] [WRN] [28] MediaBrowser.Providers.Manager.ProviderManager: Could not cache an image, it will be fetched again later: No space left on device`;
     const line = `[${now}.000 +00:00] [ERR] [42] Microsoft.EntityFrameworkCore: SQLite Error 11: 'database disk image is malformed'.`;
-    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo "$1" >> "$2"`, 'sh', line, newest]);
+    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `printf '%s\\n%s\\n' "$1" "$2" >> "$3"`, 'sh', warning, line, newest]);
     let alerts = [];
     for (let i = 0; i < 70 && !alerts.some((a) => a.Kind === 'critical'); i++) {
         alerts = (await api('GET', '/JellyfinMedic/Alerts')).json || [];
         if (!alerts.some((a) => a.Kind === 'critical')) await sleep(2000); // cached for 2 minutes
     }
     expect(alerts.some((a) => a.Id.startsWith('critical:database')), 'no database alert: ' + JSON.stringify(alerts));
+    expect(!alerts.some((a) => a.Id.startsWith('critical:disk')), 'a warning raised a banner: ' + JSON.stringify(alerts));
     const inChecks = ((await ok('/JellyfinMedic/Report')).Findings || []).some((f) => f.Area === 'Logs' && /database looks damaged/.test(f.Title));
     expect(inChecks, 'the banner\'s problem is missing from Checks');
 
