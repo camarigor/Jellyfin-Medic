@@ -123,6 +123,9 @@ public class MedicSettingsDto
 
     public string TracksKeepLanguages { get; set; } = "eng";
 
+    // Keep languages that aren't ISO 639 codes, for a warning on the page. A save ignores it.
+    public IReadOnlyList<string> TracksUnknownLanguages { get; init; } = Array.Empty<string>();
+
     public bool TracksRemoveUndetermined { get; set; }
 
     public bool TracksRemoveUntaggedSubtitles { get; set; }
