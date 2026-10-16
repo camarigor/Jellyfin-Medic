@@ -837,9 +837,15 @@ await check('Medic Picks gives people only a Seerr address they can open', async
         me = await ok('/MedicPicks/Me');
         // No address at all: the field is left out of the answer.
         expect(me.seerrUrl == null && me.requestMode === 'none', `javascript: address: ${me.seerrUrl} (${me.requestMode})`);
-        return 'public address in links; javascript: never';
+        // Requests made from the page itself: nobody opens Seerr, so its address stays on the server.
+        await save({ JellyseerrUrl: 'http://seerr:5055', SeerrLinkUrl: '', SeerrDirectRequests: true });
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+        me = await ok('/MedicPicks/Me');
+        expect(me.seerrUrl == null && me.requestMode === 'direct', `direct requests: ${me.seerrUrl} (${me.requestMode})`);
+        return 'public address in links; javascript: never; none with direct requests';
     } finally {
         await api('POST', `/Plugins/${id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
     }
 });
 
@@ -937,10 +943,13 @@ await check('Medic Picks shows only your own requests and keeps Discover-off acc
         const ids = (mine.requests || []).map((r) => r.id).join(',');
         expect(ids === '11', 'requests shown: ' + ids);
 
-        await setCfg({ DiscoverDisabledUserIds: [ctx.userId] });
+        await setCfg({ EnableDiscover: true, DiscoverDisabledUserIds: [ctx.userId] });
         const refused = await api('POST', '/MedicPicks/Request', { TmdbId: 552, MediaType: 'movie' });
         expect(refused.status === 403, `a Discover-off account could request: ${refused.status} ${refused.text.slice(0, 200)}`);
-        return 'only request 11 shown; request refused with 403';
+        await setCfg({ EnableDiscover: false });
+        const serverOff = await api('POST', '/MedicPicks/Request', { TmdbId: 552, MediaType: 'movie' });
+        expect(serverOff.status === 403, `a request went through with Discover off on the server: ${serverOff.status} ${serverOff.text.slice(0, 200)}`);
+        return 'only request 11 shown; requests refused with 403';
     } finally {
         await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
         await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
@@ -1250,6 +1259,46 @@ await check('Medic Picks settings: a Seerr key typed with another server\'s addr
     } finally {
         await api('POST', `/Plugins/${id}/Configuration`, cfg);
         await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+    }
+});
+
+await check('Medic Picks settings: changing who gets Discover picks rebuilds their picks, and My picks follows at once', async () => {
+    // Stored Discover picks stay until the next build, so My picks must not show them to someone unticked.
+    const id = 'b34ec5d1-b70f-435f-b77d-9b76979b03c7';
+    const cfg = await ok(`/Plugins/${id}/Configuration`);
+    const rebuilds = /MedicPicks\/Admin\/(Refresh|Rebuild)$/;
+    // Answered here, so no build runs while the later checks do.
+    await page.route(rebuilds, (route) => route.fulfill({ status: 204, body: '' }));
+    const saveAndCatch = async () => {
+        const rebuild = page.waitForRequest(rebuilds, { timeout: 10000 });
+        await page.click('#MedicPicksConfigPage button[type="submit"]');
+        const req = await rebuild.catch(() => null);
+        await page.keyboard.press('Escape');
+        return req;
+    };
+    try {
+        await api('POST', `/Plugins/${id}/Configuration`, { ...cfg, EnableDiscover: true, DiscoverDisabledUserIds: [] });
+        await page.goto(JF + '/web/index.html#/configurationpage?name=Medic%20Picks');
+        await page.reload();
+        const box = page.locator(`#DiscoverUsers .discoverUser[data-userid="${ctx.userId}"]`);
+        await box.waitFor({ state: 'attached', timeout: 30000 });
+        await box.setChecked(false, { force: true });
+        const unticked = await saveAndCatch();
+        expect(unticked && unticked.url().endsWith('/Admin/Rebuild') && unticked.postData().includes(ctx.userId),
+            'unticking a person rebuilt: ' + (unticked ? unticked.url() + ' ' + unticked.postData() : 'nothing'));
+        const me = await ok('/MedicPicks/Me');
+        expect(Array.isArray(me.discover) && me.discover.length === 0, 'an unticked person still gets Discover picks: ' + JSON.stringify(me.discover).slice(0, 200));
+
+        await page.locator('#EnableDiscover').setChecked(false, { force: true });
+        const switchedOff = await saveAndCatch();
+        expect(switchedOff && switchedOff.url().endsWith('/Admin/Refresh'), 'switching Discover off rebuilt: ' + (switchedOff ? switchedOff.url() : 'nothing'));
+
+        const direct = await api('POST', '/MedicPicks/Admin/Rebuild', { UserIds: [ctx.userId] });
+        expect(direct.status === 204, `rebuilding one person: ${direct.status} ${direct.text.slice(0, 200)}`);
+        return 'one person rebuilt when unticked, everyone when Discover went off';
+    } finally {
+        await page.unroute(rebuilds);
+        await api('POST', `/Plugins/${id}/Configuration`, cfg);
     }
 });
 

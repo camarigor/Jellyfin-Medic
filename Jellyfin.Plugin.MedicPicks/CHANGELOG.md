@@ -13,6 +13,8 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 - **Choices on the My picks page survive a damaged file.** A person's choices file that couldn't be read was written over by their next change (a Hide, say) or the nightly rebuild, so the titles they had hidden came back. It's now kept beside it, as the keys file already was, and new choices start.
 - **Each damaged file is kept.** A file set aside is now named with the time (`secrets.json.20261016-153000.bad`, say), so a second damaged keys file no longer replaces the first `secrets.json.bad`.
 - **Saved files reach the disk before they replace the old ones.** Picks, choices and the keys file are written to a temporary file and then swapped in; that file is now flushed to disk first, as Jellyfin Medic's own files are, so a power cut at the wrong moment can't leave an empty file in its place on file systems that would otherwise allow it.
+- **Discover picks go away as soon as Discover is off.** Unticking someone under "Who gets Discover picks", or switching Discover off for everyone, only took effect at the next build, so until then My picks kept showing the Discover picks saved at the last one, with their Request buttons. My picks now checks both settings every time it loads, requests from the page are refused while Discover is off for the whole server too, and any change to who gets Discover picks, either way, rebuilds the picks of the people it affects straight away.
+- **My picks only sends the Seerr address when it links to Seerr.** It was sent to everyone's browser even when the page makes requests itself or links to TMDb, where nothing uses it.
 
 ## [1.2.4] – 2026-10-14
 
