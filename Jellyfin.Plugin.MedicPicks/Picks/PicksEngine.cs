@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Playlists;
 using Microsoft.Extensions.Logging;
 
@@ -30,6 +31,7 @@ public class PicksEngine
     private readonly IUserManager _userManager;
     private readonly IUserDataManager _userDataManager;
     private readonly IPlaylistManager _playlistManager;
+    private readonly ILocalizationManager _localization;
     private readonly TmdbClient _tmdb;
     private readonly PicksStore _store;
     private readonly ILogger<PicksEngine> _logger;
@@ -39,6 +41,7 @@ public class PicksEngine
         IUserManager userManager,
         IUserDataManager userDataManager,
         IPlaylistManager playlistManager,
+        ILocalizationManager localization,
         TmdbClient tmdb,
         PicksStore store,
         ILogger<PicksEngine> logger)
@@ -47,6 +50,7 @@ public class PicksEngine
         _userManager = userManager;
         _userDataManager = userDataManager;
         _playlistManager = playlistManager;
+        _localization = localization;
         _tmdb = tmdb;
         _store = store;
         _logger = logger;
@@ -108,7 +112,7 @@ public class PicksEngine
 
         var previous = _store.Load(userId);
         var prefs = _store.LoadPreferences(userId);
-        var language = AudioLanguage.FromTmdb(config.TmdbLanguage);
+        var language = AudioLanguage.FromTmdb(config.TmdbLanguage, _localization.FindLanguageInfo);
         var picks = new UserPicks { GeneratedUtc = DateTime.UtcNow, PlaylistId = previous?.PlaylistId };
         picks.AvailableGenres = LibraryGenres(userQuery);
 
@@ -739,7 +743,7 @@ public class PicksEngine
         }
         catch
         {
-            // Unknown counts as no English audio.
+            // Unknown counts as not having the language.
         }
 
         return false;

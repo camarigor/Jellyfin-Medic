@@ -13,6 +13,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 - **Choices on the My picks page survive a damaged file.** A person's choices file that couldn't be read was written over by their next change (a Hide, say) or the nightly rebuild, so the titles they had hidden came back. It's now kept beside it, as the keys file already was, and new choices start.
 - **Each damaged file is kept.** A file set aside is now named with the time (`secrets.json.20261016-153000.bad`, say), so a second damaged keys file no longer replaces the first `secrets.json.bad`.
 - **Saved files reach the disk before they replace the old ones.** Picks, choices and the keys file are written to a temporary file and then swapped in; that file is now flushed to disk first, as Jellyfin Medic's own files are, so a power cut at the wrong moment can't leave an empty file in its place on file systems that would otherwise allow it.
+- **"Dubbed audio only" knows every language Jellyfin does.** It knew 16 languages and took any other TMDb language for English (Turkish, say, or Norwegian set as nb-NO), so it kept titles with English audio and the page said English. The language now comes from Jellyfin's own list of languages, with every code that list has for it: a Turkish dub is found whether its track says tr, tur or Turkish. Any Norwegian code counts as Norwegian (Jellyfin lists no, nb and nn apart), a track tagged with a region (en-US, say) counts as its language, and a language missing from Jellyfin's list matches only its own code instead of English.
 
 ## [1.2.4] – 2026-10-14
 
