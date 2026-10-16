@@ -1,10 +1,13 @@
 using Jellyfin.Plugin.MedicPicks.Picks;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MedicPicks.Tests;
 
 public sealed class PicksStoreTests : IDisposable
 {
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
     private readonly string _root = Directory.CreateTempSubdirectory("medic-picks-tests-").FullName;
     private readonly PicksStore _store;
 
@@ -12,6 +15,10 @@ public sealed class PicksStoreTests : IDisposable
     {
         _store = new PicksStore(new TestPaths(_root), NullLogger<PicksStore>.Instance);
     }
+
+    private string KeysDir => Path.Combine(_root, "data", "medic-picks");
+
+    private string KeysFile => Path.Combine(KeysDir, "secrets.json");
 
     [Fact]
     public void A_title_hidden_while_picks_were_being_built_is_not_saved_with_them()
@@ -52,6 +59,87 @@ public sealed class PicksStoreTests : IDisposable
         }));
 
         Assert.Equal(ids.OrderBy(i => i), _store.LoadPreferences(user).HiddenItems.OrderBy(i => i));
+    }
+
+    // ---------- The keys file ----------
+
+    [Fact]
+    public void Keys_are_kept_trimmed_and_a_blank_one_removes_only_that_key()
+    {
+        _store.SetTmdbKey("  tmdb-key ");
+        _store.SetSeerrKey("seerr-key");
+
+        _store.SetSeerrKey("   ");
+
+        Assert.Equal("tmdb-key", _store.GetTmdbKey());
+        Assert.Null(_store.GetSeerrKey());
+    }
+
+    [Fact]
+    public void Keys_saved_at_the_same_time_are_both_kept()
+    {
+        for (int round = 0; round < 50; round++)
+        {
+            _store.SetTmdbKey(null);
+            _store.SetSeerrKey(null);
+
+            Parallel.Invoke(() => _store.SetTmdbKey("tmdb-key"), () => _store.SetSeerrKey("seerr-key"));
+
+            Assert.Equal(("tmdb-key", "seerr-key"), (_store.GetTmdbKey(), _store.GetSeerrKey()));
+        }
+    }
+
+    [Fact]
+    public void Saving_a_key_leaves_no_temporary_file_behind()
+    {
+        _store.SetTmdbKey("tmdb-key");
+
+        Assert.Equal(new[] { "secrets.json" }, Directory.GetFiles(KeysDir).Select(Path.GetFileName));
+    }
+
+    [UnixFact]
+    [UnsupportedOSPlatform("windows")]
+    public void The_keys_file_is_created_readable_only_by_its_owner()
+    {
+        _store.SetTmdbKey("tmdb-key");
+
+        Assert.Equal(OwnerOnly, File.GetUnixFileMode(KeysFile));
+    }
+
+    [UnixFact]
+    [UnsupportedOSPlatform("windows")]
+    public void A_keys_file_others_can_read_is_made_private_when_first_read()
+    {
+        // As versions before 1.2.4 saved it.
+        Directory.CreateDirectory(KeysDir);
+        File.WriteAllText(KeysFile, """{"tmdbKey":"tmdb-key"}""");
+        File.SetUnixFileMode(KeysFile, OwnerOnly | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        Assert.Equal("tmdb-key", _store.GetTmdbKey());
+        Assert.Equal(OwnerOnly, File.GetUnixFileMode(KeysFile));
+    }
+
+    [Fact]
+    public void A_damaged_keys_file_reads_as_no_keys_and_is_left_alone()
+    {
+        Directory.CreateDirectory(KeysDir);
+        File.WriteAllText(KeysFile, "{ not json");
+
+        Assert.Null(_store.GetTmdbKey());
+        Assert.Equal("{ not json", File.ReadAllText(KeysFile));
+        Assert.False(File.Exists(KeysFile + ".bad"));
+    }
+
+    [Fact]
+    public void Saving_over_a_damaged_keys_file_keeps_it_as_bad()
+    {
+        Directory.CreateDirectory(KeysDir);
+        File.WriteAllText(KeysFile, "{ not json");
+
+        _store.SetSeerrKey("seerr-key");
+
+        Assert.Equal("{ not json", File.ReadAllText(KeysFile + ".bad"));
+        Assert.Equal("seerr-key", _store.GetSeerrKey());
     }
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
