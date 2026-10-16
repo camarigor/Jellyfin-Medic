@@ -86,7 +86,7 @@ public class MedicController : ControllerBase
 
         var extra = new List<Finding>();
         extra.AddRange(userFindings);
-        extra.AddRange(SecurityAuditor.Audit(_activity, _users, userList));
+        extra.AddRange(await SecurityAuditor.AuditAsync(_activity, _users, userList, cancellationToken).ConfigureAwait(false));
         extra.AddRange(LogScanner.Findings(repeated, LogScanner.CountingFrom(_paths.PluginConfigurationsPath)));
         extra.AddRange(IptvAnalyzer.Findings());
         if (updates.Count > 0)

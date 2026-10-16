@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **The sign-in check reads the whole week, and says when it couldn't.** It read only the newest 500 entries of Jellyfin's activity log while its findings spoke of the last 7 days, and when reading the log failed, or Medic couldn't find it, Security could say "No problems found" and the Dashboard listed nobody signing in from several places. Medic now reads the week 500 entries at a time, up to the newest 10,000 (the findings say so when it stops there), and whenever the log can't be read (it doesn't answer within 15 seconds, fails, or isn't available) it says the sign-ins couldn't be checked, and why. Every address inside your home network, and Tailscale's, now counts as one place, so a TV, a phone and a laptop at home no longer make an account look like it signs in from several places.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
