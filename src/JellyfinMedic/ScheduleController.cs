@@ -501,11 +501,17 @@ public class ScheduleController : ControllerBase
         return (fileName, backup.TriggersByTaskId.Count);
     }
 
-    // False when the file couldn't be written; the error is logged.
+     // False when the file couldn't be written; the error is logged.
     private bool TryWriteManaged(string path, List<ManagedRun> runs)
     {
         try
         {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
             ScheduleStorage.WriteJson(path, runs);
             return true;
         }
