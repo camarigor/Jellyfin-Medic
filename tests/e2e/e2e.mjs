@@ -91,10 +91,10 @@ await check('library scanned', async () => {
     return `${ctx.films} films`;
 });
 
-await check('all three plugins loaded', async () => {
+await check('all four plugins loaded', async () => {
     const plugins = await ok('/Plugins');
     const names = plugins.map((p) => p.Name);
-    for (const want of ['Jellyfin Medic', 'Medic Picks', 'Medic Profiles']) {
+    for (const want of ['Jellyfin Medic', 'Medic Picks', 'Medic Profiles', 'Animated Posters']) {
         const p = plugins.find((x) => x.Name === want);
         expect(p, `${want} missing (have ${names.join(', ')})`);
         expect(p.Status === 'Active', `${want} is ${p.Status}`);
@@ -1002,6 +1002,61 @@ await page.fill('#txtManualName', 'admin');
 await page.fill('#txtManualPassword', 'admin');
 await page.click('.manualLoginForm button[type="submit"]');
 await page.waitForURL(/home/, { timeout: 60000 });
+
+await check('Animated Posters adds its script to the web page, compressed or not', async () => {
+    for (const encoding of ['gzip, br', 'identity']) {
+        for (const path of ['/web/', '/web/index.html']) {
+            const res = await fetch(JF + path, { headers: { 'Accept-Encoding': encoding, 'If-None-Match': '"stale"' } });
+            const html = await res.text();
+            expect(res.status === 200, `${path} returned ${res.status}`);
+            expect(html.includes('AnimatedPosters/script.js'), `${path} (${encoding}) has no Animated Posters script`);
+        }
+    }
+    const res = await fetch(JF + '/AnimatedPosters/script.js');
+    const js = await res.text();
+    expect(res.status === 200 && js.startsWith('window.AnimatedPostersConfig = {'), 'script.js: ' + res.status + ' ' + js.slice(0, 80));
+});
+
+await check('Animated Posters cycles library artwork on the home page and hides names and borders', async () => {
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Animated Posters');
+    expect(plugin, 'plugin missing');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    // Give a few films a backdrop, as the sample films have no artwork of their own.
+    const { execFileSync: run } = await import('node:child_process');
+    const films = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&Limit=3')).Items;
+    for (const [i, film] of films.entries()) {
+        const jpg = run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', `color=c=0x${['ff00aa', '00ffcc', '8844ff'][i]}:s=640x360`, '-frames:v', '1', '-f', 'mjpeg', '-']);
+        const r = await fetch(`${JF}/Items/${film.Id}/Images/Backdrop`, {
+            method: 'POST',
+            headers: { Authorization: `${AUTH}, Token="${token}"`, 'Content-Type': 'image/jpeg' },
+            body: jpg.toString('base64')
+        });
+        expect(r.status === 204, `backdrop upload returned ${r.status}`);
+    }
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, OriginalArt: 'none', IntervalSeconds: 2, FadeSeconds: 0.2, HideText: true, HideBorder: true });
+    try {
+        errors.length = 0;
+        await page.goto(JF + '/web/index.html#/home');
+        await page.reload();
+        const card = page.locator('.homeSectionsContainer .card[data-type="CollectionFolder"]').first();
+        await card.locator('.ap-wrap .ap-slide.ap-on').waitFor({ timeout: 30000 });
+        const first = await card.locator('.ap-slide.ap-on').evaluate((el) => el.style.backgroundImage);
+        expect(/Images\/Backdrop/.test(first), 'showing ' + first);
+        let next = first;
+        for (let i = 0; i < 20 && next === first; i++) {
+            await sleep(500);
+            next = await card.locator('.ap-slide.ap-on').evaluate((el) => el.style.backgroundImage);
+        }
+        expect(next !== first, 'the card never changed image');
+        expect(!(await card.locator('.cardFooter').isVisible()), 'library name still shown');
+        const radius = await card.locator('.cardScalable').evaluate((el) => getComputedStyle(el).borderRadius);
+        expect(radius === '0px', 'card corners still rounded: ' + radius);
+        const ours = errors.filter((e) => !/ResizeObserver|^CancelledError/i.test(e));
+        expect(ours.length === 0, ours.join(' | '));
+    } finally {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+    }
+});
 
 // Opens a plugin page, then clicks through each of its tabs, failing on any script error.
 async function openPage(name, hash, selector, tabs) {
