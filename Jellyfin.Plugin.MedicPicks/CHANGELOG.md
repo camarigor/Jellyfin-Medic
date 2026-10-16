@@ -3,6 +3,11 @@
 All notable changes to Medic Picks are recorded here. The newest version is at the top.
 Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **My requests says Seerr is out of reach when something else answers its address.** A sign-in page in front of Seerr, or anything else answering its address with a web page, made My requests fail with a server error. That answer now counts as Seerr being out of reach: the page says so, and the log has a warning saying what kind of answer came back.
+
 ## [1.2.4] – 2026-10-14
 
 ### Added
