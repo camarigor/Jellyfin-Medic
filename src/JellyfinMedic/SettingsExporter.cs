@@ -14,7 +14,11 @@ namespace JellyfinMedic.Services;
 public static class SettingsExporter
 {
     private static readonly Regex TelegramToken = new(@"\d{6,}:[A-Za-z0-9_-]{30,}", RegexOptions.Compiled);
-    private static readonly Regex JsonSecret = new(@"(?i)(""?[A-Za-z_]*?(?:api_?key|apitoken|token|password|passwd|secret|username|user_?name|login)""?\s*[:=]\s*)""[^""]*""", RegexOptions.Compiled);
+
+    // Scripts (JavaScript Injector's, say) quote values with ' and ` as well as ", and a masked value keeps its quotes.
+    // A value without quotes is code there, such as token: getToken(), so it's left alone.
+    private static readonly Regex QuotedSecret = new(@"(?i)([""'`]?[A-Za-z_]*?(?:api[_-]?key|apitoken|token|password|passwd|secret|username|user_?name|login)[""'`]?\s*[:=]\s*)([""'`])(?:(?!\2)[\s\S])*\2", RegexOptions.Compiled);
+
     private static readonly Regex LongToken = new(@"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_\-]{24,}$", RegexOptions.Compiled);
 
     // Ids written as dashed GUIDs are kept. 32 hex characters without dashes is also how Jellyfin, Sonarr and
@@ -124,7 +128,7 @@ public static class SettingsExporter
 
         string masked = SettingsReader.MaskSecrets(value);
         masked = TelegramToken.Replace(masked, "****");
-        masked = JsonSecret.Replace(masked, "$1\"****\"");
+        masked = QuotedSecret.Replace(masked, "$1$2****$2");
         if (LongToken.IsMatch(masked.Trim()) && !GuidLike.IsMatch(masked.Trim()))
         {
             masked = "****";

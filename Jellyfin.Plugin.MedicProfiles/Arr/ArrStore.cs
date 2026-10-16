@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MediaBrowser.Common.Configuration;
+using Medic.Shared;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicProfiles.Arr;
@@ -44,24 +45,28 @@ public class ArrStore
     private readonly string _root;
     private readonly ILogger<ArrStore> _logger;
     private readonly object _lock = new();
-    private volatile bool _checkedPrivate;
+    private readonly PrivateJsonFile<Secrets> _secrets;
 
     public ArrStore(IApplicationPaths applicationPaths, ILogger<ArrStore> logger)
     {
         _root = Path.Combine(applicationPaths.DataPath, "medic-profiles");
         _logger = logger;
+        _secrets = new PrivateJsonFile<Secrets>(Path.Combine(_root, "secrets.json"), JsonOptions, logger, "Medic Profiles");
     }
-
-    private string SecretsPath => Path.Combine(_root, "secrets.json");
 
     private string HistoryPath => Path.Combine(_root, "history.json");
 
-    public string? GetKey(ArrApp app) => app == ArrApp.Sonarr ? ReadSecrets().SonarrKey : ReadSecrets().RadarrKey;
+    // The keys file holds the API keys and a password: see Medic.Shared.PrivateJsonFile for how it's kept.
+    public string? GetKey(ArrApp app)
+    {
+        var secrets = _secrets.Read();
+        return app == ArrApp.Sonarr ? secrets.SonarrKey : secrets.RadarrKey;
+    }
 
     public void SetKey(ArrApp app, string? key)
     {
         string? clean = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
-        UpdateSecrets(secrets =>
+        _secrets.Update(secrets =>
         {
             if (app == ArrApp.Sonarr)
             {
@@ -74,35 +79,10 @@ public class ArrStore
         });
     }
 
-    public string? GetQbitPassword() => ReadSecrets().QbitPassword;
+    public string? GetQbitPassword() => _secrets.Read().QbitPassword;
 
     public void SetQbitPassword(string? password) =>
-        UpdateSecrets(secrets => secrets.QbitPassword = string.IsNullOrEmpty(password) ? null : password);
-
-    // Read, change and write as one step. A keys file that can't be read is kept aside rather than replaced
-    // by one holding only the new value, which would lose the other keys without a word.
-    private void UpdateSecrets(Action<Secrets> change)
-    {
-        lock (_lock)
-        {
-            Secrets secrets;
-            try
-            {
-                secrets = ParseSecrets() ?? new Secrets();
-            }
-            catch (JsonException ex)
-            {
-                var damaged = SecretsPath + ".bad";
-                File.Move(SecretsPath, damaged, true);
-                _logger.LogWarning(ex, "Medic Profiles: the keys file couldn't be read, so it was kept as {Path} and a new one started", damaged);
-                secrets = new Secrets();
-            }
-
-            change(secrets);
-            Directory.CreateDirectory(_root);
-            WriteAtomic(SecretsPath, JsonSerializer.Serialize(secrets, JsonOptions), secret: true);
-        }
-    }
+        _secrets.Update(secrets => secrets.QbitPassword = string.IsNullOrEmpty(password) ? null : password);
 
     public List<ActionRecord> LoadHistory()
     {
@@ -110,18 +90,14 @@ public class ArrStore
         {
             lock (_lock)
             {
-                if (File.Exists(HistoryPath))
-                {
-                    return JsonSerializer.Deserialize<List<ActionRecord>>(File.ReadAllText(HistoryPath), JsonOptions) ?? new List<ActionRecord>();
-                }
+                return ReadHistory();
             }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Medic Profiles: could not read the action history");
+            return new List<ActionRecord>();
         }
-
-        return new List<ActionRecord>();
     }
 
     public void Record(ActionRecord record)
@@ -130,10 +106,22 @@ public class ArrStore
         {
             lock (_lock)
             {
-                var history = LoadHistory();
+                List<ActionRecord> history;
+                try
+                {
+                    history = ReadHistory();
+                }
+                catch (JsonException ex)
+                {
+                    // Saving over it would lose every action in it.
+                    string aside = AtomicFile.SetAside(HistoryPath);
+                    _logger.LogWarning(ex, "Medic Profiles: the action history couldn't be read, so it was kept as {Aside} and a new one started", aside);
+                    history = new List<ActionRecord>();
+                }
+
                 history.Insert(0, record);
                 Directory.CreateDirectory(_root);
-                WriteAtomic(HistoryPath, JsonSerializer.Serialize(history.Take(MaxHistory).ToList(), JsonOptions));
+                AtomicFile.Write(HistoryPath, JsonSerializer.Serialize(history.Take(MaxHistory).ToList(), JsonOptions));
             }
         }
         catch (Exception ex)
@@ -143,87 +131,11 @@ public class ArrStore
         }
     }
 
-    private Secrets ReadSecrets()
-    {
-        try
-        {
-            return ParseSecrets() ?? new Secrets();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Medic Profiles: could not read the keys file");
-            return new Secrets();
-        }
-    }
-
-    // The keys file's contents, or null when there isn't one yet. Throws when it can't be read.
-    private Secrets? ParseSecrets()
-    {
-        if (!File.Exists(SecretsPath))
-        {
-            return null;
-        }
-
-        if (!_checkedPrivate)
-        {
-            KeepPrivate(SecretsPath); // once: files written since are created private
-            _checkedPrivate = true;
-        }
-
-        return JsonSerializer.Deserialize<Secrets>(File.ReadAllText(SecretsPath), JsonOptions) ?? new Secrets();
-    }
-
-    // Writes to a temporary file first, so a crash mid-write can't leave a half-written file behind.
-    // The keys file holds API keys and a password, so only the account Jellyfin runs as can read it.
-    private void WriteAtomic(string path, string json, bool secret = false)
-    {
-        var tmp = path + ".tmp";
-        lock (_lock)
-        {
-            if (secret && !OperatingSystem.IsWindows())
-            {
-                File.Delete(tmp);
-                var options = new FileStreamOptions
-                {
-                    Mode = FileMode.CreateNew,
-                    Access = FileAccess.Write,
-                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
-                };
-                using (var writer = new StreamWriter(tmp, options))
-                {
-                    writer.Write(json);
-                }
-            }
-            else
-            {
-                File.WriteAllText(tmp, json);
-            }
-
-            File.Move(tmp, path, true);
-        }
-    }
-
-    // Keys files saved by 1.1.1 and earlier could be read by any account on the server. Tighten them when read.
-    private void KeepPrivate(string path)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-        try
-        {
-            if (File.GetUnixFileMode(path) != Private)
-            {
-                File.SetUnixFileMode(path, Private);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Medic Profiles: could not make the keys file private");
-        }
-    }
+    // The saved actions, newest first, or none yet. Throws when the file can't be read.
+    private List<ActionRecord> ReadHistory() =>
+        File.Exists(HistoryPath)
+            ? JsonSerializer.Deserialize<List<ActionRecord>>(File.ReadAllText(HistoryPath), JsonOptions) ?? new List<ActionRecord>()
+            : new List<ActionRecord>();
 
     private sealed class Secrets
     {

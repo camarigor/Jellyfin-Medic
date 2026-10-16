@@ -115,7 +115,7 @@ public sealed class TaskLifecycleListener : IHostedService
 
             if (failed && entry.OriginalTriggers is null)
             {
-                ApplyBackoff(worker, entry);
+                ApplyBackoff(worker, entry, () => ScheduleStorage.WriteJson(profilePath, records));
             }
             else if (!failed && entry.OriginalTriggers is not null)
             {
@@ -130,19 +130,37 @@ public sealed class TaskLifecycleListener : IHostedService
     /// Moves the task's clock-time triggers 3 hours later and remembers the original
     /// schedule. Only happens once: a task that is already backed off isn't moved again,
     /// so repeated failures can't push it round the clock into daytime.
+    /// A task its owner chose to keep in Preview stays where they put it, and so does a
+    /// task that would then start in the hours Medic avoids.
     /// Monthly tasks run by Medic have no Jellyfin triggers, so they're never moved.
     /// </summary>
-    private void ApplyBackoff(IScheduledTaskWorker worker, ReliabilityRecord entry)
+    private void ApplyBackoff(IScheduledTaskWorker worker, ReliabilityRecord entry, Action saveProfile)
     {
-        var current = worker.Triggers?.ToArray() ?? Array.Empty<TaskTriggerInfo>();
-
-        // Interval-only tasks have no clock time to move.
-        if (!current.Any(t => t.TimeOfDayTicks.HasValue))
+        if (ScheduleStorage.LoadChoices(_appPaths).GetValueOrDefault(worker.Id.ToString()) == ScheduleStorage.ChoiceKeep)
         {
             return;
         }
 
-        var shifted = current.Select(Shift).ToArray();
+        var current = worker.Triggers?.ToArray() ?? Array.Empty<TaskTriggerInfo>();
+        var shifted = Shifted(current, Plugin.Instance?.Configuration);
+        if (shifted is null)
+        {
+            return;
+        }
+
+        string before = ScheduleStorage.FormatTriggers(current);
+        string after = ScheduleStorage.FormatTriggers(shifted);
+
+        // Both records are saved before the task moves: a move whose original time was lost would never
+        // be undone. When the task stays after all, HandleCompletion's save clears the record again.
+        entry.OriginalTriggers = current;
+        saveProfile();
+        if (!TryAudit(worker.Name, before, after, "Task failed. Moved 3 hours later; the original time comes back after its next successful run."))
+        {
+            entry.OriginalTriggers = null;
+            _logger.LogWarning("Jellyfin Medic: '{TaskName}' failed, but stays at {Current} because the move couldn't be added to the schedule changes log.", worker.Name, before);
+            return;
+        }
 
         try
         {
@@ -150,20 +168,13 @@ public sealed class TaskLifecycleListener : IHostedService
         }
         catch (Exception ex)
         {
+            entry.OriginalTriggers = null;
             _logger.LogError(ex, "Jellyfin Medic: could not move {TaskName} after it failed.", worker.Name);
+
+            // The log already has the move, so it gets the task's own time back too.
+            TryAudit(worker.Name, after, before, "Jellyfin couldn't save the move, so the task keeps its time.");
             return;
         }
-
-        entry.OriginalTriggers = current;
-
-        string before = ScheduleStorage.FormatTriggers(current);
-        string after = ScheduleStorage.FormatTriggers(shifted);
-        ScheduleStorage.AppendAudit(
-            _appPaths,
-            worker.Name,
-            before,
-            after,
-            "Task failed. Moved 3 hours later; the original time comes back after its next successful run.");
 
         _logger.LogWarning(
             "Jellyfin Medic: '{TaskName}' failed. Schedule moved from {Before} to {After} until it next succeeds.",
@@ -175,7 +186,8 @@ public sealed class TaskLifecycleListener : IHostedService
     /// <summary>
     /// Puts back the schedule saved by ApplyBackoff once the task succeeds again, but only while the
     /// task still has the schedule the back-off gave it. If someone changed it since (in Jellyfin's
-    /// dashboard, say), that change stays and the back-off is simply over.
+    /// dashboard, say), that change stays and the back-off is simply over. Either way the back-off
+    /// ends, even when the schedule changes log can't be written: one left in place would hold off the next.
     /// </summary>
     private void RevertBackoff(IScheduledTaskWorker worker, ReliabilityRecord entry)
     {
@@ -185,8 +197,7 @@ public sealed class TaskLifecycleListener : IHostedService
         if (!SameTriggers(worker.Triggers ?? Array.Empty<TaskTriggerInfo>(), original.Select(Shift)))
         {
             entry.OriginalTriggers = null;
-            ScheduleStorage.AppendAudit(
-                _appPaths,
+            TryAudit(
                 worker.Name,
                 before,
                 before,
@@ -208,14 +219,58 @@ public sealed class TaskLifecycleListener : IHostedService
         entry.OriginalTriggers = null;
 
         string after = ScheduleStorage.FormatTriggers(original);
-        ScheduleStorage.AppendAudit(
-            _appPaths,
+        TryAudit(
             worker.Name,
             before,
             after,
             "Task succeeded after a back-off. Original schedule put back.");
 
         _logger.LogInformation("Jellyfin Medic: '{TaskName}' succeeded. Schedule returned to {After}.", worker.Name, after);
+    }
+
+    // False when the schedule changes log couldn't be written; the error is logged.
+    private bool TryAudit(string taskName, string before, string after, string rationale)
+    {
+        try
+        {
+            ScheduleStorage.AppendAudit(_appPaths, taskName, before, after, rationale);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Jellyfin Medic: could not add {TaskName} to the schedule changes log.", taskName);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The triggers 3 hours later, or null when none of them has a clock time to move or one of them
+    /// would then start in the hours Medic avoids. Only the start time is checked, not the whole run.
+    /// </summary>
+    internal static TaskTriggerInfo[]? Shifted(IReadOnlyList<TaskTriggerInfo> triggers, PluginConfiguration? settings)
+    {
+        // Interval-only tasks have no clock time to move.
+        if (!triggers.Any(t => t.TimeOfDayTicks.HasValue))
+        {
+            return null;
+        }
+
+        var shifted = triggers.Select(Shift).ToArray();
+        return shifted.Any(t => t.TimeOfDayTicks is { } ticks && InAvoidedHours(ticks, settings)) ? null : shifted;
+    }
+
+    // The hours to avoid run past midnight when they end before they start, 22:00 to 02:00 say.
+    private static bool InAvoidedHours(long timeOfDayTicks, PluginConfiguration? settings)
+    {
+        if (settings is not { AvoidEnabled: true })
+        {
+            return false;
+        }
+
+        int from = BusyProfile.AvoidStartMinute(settings);
+        int to = BusyProfile.AvoidEndMinute(settings);
+        int minute = (int)TimeSpan.FromTicks(timeOfDayTicks).TotalMinutes;
+        return from <= to ? minute >= from && minute < to : minute >= from || minute < to;
     }
 
     // The same triggers, in any order.
