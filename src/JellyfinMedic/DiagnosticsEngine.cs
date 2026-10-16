@@ -363,15 +363,10 @@ public sealed class DiagnosticsEngine
 
     // ---------- Hardware & transcoding ----------
 
-    private void CheckTranscoding(HardwareInfo hw, object? enc)
+    /// <summary>The checks that follow from the hardware acceleration setting, on plain inputs so tests can run them as any platform.</summary>
+    internal static List<Finding> AccelerationChecks(HardwareInfo hw, object enc, object server, bool isLinux, bool isContainer)
     {
-        if (enc is null)
-        {
-            Add(AreaHardware, Sev.Tip, "Couldn't read your transcoding settings", "Unknown", string.Empty,
-                "Jellyfin didn't return its transcoding configuration, so these checks were skipped.", WhereTranscoding);
-            return;
-        }
-
+        var findings = new List<Finding>();
         string hwType = (SettingsReader.Text(enc, "HardwareAccelerationType") ?? "none").Trim().ToLowerInvariant();
         bool hwOn = hwType is not ("" or "none");
 
@@ -383,37 +378,35 @@ public sealed class DiagnosticsEngine
             _ => (string.Empty, string.Empty)
         };
 
-        if (!HostPlatform.IsLinux)
+        if (!hwOn && !isLinux)
         {
             // Windows and macOS don't expose the GPU the way Linux does, so Medic can't see which one you
             // have. Point at the setting instead of guessing.
-            if (!hwOn)
-            {
-                Add(AreaHardware, Sev.Tip, "Hardware acceleration is off", "None (everything on the CPU)",
-                    HostPlatform.GpuSetup,
-                    "If this computer has a graphics card or built-in graphics, Jellyfin can use it for transcodes, chapter images and trickplay instead of the CPU.",
-                    WhereTranscoding);
-            }
+            findings.Add(NewFinding(AreaHardware, Sev.Tip, "Hardware acceleration is off", "None (everything on the CPU)",
+                HostPlatform.GpuSetup,
+                "If this computer has a graphics card or built-in graphics, Jellyfin can use it for transcodes, chapter images and trickplay instead of the CPU.",
+                WhereTranscoding));
         }
         else if (!hwOn && suggested.Value.Length > 0)
         {
-            Add(AreaHardware, Sev.Problem, "Your GPU isn't being used",
+            findings.Add(NewFinding(AreaHardware, Sev.Problem, "Your GPU isn't being used",
                 "None (everything on the CPU)",
                 suggested.Label,
                 $"{hw.GpuDescription} is available to Jellyfin, but hardware acceleration is off. Every transcode, plus chapter and trickplay images, is being done by the CPU.",
-                WhereTranscoding);
+                WhereTranscoding));
         }
         else if (!hwOn)
         {
-            Add(AreaHardware, hw.CpuThreads <= 8 ? Sev.Improve : Sev.Tip, "No GPU available to Jellyfin",
+            findings.Add(NewFinding(AreaHardware, hw.CpuThreads <= 8 ? Sev.Improve : Sev.Tip, "No GPU available to Jellyfin",
                 $"CPU only, {hw.CpuThreads} threads",
                 HostPlatform.GpuSetup,
                 "Without a GPU, each 1080p transcode can take several CPU threads, and 4K or HDR transcodes may stutter. If the server has integrated graphics, using it costs nothing.",
-                WhereDocker);
+                WhereDocker));
         }
         else
         {
-            bool deviceThere = !HostPlatform.IsLinux || hwType switch
+            // Medic can only see the GPU's devices on Linux. Elsewhere it trusts the setting and checks the rest.
+            bool deviceThere = !isLinux || hwType switch
             {
                 "nvenc" => hw.NvidiaDevice,
                 "qsv" or "vaapi" => hw.RenderNodes.Count > 0,
@@ -422,99 +415,121 @@ public sealed class DiagnosticsEngine
 
             if (!deviceThere)
             {
-                Add(AreaHardware, Sev.Problem,
-                    HostPlatform.IsContainer ? "Hardware acceleration is on, but the GPU isn't in the container" : "Hardware acceleration is on, but Jellyfin can't see the GPU",
+                findings.Add(NewFinding(AreaHardware, Sev.Problem,
+                    isContainer ? "Hardware acceleration is on, but the GPU isn't in the container" : "Hardware acceleration is on, but Jellyfin can't see the GPU",
                     Nice(hwType) ?? hwType, HostPlatform.GpuSetup + ", or set hardware acceleration to None",
                     "Jellyfin will try to use a device that isn't there, so transcodes fail or fall back to the CPU.",
-                    WhereDocker);
+                    WhereDocker));
             }
-            else if (HostPlatform.IsLinux && suggested.Value.Length > 0 && hwType != suggested.Value && !(hw.GpuVendor == "intel" && hwType == "vaapi"))
+            else if (isLinux && suggested.Value.Length > 0 && hwType != suggested.Value && !(hw.GpuVendor == "intel" && hwType == "vaapi"))
             {
-                Add(AreaHardware, Sev.Tip, "Hardware acceleration type doesn't match your GPU",
+                findings.Add(NewFinding(AreaHardware, Sev.Tip, "Hardware acceleration type doesn't match your GPU",
                     Nice(hwType) ?? hwType, suggested.Label,
                     $"You have {hw.GpuDescription}; {suggested.Label} is the method designed for it.",
-                    WhereTranscoding);
+                    WhereTranscoding));
             }
 
             if (SettingsReader.Bool(enc, "EnableHardwareEncoding") == false)
             {
-                Add(AreaHardware, Sev.Improve, "Hardware encoding is off", "Off", "On",
-                    "The GPU decodes video but the CPU still does the heavier encoding step.", WhereTranscoding);
+                findings.Add(NewFinding(AreaHardware, Sev.Improve, "Hardware encoding is off", "Off", "On",
+                    "The GPU decodes video but the CPU still does the heavier encoding step.", WhereTranscoding));
             }
 
             var codecs = SettingsReader.List(enc, "HardwareDecodingCodecs");
             if (codecs is not null && codecs.Count == 0)
             {
-                Add(AreaHardware, Sev.Improve, "No formats are ticked for hardware decoding", "None ticked",
+                findings.Add(NewFinding(AreaHardware, Sev.Improve, "No formats are ticked for hardware decoding", "None ticked",
                     "Tick H264 and HEVC, plus VP9 and AV1 if your GPU supports them",
-                    "With nothing ticked, the CPU decodes every video even though the GPU could.", WhereTranscoding);
+                    "With nothing ticked, the CPU decodes every video even though the GPU could.", WhereTranscoding));
             }
             else if (codecs is not null && deviceThere)
             {
                 var missing = new[] { "h264", "hevc" }.Where(c => !codecs.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
                 if (missing.Count > 0)
                 {
-                    Add(AreaHardware, Sev.Improve, $"{string.Join(" and ", missing.Select(c => c.ToUpperInvariant()))} aren't decoded on the GPU",
+                    findings.Add(NewFinding(AreaHardware, Sev.Improve, $"{string.Join(" and ", missing.Select(c => c.ToUpperInvariant()))} {(missing.Count == 1 ? "isn't" : "aren't")} decoded on the GPU",
                         "Ticked: " + string.Join(", ", codecs.Select(c => c.ToUpperInvariant())), "Tick H264 and HEVC",
-                        "Nearly all films and series are H264 or HEVC. Unticked, the CPU decodes them before the GPU encodes, which is the slow half of a transcode.", WhereTranscoding);
+                        "Nearly all films and series are H264 or HEVC. Unticked, the CPU decodes them before the GPU encodes, which is the slow half of a transcode.", WhereTranscoding));
                 }
             }
 
             if (deviceThere && SettingsReader.Bool(enc, "EnableDecodingColorDepth10Hevc") == false)
             {
-                Add(AreaHardware, Sev.Improve, "10-bit HEVC is decoded on the CPU", "Off", "Enable 10-bit hardware decoding for HEVC: on",
-                    "Most HDR and many recent films are 10-bit HEVC. Decoding them on the CPU is heavy, and 4K HDR can stutter. Every GPU Jellyfin supports from the last several years can do it.", WhereTranscoding);
+                findings.Add(NewFinding(AreaHardware, Sev.Improve, "10-bit HEVC is decoded on the CPU", "Off", "Enable 10-bit hardware decoding for HEVC: on",
+                    "Most HDR and many recent films are 10-bit HEVC. Decoding them on the CPU is heavy, and 4K HDR can stutter. Every GPU Jellyfin supports from the last several years can do it.", WhereTranscoding));
             }
 
             if (deviceThere && SettingsReader.Bool(enc, "AllowHevcEncoding") == false && SettingsReader.Bool(enc, "EnableHardwareEncoding") != false)
             {
-                Add(AreaHardware, Sev.Tip, "Transcodes are only made as H264", "HEVC encoding off", "Allow encoding in HEVC format: on",
-                    "Apps that can play HEVC get the same picture at about half the bitrate, which helps remote viewers on slow connections. Apps that can't still get H264.", WhereTranscoding);
+                findings.Add(NewFinding(AreaHardware, Sev.Tip, "Transcodes are only made as H264", "HEVC encoding off", "Allow encoding in HEVC format: on",
+                    "Apps that can play HEVC get the same picture at about half the bitrate, which helps remote viewers on slow connections. Apps that can't still get H264.", WhereTranscoding));
             }
 
             if (deviceThere && hw.GpuVendor == "intel" && hwType is "qsv" or "vaapi"
                 && SettingsReader.Bool(enc, "EnableIntelLowPowerH264HwEncoder") == false
                 && SettingsReader.Bool(enc, "EnableIntelLowPowerHevcHwEncoder") == false)
             {
-                Add(AreaHardware, Sev.Tip, "Intel low-power encoding is off", "Off", "Enable Intel Low-Power H.264 and HEVC encoders: on",
-                    "On 8th-generation Intel and later, the low-power encoder is faster and leaves the rest of the GPU free for tone mapping and more streams. It needs the GuC/HuC firmware on the host, which most modern Linux systems load by default.", WhereTranscoding);
+                findings.Add(NewFinding(AreaHardware, Sev.Tip, "Intel low-power encoding is off", "Off", "Enable Intel Low-Power H.264 and HEVC encoders: on",
+                    "On 8th-generation Intel and later, the low-power encoder is faster and leaves the rest of the GPU free for tone mapping and more streams. It needs the GuC/HuC firmware on the host, which most modern Linux systems load by default.", WhereTranscoding));
             }
 
             // Trickplay images are made with the same FFmpeg, and can use the GPU too.
-            var server = (object)_config.Configuration;
             // (Trickplay on the CPU altogether is checked under Server.)
             if (SettingsReader.Bool(server, "TrickplayOptions.EnableHwAcceleration") != false
                 && SettingsReader.Bool(server, "TrickplayOptions.EnableHwEncoding") == false)
             {
-                Add(AreaHardware, Sev.Tip, "Trickplay images are encoded on the CPU", "Hardware encoding for trickplay: off", "On (if your GPU supports MJPEG encoding)",
-                    "Intel and recent AMD GPUs can also encode the thumbnails, which takes the last part of the work off the CPU.", WhereTrickplay);
+                findings.Add(NewFinding(AreaHardware, Sev.Tip, "Trickplay images are encoded on the CPU", "Hardware encoding for trickplay: off", "On (if your GPU supports MJPEG encoding)",
+                    "Intel and recent AMD GPUs can also encode the thumbnails, which takes the last part of the work off the CPU.", WhereTrickplay));
             }
         }
 
         string preset = (SettingsReader.Text(enc, "EncoderPreset") ?? string.Empty).Trim().ToLowerInvariant();
         if (!hwOn && preset is "slow" or "slower" or "veryslow")
         {
-            Add(AreaHardware, Sev.Improve, "Software transcodes use a slow preset", preset, "Auto, or veryfast",
-                "With no GPU doing the work, a slow preset makes each transcode use far more CPU for a small gain in quality, so fewer people can watch at once.", WhereTranscoding);
+            findings.Add(NewFinding(AreaHardware, Sev.Improve, "Software transcodes use a slow preset", preset, "Auto, or veryfast",
+                "With no GPU doing the work, a slow preset makes each transcode use far more CPU for a small gain in quality, so fewer people can watch at once.", WhereTranscoding));
         }
 
-        if (!hwOn && SettingsReader.Bool((object)_config.Configuration, "TrickplayOptions.EnableKeyFrameOnlyExtraction") == false)
+        if (!hwOn && SettingsReader.Bool(server, "TrickplayOptions.EnableKeyFrameOnlyExtraction") == false)
         {
-            Add(AreaHardware, Sev.Tip, "Trickplay reads every frame", "Key frames only: off", "On",
-                "Without a GPU, making trickplay images from key frames only is many times faster. The thumbnails are a little less exact.", WhereTrickplay);
+            findings.Add(NewFinding(AreaHardware, Sev.Tip, "Trickplay reads every frame", "Key frames only: off", "On",
+                "Without a GPU, making trickplay images from key frames only is many times faster. The thumbnails are a little less exact.", WhereTrickplay));
         }
 
         bool? toneMapping = SettingsReader.Bool(enc, "EnableTonemapping");
+        // QSV and VAAPI can tone map through Intel's VPP, and VideoToolbox through its own switch: either counts as on.
+        // Jellyfin only uses VPP on its Intel paths, so on an AMD GPU with VAAPI that switch does nothing.
+        bool ownToneMapping = hwType switch
+        {
+            "qsv" => SettingsReader.Bool(enc, "EnableVppTonemapping") == true,
+            "vaapi" => SettingsReader.Bool(enc, "EnableVppTonemapping") == true && hw.GpuVendor != "amd",
+            "videotoolbox" => SettingsReader.Bool(enc, "EnableVideoToolboxTonemapping") == true,
+            _ => false
+        };
         if (!hwOn && toneMapping == true)
         {
-            Add(AreaHardware, Sev.Improve, "Tone mapping is on without a GPU", "On (CPU)", "Off, or add a GPU",
-                "Converting HDR to SDR on the CPU is very heavy and can make HDR transcodes unwatchable.", WhereTranscoding);
+            findings.Add(NewFinding(AreaHardware, Sev.Improve, "Tone mapping is on without a GPU", "On (CPU)", "Off, or add a GPU",
+                "Converting HDR to SDR on the CPU is very heavy and can make HDR transcodes unwatchable.", WhereTranscoding));
         }
-        else if (hwOn && toneMapping == false)
+        else if (hwOn && toneMapping == false && !ownToneMapping)
         {
-            Add(AreaHardware, Sev.Tip, "Tone mapping is off", "Off", "On",
-                "HDR films transcoded for non-HDR screens look washed out without it, and your GPU can do it cheaply.", WhereTranscoding);
+            findings.Add(NewFinding(AreaHardware, Sev.Tip, "Tone mapping is off", "Off", "On",
+                "HDR films transcoded for non-HDR screens look washed out without it, and your GPU can do it cheaply.", WhereTranscoding));
         }
+
+        return findings;
+    }
+
+    private void CheckTranscoding(HardwareInfo hw, object? enc)
+    {
+        if (enc is null)
+        {
+            Add(AreaHardware, Sev.Tip, "Couldn't read your transcoding settings", "Unknown", string.Empty,
+                "Jellyfin didn't return its transcoding configuration, so these checks were skipped.", WhereTranscoding);
+            return;
+        }
+
+        _report.Findings.AddRange(AccelerationChecks(hw, enc, _config.Configuration, HostPlatform.IsLinux, HostPlatform.IsContainer));
 
         if (SettingsReader.Bool(enc, "EnableThrottling") == false)
         {
@@ -1638,7 +1653,10 @@ public sealed class DiagnosticsEngine
 
     // id: a stable name for findings whose title changes between checks (counts, times, percentages); see Finding.Id.
     private void Add(string area, string severity, string title, string current, string recommended, string why, string where, string id = "") =>
-        _report.Findings.Add(new Finding
+        _report.Findings.Add(NewFinding(area, severity, title, current, recommended, why, where, id));
+
+    private static Finding NewFinding(string area, string severity, string title, string current, string recommended, string why, string where, string id = "") =>
+        new()
         {
             Area = area,
             Severity = severity,
@@ -1648,7 +1666,7 @@ public sealed class DiagnosticsEngine
             Recommended = recommended,
             Why = why,
             Where = where
-        });
+        };
 
     private void Guard(string area, Action check)
     {

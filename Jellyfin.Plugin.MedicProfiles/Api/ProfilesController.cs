@@ -122,7 +122,8 @@ public class ProfilesController : ControllerBase
         }
 
         using var result = await _arr.GetAsync(a, "system/status", ct).ConfigureAwait(false);
-        string? version = result.Json is { } doc ? Json(doc.RootElement, "version") : null;
+        // Named in full: this controller has its own Json method for its answers.
+        string? version = result.Json is { } doc ? Medic.Shared.Json.Text(doc.RootElement, "version") : null;
         return Json(new
         {
             ok = result.Ok,
@@ -304,9 +305,6 @@ public class ProfilesController : ControllerBase
 
         return u;
     }
-
-    private static string? Json(JsonElement e, string name) =>
-        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private ContentResult Json(object body) =>
         Content(JsonSerializer.Serialize(body, ArrStore.JsonOptions), MediaTypeNames.Application.Json);

@@ -14,7 +14,7 @@ public static class SettingLinks
     {
         ("Hardware encoding is off", "Transcoding", "EnableHardwareEncoding"),
         ("Image resizing can use every CPU thread", "General", "ParallelImageEncodingLimit"),
-        ("aren't decoded on the GPU", "Transcoding", "HardwareDecodingCodecs"),
+        ("decoded on the GPU", "Transcoding", "HardwareDecodingCodecs"),
         ("10-bit HEVC is decoded on the CPU", "Transcoding", "EnableDecodingColorDepth10Hevc"),
         ("Transcodes are only made as H264", "Transcoding", "AllowHevcEncoding"),
         ("Intel low-power encoding is off", "Transcoding", "EnableIntelLowPowerH264HwEncoder"),

@@ -14,10 +14,12 @@ on:
 permissions:
   contents: write
 
-# Shared with the release workflows, so their manifest.json pushes take turns.
+# Shared with the release workflows, so their manifest.json pushes take turns, every run waiting for
+# its turn ("queue: max", see release.yml).
 concurrency:
   group: manifest-update
   cancel-in-progress: false
+  queue: max
 
 jobs:
   refresh:

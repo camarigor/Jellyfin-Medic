@@ -531,10 +531,12 @@ public static class TrackCleaner
     ///  - untagged subtitles are kept unless either untagged option is on; with "remove untagged
     ///    subtitles", the first untagged subtitle stays in films with no subtitle in your languages
     ///  - never remove the last audio track
+    ///  - an extra (a commentary, audio description, isolated score or karaoke track, going by its title)
+    ///    never counts as the film's audio: if only extras would stay, the film's own tracks stay too
     ///  - never leave a film whose audio is in a language you don't keep without subtitles
     ///    (an untagged "only subtitle" may go only if you allow it and the audio isn't known to be foreign)
     /// </summary>
-    private static void ApplyKeepRules(FilePlan plan, HashSet<string> keep, PluginConfiguration cfg)
+    internal static void ApplyKeepRules(FilePlan plan, HashSet<string> keep, PluginConfiguration cfg)
     {
         bool removeAllUntagged = cfg.TracksRemoveUndetermined;
         bool removeUntaggedSubs = cfg.TracksRemoveUntaggedSubtitles;
@@ -548,7 +550,7 @@ public static class TrackCleaner
             }
             else if (InLanguage(t, keep))
             {
-                t.Keep = true; t.KeepReason = "chosen language";
+                t.Keep = true; t.KeepReason = IsExtra(t) ? "chosen language (a commentary or other extra)" : "chosen language";
             }
             else if (t.Kind == "subtitle" && t.Forced)
             {
@@ -575,6 +577,14 @@ public static class TrackCleaner
             foreach (var t in audio) { t.Keep = true; t.KeepReason = "only audio in the file"; }
         }
 
+        // An extra in your language isn't the film's audio: if only extras would stay, keep the film's own
+        // tracks too, the way the guard above does when nothing is in your languages.
+        var main = audio.Where(t => !IsExtra(t)).ToList();
+        if (main.Count > 0 && main.All(t => !t.Keep))
+        {
+            foreach (var t in main) { t.Keep = true; t.KeepReason = "the film's own audio (only extras are in your languages)"; }
+        }
+
         var subs = plan.Tracks.Where(t => t.Kind == "subtitle").ToList();
 
         // An untagged "only subtitle" may go when the user allows it.
@@ -591,10 +601,12 @@ public static class TrackCleaner
             }
         }
 
-        // Never leave a foreign-language film with no subtitles: if no audio is in the keep list and
-        // all subtitles would go, keep the subtitles so it stays watchable.
-        bool keptAudioInLanguage = audio.Any(t => t.Keep && InLanguage(t, keep));
-        bool audioKnownForeign = !keptAudioInLanguage && audio.Any(t => t.Keep && !IsUntagged(t));
+        // Never leave a foreign-language film with no subtitles: if none of the film's own audio is in the
+        // keep list and all subtitles would go, keep the subtitles so it stays watchable. Extras don't count:
+        // an English commentary doesn't make a Japanese film watchable without subtitles.
+        var filmAudio = main.Count > 0 ? main : audio;
+        bool keptAudioInLanguage = filmAudio.Any(t => t.Keep && InLanguage(t, keep));
+        bool audioKnownForeign = !keptAudioInLanguage && filmAudio.Any(t => t.Keep && !IsUntagged(t));
         if (!keptAudioInLanguage && subs.Count > 0 && subs.All(t => !t.Keep))
         {
             // When the audio is untagged too, Medic can't tell the film is foreign. In that case it goes
@@ -609,6 +621,13 @@ public static class TrackCleaner
     }
 
     private static bool IsUntagged(TrackInfo t) => t.Language is "und" or "";
+
+    // Titles that mark an audio track as something other than the film's own soundtrack. "described"
+    // catches "Audio Described", which neither "description" nor "descriptive" does.
+    private static readonly string[] ExtraAudioWords = { "commentary", "description", "descriptive", "described", "isolated", "karaoke" };
+
+    private static bool IsExtra(TrackInfo t) =>
+        t.Kind == "audio" && ExtraAudioWords.Any(w => t.Title.Contains(w, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>"removed 2 audio and 13 subtitle tracks, labelled 1 track", in plain words.</summary>
     private static string Summary(FilePlan plan)
@@ -1712,7 +1731,7 @@ public static class TrackCleaner
 
     // ---------- Helpers ----------
 
-    private static HashSet<string> KeepLanguages(PluginConfiguration cfg)
+    internal static HashSet<string> KeepLanguages(PluginConfiguration cfg)
     {
         var set = (cfg.TracksKeepLanguages ?? "eng")
             .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
