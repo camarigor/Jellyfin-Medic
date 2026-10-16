@@ -94,8 +94,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Jellyfin first answers from a small startup server, whose /System/Info/Public already says 200, then swaps
+# to the real one, dropping connections on the way. /Startup/Configuration, the tests' first call, only
+# answers 200 from the real server.
 for i in $(seq 1 90); do
-  curl -sf "http://127.0.0.1:$PORT/System/Info/Public" >/dev/null && break
+  curl -sf "http://127.0.0.1:$PORT/Startup/Configuration" >/dev/null && break
   sleep 2
 done
 
