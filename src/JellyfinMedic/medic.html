@@ -84,16 +84,21 @@
                                 <button type="button" class="so-btn so-btn-plain md-goto" data-goto="schedule">Open the schedule</button>
                             </div>
                             <p id="md-today-summary" class="md-today-summary">Loading…</p>
-                            <div id="md-day" class="md-day" role="group" aria-label="Today's planned and actual runs"></div>
-                            <div id="md-day-axis" class="md-axis"></div>
+                            <div class="md-day-wrap">
+                                <div class="md-day-lanes" aria-hidden="true"><span>Planned</span><span>Ran</span></div>
+                                <div id="md-day" class="md-day" role="group" aria-label="Today's planned and actual runs"></div>
+                            </div>
+                            <div id="md-day-axis" class="md-axis md-day-axis"></div>
                             <p id="md-day-repeats" class="so-small so-muted"></p>
                             <div class="md-legend">
                                 <span><i class="md-sw md-sw-planned"></i>Planned</span>
                                 <span><i class="md-sw md-sw-ran"></i>Ran</span>
                                 <span><i class="md-sw md-sw-failed"></i>Failed</span>
+                                <span><i class="md-sw md-sw-stopped"></i>Stopped</span>
                                 <span><i class="md-sw md-hatch"></i>Moved after a failure</span>
                                 <span><i class="md-sw md-sw-spike"></i>Heavy use</span>
                                 <span><i class="md-sw md-sw-guard"></i>LoadGuard</span>
+                                <span class="so-muted">Runs take their task's colour, as on the Schedule tab</span>
                             </div>
                             <p id="md-day-detail" class="so-small">Choose a run or a mark to see its details.</p>
                             <p id="md-day-zone" class="so-small so-muted"></p>
@@ -881,20 +886,28 @@
         /* Today: planned runs (outlined) above the runs that happened (filled), on one 24-hour axis. */
         #JellyfinMedicPage .md-today-summary { margin: 0; font-weight: 600; }
         #JellyfinMedicPage .md-day { position: relative; height: 84px; background: #15171b; border-radius: 6px; overflow: hidden; }
-        #JellyfinMedicPage .md-day-lane { position: absolute; left: 6px; font-size: 0.68em; color: #8e95a1; pointer-events: none; }
+        /* The lane names sit beside the timeline, so they never cover a run or a mark. */
+        #JellyfinMedicPage .md-day-wrap { display: flex; gap: 6px; }
+        #JellyfinMedicPage .md-day-wrap .md-day { flex: 1 1 auto; min-width: 0; }
+        #JellyfinMedicPage .md-day-lanes { position: relative; flex: 0 0 44px; height: 84px; font-size: 0.68em; color: #8e95a1; }
+        #JellyfinMedicPage .md-day-lanes span { position: absolute; left: 0; line-height: 14px; }
+        #JellyfinMedicPage .md-day-lanes span:first-child { top: 24px; }
+        #JellyfinMedicPage .md-day-lanes span:last-child { top: 56px; }
+        #JellyfinMedicPage .md-day-axis { margin-left: 50px; }
         #JellyfinMedicPage .md-day-block { position: absolute; height: 22px; min-width: 6px; padding: 0 3px; border: 0; border-radius: 4px; font: 600 0.68em/22px ui-monospace, monospace; color: #10131a; overflow: hidden; white-space: nowrap; cursor: pointer; }
         #JellyfinMedicPage .md-day-block.md-planned { top: 24px; height: 14px; min-width: 8px; background: transparent; border: 2px solid #5fd0b3; line-height: 10px; }
         #JellyfinMedicPage .md-day-block.md-planned.md-plan-missed { border-style: dashed; }
         #JellyfinMedicPage .md-day-block.md-actual { top: 52px; }
         #JellyfinMedicPage .md-day-block.md-run-failed { background: #d9534f; color: #fff; min-width: 44px; z-index: 1; }
-        #JellyfinMedicPage .md-day-block.md-run-stopped { background: #a3a9b3; min-width: 52px; z-index: 1; }
+        #JellyfinMedicPage .md-day-block.md-run-stopped { background: #5a6370; color: #e6e8ec; min-width: 52px; z-index: 1; }
         #JellyfinMedicPage .md-day-block.md-run-running { box-shadow: inset 0 0 0 2px #e6e8ec; }
         #JellyfinMedicPage .md-day-block:focus-visible, #JellyfinMedicPage .md-day-mark:focus-visible, #JellyfinMedicPage .md-busy-cell:focus-visible { outline: 2px solid #8cc8ff; outline-offset: 1px; }
         #JellyfinMedicPage .md-day-mark { position: absolute; width: 8px; height: 8px; margin-left: -4px; padding: 0; border: 0; border-radius: 2px; cursor: pointer; }
         #JellyfinMedicPage .md-day-mark.md-spike { top: 6px; background: #ff9a9e; }
         #JellyfinMedicPage .md-day-mark.md-guard { top: 76px; background: #ffd27a; transform: rotate(45deg); }
-        #JellyfinMedicPage .md-sw-planned { box-shadow: inset 0 0 0 2px #5fd0b3; }
-        #JellyfinMedicPage .md-sw-ran { background: #5fd0b3; }
+        #JellyfinMedicPage .md-sw-planned { box-shadow: inset 0 0 0 2px #8e95a1; }
+        #JellyfinMedicPage .md-sw-ran { background: #8e95a1; }
+        #JellyfinMedicPage .md-sw-stopped { background: #5a6370; }
         #JellyfinMedicPage .md-sw-failed { background: #d9534f; }
         #JellyfinMedicPage .md-sw-spike { background: #ff9a9e; }
         #JellyfinMedicPage .md-sw-guard { background: #ffd27a; transform: rotate(45deg) scale(0.7); }
@@ -2040,12 +2053,6 @@
                     }
                     summary.textContent = todaySummary(pick(day, 'Summary') || {});
                     $('md-day-zone').textContent = zoneNote();
-                    const planned = el('span', 'md-day-lane', 'Planned');
-                    planned.style.top = '6px';
-                    box.appendChild(planned);
-                    const ran = el('span', 'md-day-lane', 'Ran');
-                    ran.style.top = '38px';
-                    box.appendChild(ran);
                     const category = {};
                     const backedOff = {};
                     (pick(day, 'Planned') || []).forEach(function (p) {
@@ -2089,6 +2096,11 @@
                             if (status === 'Running') b.classList.add('md-run-running');
                         }
                         box.appendChild(b);
+                        if (b.offsetLeft + b.offsetWidth > box.clientWidth) {
+                            // Wider than its run so its word fits: late in the day it would run off the right edge.
+                            b.style.left = 'auto';
+                            b.style.right = '0';
+                        }
                     });
                     $('md-day-repeats').textContent = Object.keys(repeats).length === 0 ? ''
                         : 'Repeats through the day: ' + Object.keys(repeats).map(function (id) {

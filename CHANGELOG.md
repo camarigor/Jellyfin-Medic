@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Today reads better, above all on a phone.** The lane names sat on the timeline, over the first runs and marks of the day, and a failed or stopped run late in the evening ran off its right edge. The names now sit beside the timeline and late blocks stay inside it. Stopped runs have their own colour and a place in the legend, and the legend says that runs take their task's colour, as on the Schedule tab.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added

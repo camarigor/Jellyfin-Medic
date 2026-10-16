@@ -1583,6 +1583,38 @@ await check('Dashboard panels: at the server\'s midnight Today fetches the new d
     }
 });
 
+await check('Dashboard panels: Today names its lanes beside the timeline, where they hide no run or mark', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => document.querySelectorAll('#md-day .md-day-block').length > 0, null, { timeout: 30000 });
+    const seen = await page.evaluate(() => ({
+        inside: document.querySelectorAll('#md-day .md-day-lane').length,
+        beside: Array.from(document.querySelectorAll('.md-day-lanes span')).map((l) => l.textContent)
+    }));
+    expect(seen.inside === 0 && JSON.stringify(seen.beside) === JSON.stringify(['Planned', 'Ran']), 'lane names: ' + JSON.stringify(seen));
+    return seen.beside.join(', ');
+});
+
+await check('Dashboard panels: a failed run late in the evening stays inside Today on a phone', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const late = { TaskId: 'e2e-late', TaskName: 'Fixture late task', StartMinutes: 1430, EndMinutes: 1432, Status: 'Failed', ErrorMessage: 'Fixture error' };
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Today: { ...data.Today, Actual: [...data.Today.Actual, late] } } }));
+    try {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => Array.from(document.querySelectorAll('#md-day .md-run-failed')).some((b) => /Fixture late task/.test(b.getAttribute('aria-label'))), null, { timeout: 30000 });
+        const edges = await page.evaluate(() => {
+            const day = document.getElementById('md-day').getBoundingClientRect();
+            const block = Array.from(document.querySelectorAll('#md-day .md-run-failed')).find((b) => /Fixture late task/.test(b.getAttribute('aria-label'))).getBoundingClientRect();
+            return { day: Math.round(day.right), block: Math.round(block.right), width: Math.round(block.width) };
+        });
+        expect(edges.block <= edges.day, `the late block ends at ${edges.block} px, the timeline at ${edges.day} px`);
+        return `${edges.width} px wide, ends at ${edges.block} of ${edges.day}`;
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+        await page.setViewportSize({ width: 1280, height: 720 });
+    }
+});
+
 await check('Dashboard panels: Network shows the speed test and the suggestion, Repeated log errors the scanner\'s list', async () => {
     await medicTab('dashboard', true);
     await page.waitForFunction(() => /Mbps up/.test(document.getElementById('md-net-big')?.textContent || ''), null, { timeout: 30000 });
