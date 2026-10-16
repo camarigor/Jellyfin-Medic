@@ -127,19 +127,43 @@ public sealed class PicksStoreTests : IDisposable
 
         Assert.Null(_store.GetTmdbKey());
         Assert.Equal("{ not json", File.ReadAllText(KeysFile));
-        Assert.False(File.Exists(KeysFile + ".bad"));
+        Assert.Empty(Directory.GetFiles(KeysDir, "*.bad"));
     }
 
     [Fact]
-    public void Saving_over_a_damaged_keys_file_keeps_it_as_bad()
+    public void Saving_over_a_damaged_keys_file_keeps_it_aside_with_the_time_in_its_name()
     {
         Directory.CreateDirectory(KeysDir);
         File.WriteAllText(KeysFile, "{ not json");
 
         _store.SetSeerrKey("seerr-key");
 
-        Assert.Equal("{ not json", File.ReadAllText(KeysFile + ".bad"));
+        string kept = Assert.Single(Directory.GetFiles(KeysDir, "secrets.json.*.bad"));
+        Assert.Equal("{ not json", File.ReadAllText(kept));
         Assert.Equal("seerr-key", _store.GetSeerrKey());
+    }
+
+    // ---------- Each person's choices ----------
+
+    [Fact]
+    public void A_damaged_choices_file_is_kept_aside_when_a_change_is_saved_over_it()
+    {
+        // Writing over it would lose the titles hidden in it.
+        var user = Guid.NewGuid();
+        var hidden = Guid.NewGuid();
+        string prefsDir = Path.Combine(KeysDir, "preferences");
+        Directory.CreateDirectory(prefsDir);
+        File.WriteAllText(Path.Combine(prefsDir, user.ToString("N") + ".json"), "{ not json");
+
+        _store.UpdatePreferences(user, p =>
+        {
+            p.HiddenItems.Add(hidden);
+            return p;
+        });
+
+        string kept = Assert.Single(Directory.GetFiles(prefsDir, user.ToString("N") + ".json.*.bad"));
+        Assert.Equal("{ not json", File.ReadAllText(kept));
+        Assert.Equal(new[] { hidden }, _store.LoadPreferences(user).HiddenItems);
     }
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
