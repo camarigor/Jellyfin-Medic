@@ -121,14 +121,8 @@ public class ProfilesController : ControllerBase
             return BadRequest();
         }
 
-        using var result = await _arr.GetAsync(a, "system/status", ct).ConfigureAwait(false);
-        // Named in full: this controller has its own Json method for its answers.
-        string? version = result.Json is { } doc ? Medic.Shared.Json.Text(doc.RootElement, "version") : null;
-        return Json(new
-        {
-            ok = result.Ok,
-            message = result.Ok ? $"{ArrClient.Name(a)} answered{(version is null ? string.Empty : " (version " + version + ")")} and accepted the key." : result.Message
-        });
+        var (ok, message) = await _arr.StatusAsync(a, ct).ConfigureAwait(false);
+        return Json(new { ok, message });
     }
 
     // ---------- Downloads ----------
