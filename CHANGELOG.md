@@ -7,6 +7,13 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Jellyfin's CPU reading no longer drops to 0% when an FFmpeg job ends.** Medic added up the CPU time of Jellyfin and of the FFmpeg processes running at that moment, so when a transcode or another FFmpeg job ended, its time left the total and the next reading could fall to 0%. That also cut spells of heavy use short, so some were never recorded. On Linux, the time of FFmpeg processes that have finished now stays in the total.
+- **Heavy use is recorded even when it starts soon after an earlier spell.** After recording a spell of heavy use, Medic waits 15 minutes before recording the same resource again, and a spell that reached 45 seconds during that wait was never recorded, however long it lasted. It's now recorded when the wait is over, if it's still going. A spell that goes on is also recorded again every 15 minutes, so an hour of it counts about 4 times in "Jellyfin ran flat out".
+- **The share of playback that's transcoded counts only video being converted, and leaves out paused streams.** Every transcode counted, including those that convert only the audio, and music, though that's light work hardware acceleration doesn't help with; they could push the share past 30%, where Medic flags it and, with hardware acceleration off, tells you to turn it on. A transcode now counts only when its video is converted. Paused streams counted as playback too; now they don't count at all, also in busy hours and "watching at once". Earlier readings stay in the share, so it changes gradually.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
