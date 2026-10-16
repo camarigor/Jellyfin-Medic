@@ -160,8 +160,22 @@ def published(repo: str, tag: str) -> str | None:
 def fetch_pulls(tag: str, repo: str, owner: str) -> list[dict]:
     """Other people's pull requests merged for this release that change its plugin."""
     prefix = plugin_prefix(tag)
-    previous = previous_tag(tag, git("tag", "--list").split())
+    tags = git("tag", "--list").split()
+    previous = previous_tag(tag, tags)
     after = published(repo, previous) if previous else None
+    # A tag without a release (it failed or was deleted) thanked nobody, so count from the release before it.
+    skipped = []
+    while previous and not after:
+        skipped.append(previous)
+        previous = previous_tag(previous, tags)
+        after = published(repo, previous) if previous else None
+    if skipped:
+        names = ", ".join(skipped)
+        if previous:
+            note = f"No release for {names}: the credits start at {previous}'s release ({after})"
+        else:
+            note = f"No release for {names} or earlier: every merged pull request counts"
+        print(note, file=sys.stderr)
     # While the release is being made it isn't published yet, so everything merged until now counts.
     until = published(repo, tag) or "9999"
 

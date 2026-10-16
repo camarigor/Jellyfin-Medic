@@ -1,7 +1,10 @@
 """Tests for scripts/release_credits.py: python3 -m unittest discover -s scripts/tests"""
+import contextlib
+import io
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -77,6 +80,65 @@ class CreditTests(unittest.TestCase):
 
     def test_nobody_to_thank(self):
         self.assertEqual(rc.credit_line({}), "")
+
+
+class FetchTests(unittest.TestCase):
+    TAGS = ("v1.0.17", "v1.0.18", "v1.0.19", "v1.0.20")
+    # When each release was published, in the tests that give that tag one.
+    RELEASES = {"v1.0.17": "2026-10-10T12:00:00Z", "v1.0.18": "2026-10-12T12:00:00Z",
+                "v1.0.19": "2026-10-14T23:00:00Z"}
+    # Newest first, as the API lists them, all by someone else and all changing Jellyfin Medic.
+    MERGED = {141: "2026-10-15T08:45:12Z", 140: "2026-10-13T21:00:00Z", 138: "2026-10-11T08:00:00Z",
+              137: "2026-10-09T10:00:00Z"}
+
+    def fetch(self, released, tags=TAGS) -> tuple[list[int], str]:
+        """fetch_pulls for v1.0.20 when, of these tags, only the released ones have a release.
+
+        Returns the numbers of the pull requests it keeps and what it printed to stderr.
+        """
+        def git(*args):
+            if args == ("tag", "--list"):
+                return "".join(f"{tag}\n" for tag in tags)
+            raise AssertionError(f"unexpected git {args}")
+
+        def pages(path):
+            if path.endswith("/files"):
+                return [{"filename": "src/JellyfinMedic/Plugin.cs"}]
+            return [{"number": number, "merged_at": merged_at, "user": {"login": "camarigor", "type": "User"}}
+                    for number, merged_at in self.MERGED.items()]
+
+        def published(repo, tag):
+            return self.RELEASES[tag] if tag in released else None
+
+        with (mock.patch.multiple(rc, git=git, pages=pages, published=published),
+              contextlib.redirect_stderr(io.StringIO()) as stderr):
+            pulls = rc.fetch_pulls("v1.0.20", "p1zzm1ssile/Jellyfin-Medic", "p1zzm1ssile")
+        return [pr["number"] for pr in pulls], stderr.getvalue()
+
+    def test_last_release_counts_from_when_it_was_published(self):
+        self.assertEqual(self.fetch(released={"v1.0.17", "v1.0.18", "v1.0.19"}), ([141], ""))
+
+    def test_tag_without_a_release_counts_from_the_release_before_it(self):
+        # Nobody thanked #140 yet: it was merged after v1.0.18's release, and v1.0.19 has no release.
+        self.assertEqual(self.fetch(released={"v1.0.17", "v1.0.18"}), (
+            [141, 140],
+            "No release for v1.0.19: the credits start at v1.0.18's release (2026-10-12T12:00:00Z)\n",
+        ))
+
+    def test_tags_in_a_row_without_a_release_count_from_the_release_before_them(self):
+        self.assertEqual(self.fetch(released={"v1.0.17"}), (
+            [141, 140, 138],
+            "No release for v1.0.19, v1.0.18: the credits start at v1.0.17's release (2026-10-10T12:00:00Z)\n",
+        ))
+
+    def test_no_earlier_release_counts_everything_merged(self):
+        self.assertEqual(self.fetch(released=set()), (
+            [141, 140, 138, 137],
+            "No release for v1.0.19, v1.0.18, v1.0.17 or earlier: every merged pull request counts\n",
+        ))
+
+    def test_first_release_counts_everything_merged(self):
+        self.assertEqual(self.fetch(released=set(), tags=("v1.0.20",)), ([141, 140, 138, 137], ""))
 
 
 if __name__ == "__main__":
