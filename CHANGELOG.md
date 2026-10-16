@@ -7,6 +7,12 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Missing and disabled Unraid disks are reported.** Medic skipped every disk whose Unraid status contained NP (no device present), so a missing disk (NP_MISSING) or a disabled one with no device in its slot (NP_DSBL) never showed, while a new disk added to an empty slot was reported as failing. Now only a healthy disk, an empty slot and a new disk are left out.
+- **Webhook destinations that don't need an address aren't called empty.** Medic counted every Webhook destination without an address as empty, but SMTP and MQTT never use one, and Pushover and Pushbullet send to their own service when it's left blank. Only Discord, Slack, Gotify, Generic and Generic Form destinations are counted now. The "extra text on the end" problem also leaves SMTP and MQTT out now, as they never use the address.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
