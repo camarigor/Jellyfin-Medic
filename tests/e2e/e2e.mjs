@@ -891,10 +891,11 @@ await check('Medic Profiles never sends a saved key to a new server, and keeps a
     const dir = '/config/data/medic-profiles';
     execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{not json' > ${dir}/secrets.json`]);
     await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
-    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'cat', `${dir}/secrets.json.bad`]).toString();
+    // It's kept beside it, named with the time it was set aside.
+    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `cat ${dir}/secrets.json.*.bad`]).toString();
     expect(kept.includes('{not json'), 'the damaged file was not kept: ' + kept);
     expect(await keySet(), 'the new key was not saved');
-    return 'key dropped for a new server; damaged file kept as secrets.json.bad';
+    return 'key dropped for a new server; damaged file kept beside it';
 });
 
 await check('Medic Profiles shows indexer status', async () => {

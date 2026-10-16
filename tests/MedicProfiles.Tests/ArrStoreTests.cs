@@ -104,18 +104,19 @@ public sealed class ArrStoreTests : IDisposable
 
         Assert.Null(_store.GetKey(ArrApp.Radarr));
         Assert.Equal("{ not json", File.ReadAllText(KeysFile));
-        Assert.False(File.Exists(KeysFile + ".bad"));
+        Assert.Empty(Directory.GetFiles(DataDir, "*.bad"));
     }
 
     [Fact]
-    public void Saving_over_a_damaged_keys_file_keeps_it_as_bad()
+    public void Saving_over_a_damaged_keys_file_keeps_it_aside_with_the_time_in_its_name()
     {
         Directory.CreateDirectory(DataDir);
         File.WriteAllText(KeysFile, "{ not json");
 
         _store.SetKey(ArrApp.Radarr, "radarr-key");
 
-        Assert.Equal("{ not json", File.ReadAllText(KeysFile + ".bad"));
+        string kept = Assert.Single(Directory.GetFiles(DataDir, "secrets.json.*.bad"));
+        Assert.Equal("{ not json", File.ReadAllText(kept));
         Assert.Equal("radarr-key", _store.GetKey(ArrApp.Radarr));
     }
 
@@ -142,6 +143,20 @@ public sealed class ArrStoreTests : IDisposable
         File.WriteAllText(Path.Combine(DataDir, "history.json"), "[ not json");
 
         Assert.Empty(_store.LoadHistory());
+    }
+
+    [Fact]
+    public void A_damaged_history_is_kept_aside_when_an_action_is_recorded()
+    {
+        // Writing over it would lose every action in it.
+        Directory.CreateDirectory(DataDir);
+        File.WriteAllText(Path.Combine(DataDir, "history.json"), "[ not json");
+
+        _store.Record(new ActionRecord { Title = "Newest" });
+
+        string kept = Assert.Single(Directory.GetFiles(DataDir, "history.json.*.bad"));
+        Assert.Equal("[ not json", File.ReadAllText(kept));
+        Assert.Equal(new[] { "Newest" }, _store.LoadHistory().Select(a => a.Title));
     }
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
