@@ -353,14 +353,37 @@ public class SeerrClient
                 throw new HttpRequestException($"Seerr answered {(int)response.StatusCode} when looking up an account");
             }
 
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
-            if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.TryGetInt32(out var seerrId))
+            using var doc = ParseAccount(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+            if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.Number && idEl.TryGetInt32(out var seerrId))
             {
                 return seerrId;
             }
         }
 
         return null;
+    }
+
+    // Something other than Seerr answering its address (a sign-in page in front of it, say) is as good as Seerr
+    // being out of reach, not a person who has never signed in to Seerr.
+    private static JsonDocument ParseAccount(string body)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(body);
+        }
+        catch (JsonException ex)
+        {
+            throw new HttpRequestException("Seerr's address answered the account lookup with something other than JSON", ex);
+        }
+
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            doc.Dispose();
+            throw new HttpRequestException("Seerr's address answered the account lookup with something other than an account");
+        }
+
+        return doc;
     }
 
     private bool Allow(Guid userId)

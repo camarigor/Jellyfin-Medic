@@ -8,6 +8,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 ### Fixed
 - **The saved Seerr key stays with its server.** Changing the Seerr address kept the saved key, and the next request, test or list sent it to the new address. When the address now points at a different server (another scheme, host or port), the saved key is removed and has to be pasted again, as Medic Profiles already does with its keys; a new path on the same server keeps it. The settings page now saves a key typed next to the new address after the address, so the new key is the one kept.
 - **A TMDb that stops answering no longer ends the nightly run.** When TMDb didn't answer, the call gave up in a way the nightly picks run took for being cancelled, so the run stopped at that person and everyone after them kept their old picks, library picks included. A TMDb call now gives up after 20 seconds and counts as TMDb being unavailable, as other TMDb failures already do: the run stops asking TMDb, keeps everyone's previous Discover picks and carries on with their library picks.
+- **My requests says Seerr is out of reach when something else answers its address.** A sign-in page in front of Seerr, or anything else answering its address with a web page, made My requests fail with a server error. That answer now counts as Seerr being out of reach: the page says so, and the log has a warning saying what kind of answer came back.
 
 ## [1.2.4] – 2026-10-14
 

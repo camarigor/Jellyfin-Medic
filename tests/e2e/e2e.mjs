@@ -784,6 +784,29 @@ await check('My picks page names itself with the plugin\'s version', async () =>
     return version;
 });
 
+await check('Medic Picks "My requests" says Seerr is out of reach when something else answers its address', async () => {
+    // A sign-in page in front of Seerr, say: it answers every address with 200 and a web page.
+    const http = await import('node:http');
+    const signIn = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><body>Sign in</body></html>');
+    });
+    await new Promise((resolve) => signIn.listen(18996, '0.0.0.0', resolve));
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18996', ShowRequests: true });
+    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+    try {
+        const mine = await api('GET', '/MedicPicks/Me/Requests');
+        expect(mine.status === 200 && mine.json?.reachable === false, `My requests: ${mine.status} ${mine.text.slice(0, 200)}`);
+        return 'reported as out of reach';
+    } finally {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        signIn.close();
+    }
+});
+
 await check('Medic Picks gives people only a Seerr address they can open', async () => {
     const id = 'b34ec5d1-b70f-435f-b77d-9b76979b03c7';
     const cfg = await ok(`/Plugins/${id}/Configuration`);
