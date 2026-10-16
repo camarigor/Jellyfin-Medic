@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **After a failure, a task you keep stays at its time, and no task is moved to start in the hours you avoid.** When a task fails, Medic moves it 3 hours later until it next succeeds. It did that even to a task you set to "Keep its schedule" in Schedule's "Preview changes", and even when the new time fell inside your "Never schedule tasks between" hours. It also moved the task before writing down its original time, so a task whose move couldn't be added to "Schedule changes" stayed moved for good. Medic now writes both down first, and leaves the task where it is when it can't. A back-off also ends when its task next succeeds even if "Schedule changes" can't be written then, so a later failure can move the task again.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
