@@ -3,6 +3,13 @@
 All notable changes to Medic Profiles are recorded here. The newest version is at the top.
 Jellyfin Medic and Medic Picks have their own changelogs.
 
+## Unreleased
+
+### Fixed
+- **The action history survives a damaged file.** A history file that couldn't be read was written over by the next action on the Downloads tab, losing every earlier action in it. It's now kept beside it, as the keys file already was, and a new history starts.
+- **Each damaged file is kept.** A file set aside is now named with the time (`secrets.json.20261016-153000.bad`, say), so a second damaged keys file no longer replaces the first `secrets.json.bad`.
+- **Saved files reach the disk before they replace the old ones.** The keys file and the action history are written to a temporary file and then swapped in; that file is now flushed to disk first, as Jellyfin Medic's own files are, so a power cut at the wrong moment can't leave an empty file in its place on file systems that would otherwise allow it.
+
 ## [1.1.3] – 2026-10-15
 
 ### Fixed
