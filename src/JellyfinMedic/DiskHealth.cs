@@ -14,6 +14,10 @@ public static class DiskHealth
     private const int HotSpinning = 55;
     private const int HotSolidState = 70;
 
+    // Unraid statuses that aren't a fault: a healthy disk, an empty slot, and a new disk added to an empty slot.
+    // Matched whole: NP_MISSING and NP_DSBL have no device present either, but they're array disks that dropped out.
+    private static readonly HashSet<string> HarmlessStatuses = new(StringComparer.OrdinalIgnoreCase) { "DISK_OK", "DISK_NP", "DISK_NEW" };
+
     private static readonly string[] DisksIniPaths =
     {
         "/var/local/emhttp/disks.ini",
@@ -51,7 +55,7 @@ public static class DiskHealth
                 {
                     failing.Add($"{name}: {errors} read/write errors");
                 }
-                else if (status.Length > 0 && !status.Equals("DISK_OK", StringComparison.OrdinalIgnoreCase) && status.StartsWith("DISK_", StringComparison.OrdinalIgnoreCase) && !status.Contains("NP", StringComparison.OrdinalIgnoreCase))
+                else if (status.StartsWith("DISK_", StringComparison.OrdinalIgnoreCase) && !HarmlessStatuses.Contains(status))
                 {
                     failing.Add($"{name}: {status.Replace("DISK_", string.Empty)}");
                 }
