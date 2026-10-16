@@ -772,7 +772,8 @@ public class MedicController : ControllerBase
     [HttpPost("ExposureCheck")]
     public async Task<ActionResult<ExposureResult>> ExposureCheck([FromQuery] string host, [FromQuery] int port = 443, [FromQuery] string protocol = "https", CancellationToken cancellationToken = default)
     {
-        return Ok(await ExposureChecker.CheckAsync(host, port, protocol, cancellationToken).ConfigureAwait(false));
+        string? baseUrl = SettingsReader.Text(TryNetwork(), "BaseUrl");
+        return Ok(await ExposureChecker.CheckAsync(host, port, protocol, baseUrl, cancellationToken).ConfigureAwait(false));
     }
 
     private object? TryNetwork()

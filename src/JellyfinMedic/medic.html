@@ -3457,15 +3457,23 @@
                 }
 
                 let exposeIp = null;
+                // Boxes the admin has typed in or picked: suggestions never overwrite them, here or on a later visit.
+                const exposeChosen = new Set();
+                ['md-expose-host', 'md-expose-port', 'md-expose-protocol'].forEach(function (id) {
+                    $(id).addEventListener('input', function () { exposeChosen.add(id); });
+                    $(id).addEventListener('change', function () { exposeChosen.add(id); });
+                });
+                function suggestExposure(id, value) {
+                    if (value && !exposeChosen.has(id)) $(id).value = String(value);
+                }
+
                 async function loadExposureDefaults() {
                     try {
                         const d = await getJson('/JellyfinMedic/ExposureDefaults');
-                        if ($('md-expose-host') && !$('md-expose-host').value && pick(d, 'Domain')) {
-                            $('md-expose-host').value = pick(d, 'Domain');
-                        }
-                        if (pick(d, 'Port')) $('md-expose-port').value = String(pick(d, 'Port'));
-                        if (pick(d, 'Protocol')) $('md-expose-protocol').value = pick(d, 'Protocol');
-                    } catch (e) { /* leave the boxes blank */ }
+                        if (!$('md-expose-host').value) suggestExposure('md-expose-host', pick(d, 'Domain'));
+                        suggestExposure('md-expose-port', pick(d, 'Port'));
+                        suggestExposure('md-expose-protocol', pick(d, 'Protocol'));
+                    } catch (e) { /* leave the boxes as they are */ }
                 }
 
                 // The public IP is only looked up on this button: finding it means asking a service on the internet.
@@ -3478,8 +3486,10 @@
                     }
                     if (!exposeIp) { out.textContent = 'Couldn\'t find your public IP. Type it in instead.'; out.className = 'so-muted so-small'; return; }
                     $('md-expose-host').value = exposeIp;
-                    $('md-expose-port').value = '8096';
-                    $('md-expose-protocol').value = 'http';
+                    suggestExposure('md-expose-port', 8096);
+                    suggestExposure('md-expose-protocol', 'http');
+                    // Pressing the button is a choice too, so coming back to the tab keeps what it filled in.
+                    ['md-expose-host', 'md-expose-port', 'md-expose-protocol'].forEach(function (id) { exposeChosen.add(id); });
                 });
 
                 $('md-expose').addEventListener('click', async function () {
@@ -3487,26 +3497,26 @@
                     const out = $('md-expose-result');
                     const host = $('md-expose-host').value.trim();
                     if (!host) { out.textContent = 'Enter a domain or IP address first.'; out.className = 'so-muted so-small'; return; }
+                    const port = parseInt($('md-expose-port').value, 10) || 443;
+                    const protocol = $('md-expose-protocol').value;
                     btn.disabled = true;
-                    out.textContent = 'Checking ' + host + '…';
+                    out.textContent = 'Checking ' + protocol + '://' + host + ':' + port + '…';
                     out.className = 'so-muted so-small';
                     try {
-                        const r = await postJson('/JellyfinMedic/ExposureCheck', {
-                            host: host,
-                            port: parseInt($('md-expose-port').value, 10) || 443,
-                            protocol: $('md-expose-protocol').value
-                        });
-                        const where = pick(r, 'Host') + ':' + pick(r, 'Port');
+                        const r = await postJson('/JellyfinMedic/ExposureCheck', { host: host, port: port, protocol: protocol });
+                        const where = pick(r, 'Url') || (protocol + '://' + host + ':' + port);
+                        // Under a base URL, an answer that isn't Jellyfin means the root was asked as well.
+                        const alsoRoot = /^[a-z]+:\/\/[^/]+\/./i.test(where) ? ' (and at the root)' : '';
                         // A test from this server only shows this server's view, so it never reads as "closed to the internet".
                         const fromHere = pick(r, 'FromThisServer');
                         if (pick(r, 'Error')) { out.textContent = pick(r, 'Error'); out.className = 'so-muted so-small'; }
                         else if (pick(r, 'Reachable') && pick(r, 'RespondedAsJellyfin')) { out.textContent = 'Jellyfin answered at ' + where + ' (tested from this server, not from the internet). If that\'s your HTTPS reverse proxy, that\'s expected: keep HTTPS on and use strong passwords. If it\'s the raw Jellyfin port, don\'t open it to the internet; use the proxy instead.'; out.className = 'md-warn-text so-small'; }
-                        else if (pick(r, 'Reachable') && fromHere) { out.textContent = 'Something answered at ' + where + ' (tested from this server), but it didn\'t look like Jellyfin. It may be your reverse proxy, a redirect, a certificate this server doesn\'t trust, or another service.'; out.className = 'md-warn-text so-small'; }
+                        else if (pick(r, 'Reachable') && fromHere) { out.textContent = 'Something answered at ' + where + alsoRoot + ' (tested from this server), but it didn\'t look like Jellyfin. It may be your reverse proxy, a redirect, a certificate this server doesn\'t trust, or another service.'; out.className = 'md-warn-text so-small'; }
                         else if (pick(r, 'Reachable')) { out.textContent = 'Something answers at ' + where + ' from the internet (checked by portchecker.io, which only sees that the port is open). If that\'s the raw Jellyfin port, close it and use an HTTPS reverse proxy instead.'; out.className = 'md-warn-text so-small'; }
                         else if (fromHere) { out.textContent = 'Nothing answered at ' + where + ' when this server tried it. That doesn\'t prove it\'s closed to the internet: many routers can\'t reach their own public address from inside, and a domain can point elsewhere on your network.'; out.className = 'so-muted so-small'; }
                         else { out.textContent = 'Nothing answered at ' + where + ' from the internet. Only people on your network or VPN can reach it there (or your ISP uses CGNAT, which blocks this test).'; out.className = 'md-ok-text so-small'; }
                     } catch (e) {
-                        out.textContent = 'Couldn\'t run the check.';
+                        out.textContent = 'Couldn\'t run the check of ' + protocol + '://' + host + ':' + port + '.';
                     } finally {
                         btn.disabled = false;
                     }
