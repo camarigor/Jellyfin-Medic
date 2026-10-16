@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Jellyfin.Plugin.MedicPicks.Configuration;
+using Jellyfin.Plugin.MedicPicks.Picks;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
@@ -23,6 +24,11 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         Instance = this;
     }
 
+    /// <summary>
+    /// Raised when saved settings are about to point the Seerr address at another server, before they take effect.
+    /// </summary>
+    public event EventHandler? SeerrServerChanging;
+
     public static Plugin? Instance { get; private set; }
 
     public override string Name => "Medic Picks";
@@ -32,6 +38,17 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public override string Description =>
         "Personal picks from each user's viewing habits: a private playlist in every Jellyfin app, "
         + "plus a My picks page with titles that aren't on the server yet.";
+
+    public override void UpdateConfiguration(BasePluginConfiguration configuration)
+    {
+        // Raised before the new address is in use, so no request can pair it with the old server's key.
+        if (configuration is PluginConfiguration next && SeerrKeyGuard.HostChanged(Configuration.JellyseerrUrl, next.JellyseerrUrl))
+        {
+            SeerrServerChanging?.Invoke(this, EventArgs.Empty);
+        }
+
+        base.UpdateConfiguration(configuration);
+    }
 
     public IEnumerable<PluginPageInfo> GetPages()
     {

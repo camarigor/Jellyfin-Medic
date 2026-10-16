@@ -35,7 +35,6 @@ const indexers = [
 const routes = {
     '/api/v3/system/status': () => ({ appName: 'Sonarr', version: '4.0.9.2244' }),
     '/api/v3/indexer': () => indexers,
-    '/api/v3/indexerstatus': () => [{ indexerId: 2, initialFailure: new Date(Date.now() - 3 * 3600e3).toISOString(), mostRecentFailure: new Date().toISOString(), disabledTill: new Date(Date.now() + 3600e3).toISOString() }],
     '/api/v3/health': () => [{ source: 'IndexerStatusCheck', type: 'warning', message: 'Indexers unavailable due to failures: Broken Indexer' }],
     '/api/v3/queue': queuePage,
     '/api/v3/queue/bulk': () => ({}),
@@ -115,16 +114,13 @@ export function startQbit(port) {
 
 // A pretend Seerr: every Jellyfin account is Seerr user 42, and it remembers which Seerr user each
 // approve or decline was made as (X-API-User). Its request list ignores ?requestedBy= on purpose and
-// always holds one request by user 42 and one by user 7.
-export const seerr = { decisions: [] };
+// always holds one request by user 42 and one by user 7, plus any a check adds to extraRequests.
+export const seerr = { decisions: [], extraRequests: [] };
 
-const requestList = {
-    pageInfo: { results: 2 },
-    results: [
-        { id: 11, status: 1, type: 'movie', createdAt: '2026-10-01T10:00:00.000Z', media: { tmdbId: 550, mediaType: 'movie', status: 2 }, requestedBy: { id: 42 } },
-        { id: 12, status: 1, type: 'movie', createdAt: '2026-10-02T10:00:00.000Z', media: { tmdbId: 551, mediaType: 'movie', status: 2 }, requestedBy: { id: 7 } }
-    ]
-};
+const requests = [
+    { id: 11, status: 1, type: 'movie', createdAt: '2026-10-01T10:00:00.000Z', media: { tmdbId: 550, mediaType: 'movie', status: 2 }, requestedBy: { id: 42 } },
+    { id: 12, status: 1, type: 'movie', createdAt: '2026-10-02T10:00:00.000Z', media: { tmdbId: 551, mediaType: 'movie', status: 2 }, requestedBy: { id: 7 } }
+];
 
 export function startSeerr(port) {
     const server = http.createServer((req, res) => {
@@ -136,7 +132,8 @@ export function startSeerr(port) {
             return;
         }
         if (req.method === 'GET' && path === '/api/v1/request') {
-            res.end(JSON.stringify(requestList));
+            const results = [...requests, ...seerr.extraRequests];
+            res.end(JSON.stringify({ pageInfo: { results: results.length }, results }));
             return;
         }
         const title = path.match(/^\/api\/v1\/movie\/(\d+)$/);

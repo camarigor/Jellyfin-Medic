@@ -400,6 +400,12 @@ public static class PluginRules
 
     // ---------- Webhook ----------
 
+    // Destination types that send to their address and fail without one. Pushover and Pushbullet send to it as well
+    // when it's set, and to their own service when it's empty. SMTP and MQTT never use it, and types Webhook may add
+    // later are left alone, as what they do with it isn't known.
+    private static readonly HashSet<string> WebhookNeedsAddress = new(StringComparer.Ordinal) { "DiscordOptions", "SlackOptions", "GotifyOptions", "GenericOptions", "GenericFormOptions" };
+    private static readonly HashSet<string> WebhookUsesAddress = new(WebhookNeedsAddress, StringComparer.Ordinal) { "PushoverOptions", "PushbulletOptions" };
+
     private static void Webhook(PluginReport r, XElement root, IReadOnlyDictionary<string, XElement> active, PluginContext ctx)
     {
         var destinations = root.Elements()
@@ -408,7 +414,10 @@ public static class PluginRules
             .Where(e => Flag(e, "EnableWebhook") != false)
             .ToList();
 
-        int empty = destinations.Count(d => string.IsNullOrWhiteSpace(Text(d, "WebhookUri")));
+        // A destination's type is the list it's saved in, such as DiscordOptions.
+        static string TypeOf(XElement destination) => destination.Parent?.Name.LocalName ?? string.Empty;
+
+        int empty = destinations.Count(d => WebhookNeedsAddress.Contains(TypeOf(d)) && string.IsNullOrWhiteSpace(Text(d, "WebhookUri")));
         if (empty > 0)
         {
             Add(r, Sev.Tip, $"{r.Name} has {(empty == 1 ? "an empty destination" : $"{empty} empty destinations")}", "No address", "Delete it",
@@ -419,7 +428,7 @@ public static class PluginRules
         {
             string uri = Text(d, "WebhookUri") ?? string.Empty;
             string name = Text(d, "WebhookName") is { Length: > 0 } n ? n : "unnamed";
-            if (uri.Length > 0 && (uri.Trim().Contains(' ', StringComparison.Ordinal) || uri.Contains('`', StringComparison.Ordinal) || uri.Contains("[span", StringComparison.OrdinalIgnoreCase)))
+            if (uri.Length > 0 && WebhookUsesAddress.Contains(TypeOf(d)) && (uri.Trim().Contains(' ', StringComparison.Ordinal) || uri.Contains('`', StringComparison.Ordinal) || uri.Contains("[span", StringComparison.OrdinalIgnoreCase)))
             {
                 // The address isn't shown: it can contain a bot token.
                 Add(r, Sev.Problem, $"{r.Name}'s \"{name}\" address has extra text on the end", "Text after the web address",
