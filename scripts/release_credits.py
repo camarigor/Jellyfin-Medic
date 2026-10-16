@@ -7,7 +7,7 @@ changelog credit contributors without anyone having to remember:
   python3 scripts/release_credits.py v1.0.20 [--changes CHANGES.md]
 
 It finds the pull requests merged after the previous release of the same plugin (v*, picks-v*,
-profiles-v* or posters-v*) was published and up to this one, that change that plugin's files. Whoever opened one, other than the
+profiles-v*, posters-v* or film-posters-v*) was published and up to this one, that change that plugin's files. Whoever opened one, other than the
 repository owner and bots, is thanked with their pull requests:
 
   Thanks @someone (#117, #121) for their work on this release.
@@ -33,18 +33,19 @@ import urllib.request
 
 PICKS = "Jellyfin.Plugin.MedicPicks/"
 PROFILES = "Jellyfin.Plugin.MedicProfiles/"
-POSTERS = "Jellyfin.Plugin.MedicPosters/"
+ANIMATED = "Jellyfin.Plugin.AnimatedPosters/"
+FILM_POSTERS = "Jellyfin.Plugin.MedicPosters/"
 PICKS_TESTS = "tests/MedicPicks.Tests/"
-POSTERS_TESTS = "tests/MedicPosters.Tests/"
+FILM_POSTERS_TESTS = "tests/MedicPosters.Tests/"
 # Files the release workflows write to main for every plugin, which say nothing about who did the work.
 SHARED = {"manifest.json"}
 
 
 def plugin_prefix(tag: str) -> str:
-    for prefix in ("picks-v", "profiles-v", "posters-v", "v"):
+    for prefix in ("picks-v", "profiles-v", "posters-v", "film-posters-v", "v"):
         if tag.startswith(prefix) and re.fullmatch(r"[0-9]+(\.[0-9]+)*", tag[len(prefix):]):
             return prefix
-    raise ValueError(f"{tag} isn't a release tag (v1.2.3, picks-v1.2.3, profiles-v1.2.3 or posters-v1.2.3)")
+    raise ValueError(f"{tag} isn't a release tag (v1.2.3, picks-v1.2.3, profiles-v1.2.3, posters-v1.2.3 or film-posters-v1.2.3)")
 
 
 def belongs_to(prefix: str, path: str) -> bool:
@@ -56,9 +57,11 @@ def belongs_to(prefix: str, path: str) -> bool:
     if prefix == "profiles-v":
         return path.startswith(PROFILES)
     if prefix == "posters-v":
-        return path.startswith((POSTERS, POSTERS_TESTS))
+        return path.startswith(ANIMATED)
+    if prefix == "film-posters-v":
+        return path.startswith((FILM_POSTERS, FILM_POSTERS_TESTS))
     # Jellyfin Medic is everything else: its code, tests, docs and the build.
-    return not path.startswith((PICKS, PICKS_TESTS, PROFILES, POSTERS, POSTERS_TESTS))
+    return not path.startswith((PICKS, PICKS_TESTS, PROFILES, ANIMATED, FILM_POSTERS, FILM_POSTERS_TESTS))
 
 
 def version_key(version: str):

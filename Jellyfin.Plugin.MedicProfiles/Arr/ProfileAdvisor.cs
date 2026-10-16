@@ -12,6 +12,7 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
+using Medic.Shared;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicProfiles.Arr;

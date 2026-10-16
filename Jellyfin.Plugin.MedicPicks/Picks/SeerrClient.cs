@@ -9,7 +9,9 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Net;
+using Medic.Shared;
 using Microsoft.Extensions.Logging;
+using static Medic.Shared.Json;
 
 namespace Jellyfin.Plugin.MedicPicks.Picks;
 
@@ -126,7 +128,7 @@ public class SeerrClient
 
             using var response = await SendAsync(request, ct).ConfigureAwait(false);
             string text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            string? seerrMessage = MessageFrom(text);
+            string? seerrMessage = ServiceHttp.ErrorMessage(text);
 
             if (response.IsSuccessStatusCode)
             {
@@ -275,7 +277,7 @@ public class SeerrClient
                 return (false, "Someone has already approved or declined it.");
             }
 
-            string? seerrMessage = MessageFrom(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+            string? seerrMessage = ServiceHttp.ErrorMessage(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
             return (false, string.IsNullOrWhiteSpace(seerrMessage) ? $"Seerr answered with {(int)response.StatusCode}." : "Seerr says: " + seerrMessage);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -313,6 +315,13 @@ public class SeerrClient
 
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
             var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                // Not a title: say nothing rather than remember "Unknown title" for a day.
+                _logger.LogDebug("Medic Picks: Seerr sent something other than a title for {Type} {Id}", type, tmdbId);
+                return null;
+            }
+
             string? name = Text(root, type == "tv" ? "name" : "title") ?? Text(root, "originalTitle") ?? Text(root, "originalName");
             string? date = Text(root, type == "tv" ? "firstAirDate" : "releaseDate");
             var title = new SeerrTitle
@@ -330,9 +339,6 @@ public class SeerrClient
             return null;
         }
     }
-
-    private static string? Text(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private async Task<int?> FindSeerrUserAsync(string baseUrl, string key, Guid jellyfinUserId, CancellationToken ct)
     {
@@ -353,14 +359,37 @@ public class SeerrClient
                 throw new HttpRequestException($"Seerr answered {(int)response.StatusCode} when looking up an account");
             }
 
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
-            if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.TryGetInt32(out var seerrId))
+            using var doc = ParseAccount(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+            if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.Number && idEl.TryGetInt32(out var seerrId))
             {
                 return seerrId;
             }
         }
 
         return null;
+    }
+
+    // Something other than Seerr answering its address (a sign-in page in front of it, say) is as good as Seerr
+    // being out of reach, not a person who has never signed in to Seerr.
+    private static JsonDocument ParseAccount(string body)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(body);
+        }
+        catch (JsonException ex)
+        {
+            throw new HttpRequestException("Seerr's address answered the account lookup with something other than JSON", ex);
+        }
+
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            doc.Dispose();
+            throw new HttpRequestException("Seerr's address answered the account lookup with something other than an account");
+        }
+
+        return doc;
     }
 
     private bool Allow(Guid userId)
@@ -386,34 +415,10 @@ public class SeerrClient
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>Sends a request to Seerr. A call that runs out of time fails like an unreachable Seerr, not like a cancelled page.</summary>
-    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(CallTimeout);
-        try
-        {
-            return await Client().SendAsync(request, timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            throw new HttpRequestException($"Seerr didn't answer within {CallTimeout.TotalSeconds:0} seconds");
-        }
-    }
+    private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+        ServiceHttp.SendAsync(Client(), request, CallTimeout, "Seerr", ct);
 
     private static string Url(string baseUrl, string path) => baseUrl.TrimEnd('/') + path;
-
-    private static string? MessageFrom(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            return doc.RootElement.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
 
     private static int? StatusFrom(string json)
     {

@@ -1,9 +1,9 @@
-# Builds and releases Medic Posters when you push a tag like posters-v1.0.0,
+# Builds and releases Animated Posters when you push a tag like posters-v1.0.0,
 # then adds it to manifest.json beside Jellyfin Medic.
 # Jellyfin Medic keeps its own release.yml and its v1.x.x tags; this file doesn't touch them.
-# Posters releases are never marked "Latest", so the repo page keeps showing Jellyfin Medic.
+# Animated Posters releases are never marked "Latest", so the repo page keeps showing Jellyfin Medic.
 
-name: Release Medic Posters
+name: Release Animated Posters
 
 on:
   push:
@@ -18,16 +18,16 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PROJECT: 'Jellyfin.Plugin.MedicPosters/Jellyfin.Plugin.MedicPosters.csproj'
-  CHANGELOG_FILE: 'Jellyfin.Plugin.MedicPosters/CHANGELOG.md'
-  DLL: 'Jellyfin.Plugin.MedicPosters.dll'
-  GUID: 'f8a6666f-5278-45ae-8e5d-abcec99de310'
-  NAME: 'Medic Posters'
+  PROJECT: 'Jellyfin.Plugin.AnimatedPosters/Jellyfin.Plugin.AnimatedPosters.csproj'
+  CHANGELOG_FILE: 'Jellyfin.Plugin.AnimatedPosters/CHANGELOG.md'
+  DLL: 'Jellyfin.Plugin.AnimatedPosters.dll'
+  GUID: '892f168c-c44e-4abf-b72f-6ebce7b90fdc'
+  NAME: 'Animated Posters'
   OWNER: 'P1zzm1ssile'
   TARGET_ABI: '12.0.0.0'   # built against Jellyfin 12.0, so it loads on 12.0 and 12.1
-  DESCRIPTION: "Animated posters for your films, made from moments of each film."
-  OVERVIEW: "A small animated GIF poster for every film, cut from a few moments of it with its title in a big serif font and a rounded white frame. Each film's own poster is kept and can be put back."
-  IMAGE: 'https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPosters/thumb.png'
+  DESCRIPTION: "Animated, randomized library cards on the Jellyfin home screen."
+  OVERVIEW: "Turns the My Media library cards into a slow crossfade of random artwork from each library, keeps or blends your own library art, and can hide the library names and card borders."
+  IMAGE: 'https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.AnimatedPosters/thumb.png'
 
 jobs:
   # Unit and end-to-end tests first: nothing is released or added to the manifest unless they pass.
@@ -59,7 +59,7 @@ jobs:
           IFS='.' read -r A B C D <<< "$VER"
           VER4="${A:-0}.${B:-0}.${C:-0}.${D:-0}"
           echo "version=$VER4" >> "$GITHUB_OUTPUT"
-          echo "zip=MedicPosters-v${VER}.zip" >> "$GITHUB_OUTPUT"
+          echo "zip=AnimatedPosters-v${VER}.zip" >> "$GITHUB_OUTPUT"
           if [ "${A:-0}" = "0" ]; then echo "prerelease=true"; else echo "prerelease=false"; fi >> "$GITHUB_OUTPUT"
 
       - name: Check the tag matches the project version

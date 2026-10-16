@@ -14,6 +14,7 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(rc.plugin_prefix("picks-v1.2.4"), "picks-v")
         self.assertEqual(rc.plugin_prefix("profiles-v1.1.3"), "profiles-v")
         self.assertEqual(rc.plugin_prefix("posters-v1.0.0"), "posters-v")
+        self.assertEqual(rc.plugin_prefix("film-posters-v1.0.0"), "film-posters-v")
         with self.assertRaises(ValueError):
             rc.plugin_prefix("nightly")
 
@@ -34,10 +35,13 @@ class PluginTests(unittest.TestCase):
         self.assertFalse(rc.belongs_to("picks-v", "src/JellyfinMedic/Plugin.cs"))
         self.assertTrue(rc.belongs_to("profiles-v", "Jellyfin.Plugin.MedicProfiles/Plugin.cs"))
         self.assertFalse(rc.belongs_to("profiles-v", "manifest.json"))
-        self.assertTrue(rc.belongs_to("posters-v", "Jellyfin.Plugin.MedicPosters/Plugin.cs"))
-        self.assertTrue(rc.belongs_to("posters-v", "tests/MedicPosters.Tests/PosterMakerTests.cs"))
+        self.assertTrue(rc.belongs_to("posters-v", "Jellyfin.Plugin.AnimatedPosters/Plugin.cs"))
+        self.assertFalse(rc.belongs_to("posters-v", "Jellyfin.Plugin.MedicPosters/Plugin.cs"))
+        self.assertTrue(rc.belongs_to("film-posters-v", "Jellyfin.Plugin.MedicPosters/Plugin.cs"))
+        self.assertTrue(rc.belongs_to("film-posters-v", "tests/MedicPosters.Tests/PosterMakerTests.cs"))
+        self.assertFalse(rc.belongs_to("film-posters-v", "Jellyfin.Plugin.AnimatedPosters/Plugin.cs"))
         self.assertFalse(rc.belongs_to("v", "Jellyfin.Plugin.MedicPosters/Plugin.cs"))
-        self.assertFalse(rc.belongs_to("profiles-v", "Jellyfin.Plugin.MedicPosters/Plugin.cs"))
+        self.assertFalse(rc.belongs_to("v", "Jellyfin.Plugin.AnimatedPosters/Plugin.cs"))
 
 
 class WindowTests(unittest.TestCase):

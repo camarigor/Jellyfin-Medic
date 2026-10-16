@@ -1,8 +1,8 @@
 ===============================================================================
-         JELLYFIN MEDIC, MEDIC PICKS, MEDIC PROFILES AND MEDIC POSTERS: FEATURE LIST
+         JELLYFIN MEDIC, MEDIC PICKS, MEDIC PROFILES AND THE POSTER PLUGINS
 ===============================================================================
 
-This repository contains four Jellyfin plugins:
+This repository contains five Jellyfin plugins:
 
   1. JELLYFIN MEDIC
      For the person who runs the server. Health checks, performance tests,
@@ -19,7 +19,11 @@ This repository contains four Jellyfin plugins:
      dashboard: downloads, fixes, and quality profile advice.
      Needs Jellyfin 12.0 or later. Administrators only.
 
-  4. MEDIC POSTERS
+  4. ANIMATED POSTERS
+     Library cards on the home screen that fade between artwork from each
+     library, in the browser and desktop apps. See its section in README.md.
+
+  5. MEDIC POSTERS
      For everyone who uses the server, set up by the person who runs it.
      Animated posters for every film, cut from moments of the film.
      Needs Jellyfin 12.0 or later. Settings are for administrators only.
@@ -28,7 +32,7 @@ Each plugin's current version and what changed are in its changelog (CHANGELOG.m
 Jellyfin.Plugin.MedicPicks/CHANGELOG.md, Jellyfin.Plugin.MedicProfiles/CHANGELOG.md,
 Jellyfin.Plugin.MedicPosters/CHANGELOG.md).
 
-All four are installed from the same plugin repository:
+All five are installed from the same plugin repository:
   https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/manifest.json
 
 
@@ -636,9 +640,9 @@ PART 3: MEDIC PROFILES
 One page in the dashboard sidebar, under Plugins > Medic Profiles. Only
 administrators can open it. Nothing changes in Sonarr or Radarr until you
 press a button. Tabs: Downloads, Blocked, Indexers, Profiles, History, Settings.
-  - Indexers: each indexer Sonarr and Radarr search and whether it's working,
-    failing (and paused until when) or switched off, plus their own indexer
-    warnings. Prowlarr's indexers show too, as Prowlarr adds them.
+  - Indexers: each indexer Sonarr and Radarr search and whether it's enabled,
+    paused after failures or switched off, plus their own indexer warnings.
+    Prowlarr's indexers show too, as Prowlarr adds them.
   - Block unsafe files: tells qBittorrent (4.6+) to skip program files (.exe,
     .bat, .scr and similar) inside torrents, keeping your own entries in its
     "Excluded file names" list. Archives (.rar, .zip, .7z) optional.
@@ -750,7 +754,7 @@ press a button. Tabs: Downloads, Blocked, Indexers, Profiles, History, Settings.
 
 
 ===============================================================================
-PART 4: MEDIC POSTERS
+PART 4: MEDIC POSTERS (PLUGIN 5)
 ===============================================================================
 
 Found under Plugins -> Medic Posters. Settings are for administrators only.

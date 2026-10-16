@@ -39,9 +39,13 @@
         return /#\/?(home|home\.html)?(\?|$)/.test(location.hash) || location.hash === '';
     }
 
-    function render(alerts) {
+    function removeBox() {
         var old = document.getElementById(ID);
         if (old) old.remove();
+    }
+
+    function render(alerts) {
+        removeBox();
         var hidden = dismissed();
         var show = (alerts || []).filter(function (a) { return hidden.indexOf(a.Id) < 0; });
         if (!show.length || !onHome()) return;
@@ -82,10 +86,33 @@
         document.body.appendChild(box);
     }
 
+    function tokenOf(api) {
+        return api && api.accessToken ? api.accessToken() : null;
+    }
+
+    function userIdOf(api) {
+        return api && typeof api.getCurrentUserId === 'function' ? api.getCurrentUserId() : null;
+    }
+
+    // An answer can arrive after a sign-out or a change of person (the page doesn't reload for either):
+    // it's only used while the sign-in it was asked for is still the current one.
+    function stillSignedIn(userId, token) {
+        var api = window.ApiClient;
+        return tokenOf(api) === token && userIdOf(api) === userId;
+    }
+
     function check() {
         var api = window.ApiClient;
-        if (!api || !api.accessToken || !api.accessToken()) return;
-        var userId = typeof api.getCurrentUserId === 'function' ? api.getCurrentUserId() : null;
+        var token = tokenOf(api);
+        if (!token) {
+            // Signed out: Jellyfin's web app doesn't reload for that, so take the banners off the sign-in screen,
+            // and forget them so the next sign-in fetches its own. Each person's dismissed list is kept.
+            cached = [];
+            cachedFor = null;
+            removeBox();
+            return;
+        }
+        var userId = userIdOf(api);
         if (userId && userId === cachedFor && Date.now() - lastCheck < 5 * 60 * 1000) { render(cached); return; }
         // Someone else signed in (Jellyfin's web app doesn't reload for that): drop the previous person's banners now.
         lastCheck = Date.now();
@@ -93,8 +120,10 @@
         cached = [];
         render(cached);
         api.getCurrentUser().then(function (user) {
+            if (!stillSignedIn(userId, token)) return;
             if (!user || !user.Policy || !user.Policy.IsAdministrator) { cached = []; return; }
             return api.getJSON(api.getUrl('JellyfinMedic/Alerts')).then(function (alerts) {
+                if (!stillSignedIn(userId, token)) return;
                 cached = alerts || [];
                 render(cached);
             });
@@ -106,7 +135,7 @@
     var tries = 0;
     var wait = setInterval(function () {
         tries++;
-        if ((window.ApiClient && window.ApiClient.accessToken && window.ApiClient.accessToken()) || tries > 60) {
+        if (tokenOf(window.ApiClient) || tries > 60) {
             clearInterval(wait);
             check();
         }

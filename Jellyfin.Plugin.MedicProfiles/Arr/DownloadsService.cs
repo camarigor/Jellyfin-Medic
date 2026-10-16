@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using Medic.Shared;
 
 namespace Jellyfin.Plugin.MedicProfiles.Arr;
 
@@ -742,25 +743,4 @@ public class DownloadsService
 
     private static string Simplify(string text) =>
         new string(text.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
-}
-
-/// <summary>Forgiving JSON readers: Sonarr and Radarr versions differ, so a missing field is never an error.</summary>
-internal static class Json
-{
-    public static string? Text(JsonElement e, string name) =>
-        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    public static int? Int(JsonElement e, string name) =>
-        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? (int)d : null;
-
-    public static long Long(JsonElement e, string name) =>
-        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? (long)d : 0;
-
-    public static bool Bool(JsonElement e, string name) =>
-        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
-
-    public static DateTime? Date(JsonElement e, string name) =>
-        Text(e, name) is { } s && DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var d)
-            ? d
-            : null;
 }

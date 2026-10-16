@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end tests: builds the four plugins, starts a real Jellyfin in Docker with them
+# End-to-end tests: builds the five plugins, starts a real Jellyfin in Docker with them
 # installed and some sample films, then runs e2e.mjs against it.
 #
 #   tests/e2e/run.sh            build, start, test, stop
@@ -29,6 +29,7 @@ build() { # project, folder, dll
 build src/JellyfinMedic/JellyfinMedic.csproj JellyfinMedic JellyfinMedic.dll
 build Jellyfin.Plugin.MedicPicks/Jellyfin.Plugin.MedicPicks.csproj MedicPicks Jellyfin.Plugin.MedicPicks.dll
 build Jellyfin.Plugin.MedicProfiles/Jellyfin.Plugin.MedicProfiles.csproj MedicProfiles Jellyfin.Plugin.MedicProfiles.dll
+build Jellyfin.Plugin.AnimatedPosters/Jellyfin.Plugin.AnimatedPosters.csproj AnimatedPosters Jellyfin.Plugin.AnimatedPosters.dll
 build Jellyfin.Plugin.MedicPosters/Jellyfin.Plugin.MedicPosters.csproj MedicPosters Jellyfin.Plugin.MedicPosters.dll
 
 echo "== Making sample films"
@@ -95,8 +96,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Jellyfin first answers from a small startup server, whose /System/Info/Public already says 200, then swaps
+# to the real one, dropping connections on the way. /Startup/Configuration, the tests' first call, only
+# answers 200 from the real server.
 for i in $(seq 1 90); do
-  curl -sf "http://127.0.0.1:$PORT/System/Info/Public" >/dev/null && break
+  curl -sf "http://127.0.0.1:$PORT/Startup/Configuration" >/dev/null && break
   sleep 2
 done
 
