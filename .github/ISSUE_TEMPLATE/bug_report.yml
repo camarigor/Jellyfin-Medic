@@ -34,6 +34,7 @@ body:
         - Jellyfin Medic
         - Medic Picks
         - Medic Profiles
+        - The repository itself (CI, scripts, docs)
     validations:
       required: true
 
