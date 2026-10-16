@@ -313,8 +313,9 @@ What it leaves alone:
     part of a name, one per line).
 
 What it keeps:
-  - Your chosen languages (default: eng). Codes with two forms (fre/fra,
-    ger/deu, dut/nld, chi/zho) are treated as the same language.
+  - Your chosen languages (default: eng). Every ISO 639-2 code is matched
+    in either form (gre/ell, fre/fra) and as its 2-letter code (el, fr),
+    with or without a region (pt-BR).
   - Forced subtitles.
   - The last audio track in a file (never removed).
   - Subtitles in films whose audio isn't in your languages, so foreign films

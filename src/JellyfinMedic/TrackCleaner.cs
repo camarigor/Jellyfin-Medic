@@ -893,15 +893,14 @@ public static class TrackCleaner
     // Words in a subtitle file's name that Jellyfin reads as flags rather than a language.
     private static readonly HashSet<string> SubtitleFlags = new(StringComparer.OrdinalIgnoreCase) { "forced", "foreign", "default", "sdh", "cc", "hi" };
 
-    /// <summary>A 2 or 3 letter language code, as the 3 letter form files use (e.g. "en" → "eng"), or null if it isn't one.</summary>
+    /// <summary>A 2 or 3 letter language code, as the 3 letter B form files use (e.g. "en" → "eng", "ell" → "gre"), or null if it isn't one.</summary>
     private static string? LanguageCode(string? language)
     {
         string code = (language ?? string.Empty).Trim().ToLowerInvariant();
-        return code.Length is 2 or 3 && code.All(c => c is >= 'a' and <= 'z') ? TwoToThree(code) : null;
+        return code.Length is 2 or 3 && code.All(c => c is >= 'a' and <= 'z') ? LanguageCodes.FileCode(code) : null;
     }
 
-    private static bool InLanguage(TrackInfo t, HashSet<string> keep) =>
-        keep.Contains(t.Language) || keep.Contains(ThreeToTwo(t.Language));
+    private static bool InLanguage(TrackInfo t, HashSet<string> keep) => keep.Contains(LanguageCodes.Canonical(t.Language));
 
     // ---------- Run ----------
 
@@ -1675,23 +1674,17 @@ public static class TrackCleaner
 
     // ---------- Helpers ----------
 
+    // Stored in the form tracks are compared in (LanguageCodes.Canonical), so "fre", "fra" and "fr" each keep a
+    // French track, whichever form the file uses.
     internal static HashSet<string> KeepLanguages(PluginConfiguration cfg)
     {
         var set = (cfg.TracksKeepLanguages ?? "eng")
             .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim().ToLowerInvariant())
+            .Select(LanguageCodes.Canonical)
             .ToHashSet(StringComparer.Ordinal);
         if (set.Count == 0)
         {
             set.Add("eng");
-        }
-
-        // Accept 2-letter codes and both 3-letter forms for the common ones ("fre" and "fra" are
-        // both French), by also adding each entry's 2-letter code, which tracks are compared on too.
-        foreach (var code in set.ToList())
-        {
-            set.Add(TwoToThree(code));
-            set.Add(ThreeToTwo(code));
         }
 
         return set;
@@ -1815,12 +1808,11 @@ public static class TrackCleaner
         return null;
     }
 
-    /// <summary>Jellyfin may store "deu" for a file tagged "ger", so both 3-letter forms and the 2-letter code count as one.</summary>
-    private static bool SameLanguage(string a, string b)
+    /// <summary>Jellyfin stores "ell" for a file tagged "gre", so both 3-letter forms and the 2-letter code count as one.</summary>
+    internal static bool SameLanguage(string a, string b)
     {
-        static string Norm(string code) => string.IsNullOrWhiteSpace(code) ? "und" : code.Trim().ToLowerInvariant();
-        string x = Norm(a), y = Norm(b);
-        return x == y || ThreeToTwo(x) == ThreeToTwo(y) || TwoToThree(x) == TwoToThree(y);
+        static string Norm(string code) => LanguageCodes.Canonical(string.IsNullOrWhiteSpace(code) ? "und" : code);
+        return Norm(a) == Norm(b);
     }
 
     /// <summary>
@@ -2066,19 +2058,5 @@ public static class TrackCleaner
         BytesTotal = p.BytesTotal, BytesDone = p.BytesDone, WorkStartedUtc = p.WorkStartedUtc, SecondsLeft = EstimateSecondsLeft(p),
         Paused = p.Paused, Waiting = p.Waiting, WaitedSeconds = p.WaitedSeconds, WaitingSinceUtc = p.WaitingSinceUtc,
         FinishedUtc = p.FinishedUtc, Recent = p.Recent.ToList()
-    };
-
-    private static string ThreeToTwo(string code) => code switch
-    {
-        "eng" => "en", "jpn" => "ja", "fre" or "fra" => "fr", "ger" or "deu" => "de", "spa" => "es",
-        "ita" => "it", "dut" or "nld" => "nl", "rus" => "ru", "por" => "pt", "chi" or "zho" => "zh",
-        "kor" => "ko", "swe" => "sv", "dan" => "da", "nor" => "no", "fin" => "fi", "pol" => "pl", _ => code
-    };
-
-    private static string TwoToThree(string code) => code switch
-    {
-        "en" => "eng", "ja" => "jpn", "fr" => "fre", "de" => "ger", "es" => "spa", "it" => "ita",
-        "nl" => "dut", "ru" => "rus", "pt" => "por", "zh" => "chi", "ko" => "kor", "sv" => "swe",
-        "da" => "dan", "no" => "nor", "fi" => "fin", "pl" => "pol", _ => code
     };
 }
