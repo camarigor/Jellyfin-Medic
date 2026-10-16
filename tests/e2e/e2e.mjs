@@ -1,6 +1,7 @@
 // End-to-end tests against a real Jellyfin started by run.sh.
 // Sets the server up through its own API, checks every plugin loads and answers, then opens each
 // plugin page in a real browser and fails on script errors.
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -137,7 +138,6 @@ await check('Medic Picks keeps both keys when they are saved at the same time', 
 await check('support export hides secrets in name/value pairs, tokens and dashless keys', async () => {
     // A plugin's settings with fake secrets in shapes that used to get through. Written from inside the
     // container: the folder belongs to Jellyfin's user, not the one running the tests.
-    const { execFileSync } = await import('node:child_process');
     const file = '/config/plugins/configurations/E2E.SecretShapes.xml';
     const secrets = ['FAKEeyJhbGciOiJIUzI1NiJ9', '0123456789abcdef0123456789abcdef', 'fedcba9876543210fedcba9876543210', 'FAKE-COOKIE-VALUE', 'FAKEbasicDXNlcjpwYXNz', 'fakeattrcookie'];
     const xml = `<?xml version="1.0" encoding="utf-8"?>
@@ -472,7 +472,6 @@ function dashboardFixtures() {
 }
 
 await check('schedule apply changes nothing when Medic can\'t save its schedule, and a restore puts it back', async () => {
-    const { execFileSync } = await import('node:child_process');
     const triggers = async () => JSON.stringify((await ok('/ScheduledTasks'))
         .map((t) => [t.Id, t.Triggers])
         .sort((a, b) => a[0].localeCompare(b[0])));
@@ -505,7 +504,6 @@ await check('schedule backups each get their own name, and the newest 50 are kep
 });
 
 await check('a damaged Medic file is set aside instead of written over', async () => {
-    const { execFileSync } = await import('node:child_process');
     const file = `${MEDIC_DATA}/task_choices.json`;
     execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{"damaged": true' > ${file}`]);
     const scan = (await ok('/ScheduledTasks')).find((t) => t.Key === 'RefreshLibrary');
@@ -547,7 +545,6 @@ await check('track cleanup leaves excluded films alone', async () => {
 
 // ---------- Track cleanup on real files ----------
 
-const { execFileSync } = await import('node:child_process');
 const fs = await import('node:fs');
 const movies = `${process.env.WORK}/media/movies`;
 
@@ -866,7 +863,6 @@ await check('Medic Profiles never sends a saved key to a new server, and keeps a
     }
 
     // A keys file that can't be read is set aside, not replaced by one holding only the new key.
-    const { execFileSync } = await import('node:child_process');
     const dir = '/config/data/medic-profiles';
     execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{not json' > ${dir}/secrets.json`]);
     await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
@@ -1389,8 +1385,8 @@ let dashFixtures = null;
 await check('Dashboard panels: fixture data written, and the Dashboard built again from it', async () => {
     const files = dashboardFixtures();
     dashFixtures = Object.fromEntries(Object.keys(files).map((name) => [name, readMedicFile(name)]));
-    const since = Date.now();
     for (const [name, value] of Object.entries(files)) writeMedicFile(name, JSON.stringify(value));
+    const since = Date.now();
     const data = await dashboardAfter(since);
     expect(data.Today.Actual.some((r) => r.TaskName === 'Fixture trickplay'), 'the fixture runs are not in Today: ' + JSON.stringify(data.Today.Actual));
     return `${data.Today.Actual.length} runs today, ${data.Disks.Drives.length} drives`;
@@ -1541,7 +1537,7 @@ await check('Dashboard panels: the 5-minute refresh keeps the keyboard on the ru
             detail: document.getElementById('md-day-detail').textContent
         }));
         expect(today.kept && /Fixture trickplay/.test(today.detail), 'Today after the refresh: ' + JSON.stringify(today));
-        await p.focus('#md-busy .md-busy-clash');
+        await p.focus('#md-busy .md-busy-clash[aria-label*="Fixture scan"]');
         await refresh();
         const busy = await p.evaluate(() => document.activeElement?.classList.contains('md-busy-clash') || false);
         expect(busy, 'the keyboard left the busy hour after the refresh');
@@ -1612,7 +1608,7 @@ await check('Dashboard panels: Busy hours shows 7 by 24 hours, outlines the runs
     if (data.UtcOffsetMinutes !== -new Date().getTimezoneOffset()) expect(/server's/.test(seen.summary), 'the hours are the server\'s, yet the summary does not say so: ' + seen.summary);
     const hint = await page.textContent('#md-busy-detail');
     expect(/to see its runs/.test(hint), 'no hint before an hour is chosen: ' + hint);
-    await page.focus('#md-busy .md-busy-clash');
+    await page.focus('#md-busy .md-busy-clash[aria-label*="Fixture scan"]');
     const detail = await page.textContent('#md-busy-detail');
     expect(/Fixture scan/.test(detail) && /busy/.test(detail), 'the focused hour\'s details: ' + detail);
     return seen.summary;
@@ -1690,10 +1686,10 @@ await check('Dashboard panels: a media report and an unreadable disk history wri
     for (const name of ['media_report.json', 'disk_history.json.bad']) {
         if (!(name in dashFixtures)) dashFixtures[name] = readMedicFile(name);
     }
-    const since = Date.now();
     writeMedicFile('media_report.json', JSON.stringify({ GeneratedUtc: new Date().toISOString(), Files: 16, Bytes: 1, HardwareAcceleration: 'none', Compatibility: { DtsOrTrueHdOnly: 4, ImageSubtitles: 2, OldContainers: 0, Hdr: 0 } }));
     // Medic sets a file it can't read aside as .bad and starts a new one.
     writeMedicFile('disk_history.json', '{ not json');
+    const since = Date.now();
     const data = await dashboardAfter(since);
     expect(data.Transcodes.MediaReportUtc, 'the data has no media report date');
     return `${data.Disks.Drives.length} drives after the unreadable history`;
@@ -1803,7 +1799,6 @@ await check('playback test sends its token in a header, not in the address', asy
 await check('admin banner on the home page for a serious error, and it can be dismissed', async () => {
     // Pretend the database reported damage, by adding the line to the newest log file.
     // Written from inside the container: the log belongs to Jellyfin's user, not the one running the tests.
-    const { execFileSync } = await import('node:child_process');
     const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
     // A warning that only mentions the words must not count (Jellyfin logs these routinely).
