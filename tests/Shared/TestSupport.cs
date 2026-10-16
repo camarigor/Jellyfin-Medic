@@ -1,7 +1,20 @@
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Serialization;
 
-namespace MedicPicks.Tests;
+// Shared by the plugins' test projects, which each compile it in (see their .csproj).
+namespace Medic.TestSupport;
+
+/// <summary>A test of Unix file permissions; skipped on Windows, which keeps its own folder permissions.</summary>
+internal sealed class UnixFactAttribute : FactAttribute
+{
+    public UnixFactAttribute()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Skip = "Unix file permissions only";
+        }
+    }
+}
 
 /// <summary>Jellyfin's folders, all under one temporary folder.</summary>
 internal sealed class TestPaths(string root) : IApplicationPaths
