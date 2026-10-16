@@ -137,7 +137,7 @@ public sealed class PlannedRun
     // normal, interval, managed or backoff, as on the Schedule tab.
     public string Kind { get; set; } = string.Empty;
 
-    // ran, late, not run or waiting.
+    // ran, late, cancelled (it had only cancelled or aborted runs), not run or waiting.
     public string Status { get; set; } = string.Empty;
 }
 
@@ -150,6 +150,9 @@ public sealed class ActualRun
     public int StartMinutes { get; set; }
 
     public int EndMinutes { get; set; }
+
+    // Started before today and was still going at midnight: StartMinutes is then 0, not its real start.
+    public bool StartedBeforeToday { get; set; }
 
     // Completed, Failed, Cancelled or Aborted, as Jellyfin reports it, or Running for a run that hasn't finished.
     public string Status { get; set; } = string.Empty;
@@ -181,7 +184,7 @@ public sealed class TodaySummary
 {
     public int Planned { get; set; }
 
-    // Every run that started today, finished or still going.
+    // Every run that started today or was still going at midnight, finished or still going.
     public int Runs { get; set; }
 
     public int Running { get; set; }

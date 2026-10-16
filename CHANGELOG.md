@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Today doesn't count a cancelled run as ran, and keeps tasks that started before midnight.** When a task's only run at its planned time was cancelled (as LoadGuard and "Stop running tasks" do) or stopped, the planned time still said it ran. It now says cancelled, and a later run of the task takes its place, on time or late by when that run started. A task that started before midnight was left out of Today, even while it was still running. It now shows from midnight, and counts for its planned time like any other run.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
