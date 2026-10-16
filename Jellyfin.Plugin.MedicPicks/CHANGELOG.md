@@ -3,6 +3,11 @@
 All notable changes to Medic Picks are recorded here. The newest version is at the top.
 Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **A TMDb that stops answering no longer ends the nightly run.** When TMDb didn't answer, the call gave up in a way the nightly picks run took for being cancelled, so the run stopped at that person and everyone after them kept their old picks, library picks included. A TMDb call now gives up after 20 seconds and counts as TMDb being unavailable, as other TMDb failures already do: the run stops asking TMDb, keeps everyone's previous Discover picks and carries on with their library picks.
+
 ## [1.2.4] – 2026-10-14
 
 ### Added
