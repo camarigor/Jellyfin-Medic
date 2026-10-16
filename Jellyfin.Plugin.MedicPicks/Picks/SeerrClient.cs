@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Net;
+using Medic.Shared;
 using Microsoft.Extensions.Logging;
 using static Medic.Shared.Json;
 
@@ -127,7 +128,7 @@ public class SeerrClient
 
             using var response = await SendAsync(request, ct).ConfigureAwait(false);
             string text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            string? seerrMessage = MessageFrom(text);
+            string? seerrMessage = ServiceHttp.ErrorMessage(text);
 
             if (response.IsSuccessStatusCode)
             {
@@ -276,7 +277,7 @@ public class SeerrClient
                 return (false, "Someone has already approved or declined it.");
             }
 
-            string? seerrMessage = MessageFrom(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+            string? seerrMessage = ServiceHttp.ErrorMessage(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
             return (false, string.IsNullOrWhiteSpace(seerrMessage) ? $"Seerr answered with {(int)response.StatusCode}." : "Seerr says: " + seerrMessage);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -414,34 +415,10 @@ public class SeerrClient
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>Sends a request to Seerr. A call that runs out of time fails like an unreachable Seerr, not like a cancelled page.</summary>
-    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(CallTimeout);
-        try
-        {
-            return await Client().SendAsync(request, timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            throw new HttpRequestException($"Seerr didn't answer within {CallTimeout.TotalSeconds:0} seconds");
-        }
-    }
+    private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+        ServiceHttp.SendAsync(Client(), request, CallTimeout, "Seerr", ct);
 
     private static string Url(string baseUrl, string path) => baseUrl.TrimEnd('/') + path;
-
-    private static string? MessageFrom(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            return doc.RootElement.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
 
     private static int? StatusFrom(string json)
     {
