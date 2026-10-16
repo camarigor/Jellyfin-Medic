@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Net;
 using Microsoft.Extensions.Logging;
+using static Medic.Shared.Json;
 
 namespace Jellyfin.Plugin.MedicPicks.Picks;
 
@@ -313,6 +314,13 @@ public class SeerrClient
 
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
             var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                // Not a title: say nothing rather than remember "Unknown title" for a day.
+                _logger.LogDebug("Medic Picks: Seerr sent something other than a title for {Type} {Id}", type, tmdbId);
+                return null;
+            }
+
             string? name = Text(root, type == "tv" ? "name" : "title") ?? Text(root, "originalTitle") ?? Text(root, "originalName");
             string? date = Text(root, type == "tv" ? "firstAirDate" : "releaseDate");
             var title = new SeerrTitle
@@ -330,9 +338,6 @@ public class SeerrClient
             return null;
         }
     }
-
-    private static string? Text(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private async Task<int?> FindSeerrUserAsync(string baseUrl, string key, Guid jellyfinUserId, CancellationToken ct)
     {
