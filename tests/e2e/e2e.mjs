@@ -1,6 +1,7 @@
 // End-to-end tests against a real Jellyfin started by run.sh.
 // Sets the server up through its own API, checks every plugin loads and answers, then opens each
 // plugin page in a real browser and fails on script errors.
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -91,10 +92,10 @@ await check('library scanned', async () => {
     return `${ctx.films} films`;
 });
 
-await check('all three plugins loaded', async () => {
+await check('all four plugins loaded', async () => {
     const plugins = await ok('/Plugins');
     const names = plugins.map((p) => p.Name);
-    for (const want of ['Jellyfin Medic', 'Medic Picks', 'Medic Profiles']) {
+    for (const want of ['Jellyfin Medic', 'Medic Picks', 'Medic Profiles', 'Animated Posters']) {
         const p = plugins.find((x) => x.Name === want);
         expect(p, `${want} missing (have ${names.join(', ')})`);
         expect(p.Status === 'Active', `${want} is ${p.Status}`);
@@ -112,6 +113,22 @@ const medicGets = [
 for (const path of medicGets) {
     await check(`GET ${path}`, async () => { await ok(path); });
 }
+
+await check('Jellyfin Medic serves its stylesheet to anyone, and nothing else from there', async () => {
+    // The page links it, and a stylesheet link carries no sign-in, so it's served without one.
+    const css = await fetch(JF + '/JellyfinMedic/Assets/medic.css');
+    const text = await css.text();
+    expect(css.status === 200, 'medic.css: ' + css.status);
+    expect((css.headers.get('content-type') || '').startsWith('text/css'), 'content type: ' + css.headers.get('content-type'));
+    expect(css.headers.get('x-content-type-options') === 'nosniff', 'x-content-type-options: ' + css.headers.get('x-content-type-options'));
+    expect((css.headers.get('cache-control') || '').includes('no-cache'), 'cache-control: ' + css.headers.get('cache-control'));
+    expect(text.includes('#JellyfinMedicPage .so-topbar'), 'not the Medic stylesheet: ' + text.slice(0, 120));
+    for (const name of ['medic.html', 'assist.js', '..%2Fmedic.html']) {
+        const other = await fetch(JF + '/JellyfinMedic/Assets/' + name);
+        expect(other.status === 404, `${name}: ${other.status}`);
+    }
+    return `${text.length} bytes`;
+});
 
 await check('Medic Picks keeps both keys when they are saved at the same time', async () => {
     // The settings page saves the TMDb and Seerr keys together; neither may be lost.
@@ -137,7 +154,6 @@ await check('Medic Picks keeps both keys when they are saved at the same time', 
 await check('support export hides secrets in name/value pairs, tokens and dashless keys', async () => {
     // A plugin's settings with fake secrets in shapes that used to get through. Written from inside the
     // container: the folder belongs to Jellyfin's user, not the one running the tests.
-    const { execFileSync } = await import('node:child_process');
     const file = '/config/plugins/configurations/E2E.SecretShapes.xml';
     const secrets = ['FAKEeyJhbGciOiJIUzI1NiJ9', '0123456789abcdef0123456789abcdef', 'fedcba9876543210fedcba9876543210', 'FAKE-COOKIE-VALUE', 'FAKEbasicDXNlcjpwYXNz', 'fakeattrcookie'];
     const xml = `<?xml version="1.0" encoding="utf-8"?>
@@ -472,7 +488,6 @@ function dashboardFixtures() {
 }
 
 await check('schedule apply changes nothing when Medic can\'t save its schedule, and a restore puts it back', async () => {
-    const { execFileSync } = await import('node:child_process');
     const triggers = async () => JSON.stringify((await ok('/ScheduledTasks'))
         .map((t) => [t.Id, t.Triggers])
         .sort((a, b) => a[0].localeCompare(b[0])));
@@ -505,7 +520,6 @@ await check('schedule backups each get their own name, and the newest 50 are kep
 });
 
 await check('a damaged Medic file is set aside instead of written over', async () => {
-    const { execFileSync } = await import('node:child_process');
     const file = `${MEDIC_DATA}/task_choices.json`;
     execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{"damaged": true' > ${file}`]);
     const scan = (await ok('/ScheduledTasks')).find((t) => t.Key === 'RefreshLibrary');
@@ -547,15 +561,17 @@ await check('track cleanup leaves excluded films alone', async () => {
 
 // ---------- Track cleanup on real files ----------
 
-const { execFileSync } = await import('node:child_process');
 const fs = await import('node:fs');
 const movies = `${process.env.WORK}/media/movies`;
 
-// A short film with an audio track per language, in that order.
+// A short film with an audio track per language, in that order. "eng:Commentary" also gives the track a title.
 function makeFilm(file, languages, seconds) {
     const inputs = languages.flatMap((_, i) => ['-f', 'lavfi', '-i', `sine=frequency=${300 + i * 200}:duration=${seconds}`]);
     const maps = languages.flatMap((_, i) => ['-map', String(i + 1)]);
-    const tags = languages.flatMap((l, i) => [`-metadata:s:a:${i}`, `language=${l}`]);
+    const tags = languages.flatMap((entry, i) => {
+        const [language, title] = entry.split(/:(.*)/s);
+        return [`-metadata:s:a:${i}`, `language=${language}`, ...(title ? [`-metadata:s:a:${i}`, `title=${title}`] : [])];
+    });
     execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `testsrc=size=320x180:rate=10:duration=${seconds}`,
         ...inputs, '-map', '0', ...maps, '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', ...tags, file]);
 }
@@ -707,6 +723,16 @@ await check('track cleanup keeps the file\'s owner and permissions', async () =>
     });
 });
 
+await check('track cleanup keeps the film\'s own audio when only a commentary is in your language', async () => {
+    // Scan only: the runs above are done, so nothing changes this file.
+    await addFilm('Track Extras (2021)', ['jpn', 'eng:Commentary', 'fre:Commentary'], 4);
+    const plan = ((await ok('/JellyfinMedic/Tracks/Scan')).Sample || []).find((p) => /Track Extras/.test(p.Path || ''));
+    expect(plan, 'the French commentary should be planned to go');
+    const kept = plan.Tracks.filter((t) => t.Kind === 'audio' && t.Keep).map((t) => `${t.Language}:${t.Title}`).join(',');
+    expect(kept === 'jpn:,eng:Commentary', 'kept audio: ' + kept);
+    return 'kept ' + kept;
+});
+
 await check('Medic Picks builds picks from watch history', async () => {
     const items = (await ok(`/Items?Recursive=true&IncludeItemTypes=Movie&SortBy=SortName&UserId=${ctx.userId}`)).Items;
     for (const item of items.slice(0, 4)) await api('POST', `/UserPlayedItems/${item.Id}?userId=${ctx.userId}`);
@@ -738,9 +764,10 @@ await check('Medic Picks "My requests" says Seerr is out of reach instead of fai
     await new Promise((resolve) => silent.listen(18991, '0.0.0.0', resolve));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     const myRequests = async (url) => {
+        // Each address is another server, which removes the saved key, so the key is saved after it.
         await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: url, ShowRequests: true });
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
         const started = Date.now();
         const r = await api('GET', '/MedicPicks/Me/Requests');
         return { ...r, seconds: (Date.now() - started) / 1000 };
@@ -770,6 +797,29 @@ await check('My picks page names itself with the plugin\'s version', async () =>
     return version;
 });
 
+await check('Medic Picks "My requests" says Seerr is out of reach when something else answers its address', async () => {
+    // A sign-in page in front of Seerr, say: it answers every address with 200 and a web page.
+    const http = await import('node:http');
+    const signIn = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><body>Sign in</body></html>');
+    });
+    await new Promise((resolve) => signIn.listen(18996, '0.0.0.0', resolve));
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18996', ShowRequests: true });
+    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+    try {
+        const mine = await api('GET', '/MedicPicks/Me/Requests');
+        expect(mine.status === 200 && mine.json?.reachable === false, `My requests: ${mine.status} ${mine.text.slice(0, 200)}`);
+        return 'reported as out of reach';
+    } finally {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        signIn.close();
+    }
+});
+
 await check('Medic Picks gives people only a Seerr address they can open', async () => {
     const id = 'b34ec5d1-b70f-435f-b77d-9b76979b03c7';
     const cfg = await ok(`/Plugins/${id}/Configuration`);
@@ -790,6 +840,26 @@ await check('Medic Picks gives people only a Seerr address they can open', async
         return 'public address in links; javascript: never';
     } finally {
         await api('POST', `/Plugins/${id}/Configuration`, cfg);
+    }
+});
+
+await check('Medic Picks removes the saved Seerr key when the Seerr address moves to another server', async () => {
+    // A saved key is only ever sent to the server it was entered for, as Medic Profiles does with its keys.
+    const id = 'b34ec5d1-b70f-435f-b77d-9b76979b03c7';
+    const cfg = await ok(`/Plugins/${id}/Configuration`);
+    const saveAddress = (url) => api('POST', `/Plugins/${id}/Configuration`, { ...cfg, JellyseerrUrl: url });
+    const keySaved = async () => (await ok('/MedicPicks/Admin/Status')).seerrKeySet;
+    try {
+        await saveAddress('http://seerr.example:5055');
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+        await saveAddress('http://SEERR.example:5055/seerr/');
+        expect(await keySaved(), 'the key was removed when only the path changed');
+        await saveAddress('http://elsewhere.example:5055');
+        expect(!(await keySaved()), 'the key was kept for another server');
+        return 'kept for a new path, removed for another server';
+    } finally {
+        await api('POST', `/Plugins/${id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
     }
 });
 
@@ -814,6 +884,40 @@ await check('Medic Picks approves and declines requests as the admin\'s own Seer
         expect(made === 'approve 7 as 42, decline 8 as 42', 'Seerr saw: ' + made);
         return made;
     } finally {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        seerrServer.close();
+    }
+});
+
+await check('Medic Picks "My requests" skips a season entry it can\'t read instead of failing', async () => {
+    // A season list holding something other than season entries; only season 2 is one, so only its download counts.
+    const seerrServer = await fakeArr.startSeerr(18995);
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18995', ShowRequests: true });
+    await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+    fakeArr.seerr.extraRequests.push({
+        id: 13, status: 2, type: 'tv', createdAt: '2026-10-03T10:00:00.000Z', requestedBy: { id: 42 },
+        seasons: [1, null, { seasonNumber: 2 }],
+        media: {
+            tmdbId: 1399, mediaType: 'tv', status: 3,
+            downloadStatus: [
+                { status: 'downloading', size: 100, sizeLeft: 50, episode: { seasonNumber: 2, episodeNumber: 1 } },
+                { status: 'downloading', size: 100, sizeLeft: 0, episode: { seasonNumber: 3, episodeNumber: 1 } }
+            ]
+        }
+    });
+    try {
+        const mine = await api('GET', '/MedicPicks/Me/Requests');
+        expect(mine.status === 200, `My requests: ${mine.status} ${mine.text.slice(0, 200)}`);
+        const row = (mine.json?.requests || []).find((r) => r.id === 13);
+        expect(row?.progress === 50, 'request 13: ' + JSON.stringify(row));
+        const waiting = await api('GET', '/MedicPicks/Admin/Requests');
+        expect(waiting.status === 200, `requests waiting for approval: ${waiting.status} ${waiting.text.slice(0, 200)}`);
+        return 'season 2 counted, the rest skipped';
+    } finally {
+        fakeArr.seerr.extraRequests.length = 0;
         await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
         await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
         seerrServer.close();
@@ -866,14 +970,14 @@ await check('Medic Profiles never sends a saved key to a new server, and keeps a
     }
 
     // A keys file that can't be read is set aside, not replaced by one holding only the new key.
-    const { execFileSync } = await import('node:child_process');
     const dir = '/config/data/medic-profiles';
     execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{not json' > ${dir}/secrets.json`]);
     await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
-    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'cat', `${dir}/secrets.json.bad`]).toString();
+    // It's kept beside it, named with the time it was set aside.
+    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `cat ${dir}/secrets.json.*.bad`]).toString();
     expect(kept.includes('{not json'), 'the damaged file was not kept: ' + kept);
     expect(await keySet(), 'the new key was not saved');
-    return 'key dropped for a new server; damaged file kept as secrets.json.bad';
+    return 'key dropped for a new server; damaged file kept beside it';
 });
 
 await check('Medic Profiles shows indexer status', async () => {
@@ -1003,6 +1107,61 @@ await page.fill('#txtManualPassword', 'admin');
 await page.click('.manualLoginForm button[type="submit"]');
 await page.waitForURL(/home/, { timeout: 60000 });
 
+await check('Animated Posters adds its script to the web page, compressed or not', async () => {
+    for (const encoding of ['gzip, br', 'identity']) {
+        for (const path of ['/web/', '/web/index.html']) {
+            const res = await fetch(JF + path, { headers: { 'Accept-Encoding': encoding, 'If-None-Match': '"stale"' } });
+            const html = await res.text();
+            expect(res.status === 200, `${path} returned ${res.status}`);
+            expect(html.includes('AnimatedPosters/script.js'), `${path} (${encoding}) has no Animated Posters script`);
+        }
+    }
+    const res = await fetch(JF + '/AnimatedPosters/script.js');
+    const js = await res.text();
+    expect(res.status === 200 && js.startsWith('window.AnimatedPostersConfig = {'), 'script.js: ' + res.status + ' ' + js.slice(0, 80));
+});
+
+await check('Animated Posters cycles library artwork on the home page and hides names and borders', async () => {
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Animated Posters');
+    expect(plugin, 'plugin missing');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    // Give a few films a backdrop, as the sample films have no artwork of their own.
+    const { execFileSync: run } = await import('node:child_process');
+    const films = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&Limit=3')).Items;
+    for (const [i, film] of films.entries()) {
+        const jpg = run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', `color=c=0x${['ff00aa', '00ffcc', '8844ff'][i]}:s=640x360`, '-frames:v', '1', '-f', 'mjpeg', '-']);
+        const r = await fetch(`${JF}/Items/${film.Id}/Images/Backdrop`, {
+            method: 'POST',
+            headers: { Authorization: `${AUTH}, Token="${token}"`, 'Content-Type': 'image/jpeg' },
+            body: jpg.toString('base64')
+        });
+        expect(r.status === 204, `backdrop upload returned ${r.status}`);
+    }
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, OriginalArt: 'none', IntervalSeconds: 2, FadeSeconds: 0.2, HideText: true, HideBorder: true });
+    try {
+        errors.length = 0;
+        await page.goto(JF + '/web/index.html#/home');
+        await page.reload();
+        const card = page.locator('.homeSectionsContainer .card[data-type="CollectionFolder"]').first();
+        await card.locator('.ap-wrap .ap-slide.ap-on').waitFor({ timeout: 30000 });
+        const first = await card.locator('.ap-slide.ap-on').evaluate((el) => el.style.backgroundImage);
+        expect(/Images\/Backdrop/.test(first), 'showing ' + first);
+        let next = first;
+        for (let i = 0; i < 20 && next === first; i++) {
+            await sleep(500);
+            next = await card.locator('.ap-slide.ap-on').evaluate((el) => el.style.backgroundImage);
+        }
+        expect(next !== first, 'the card never changed image');
+        expect(!(await card.locator('.cardFooter').isVisible()), 'library name still shown');
+        const radius = await card.locator('.cardScalable').evaluate((el) => getComputedStyle(el).borderRadius);
+        expect(radius === '0px', 'card corners still rounded: ' + radius);
+        const ours = errors.filter((e) => !/ResizeObserver|^CancelledError/i.test(e));
+        expect(ours.length === 0, ours.join(' | '));
+    } finally {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+    }
+});
+
 // Opens a plugin page, then clicks through each of its tabs, failing on any script error.
 async function openPage(name, hash, selector, tabs) {
     await check(`${name} page and its tabs open without script errors`, async () => {
@@ -1031,6 +1190,14 @@ async function openPage(name, hash, selector, tabs) {
 }
 
 await openPage('Jellyfin Medic', '/configurationpage?name=JellyfinMedic', '#JellyfinMedicPage .so-tab', '.so-tab');
+
+await check('Jellyfin Medic page is styled by its stylesheet', async () => {
+    await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+    await page.waitForSelector('#JellyfinMedicPage .so-topbar', { timeout: 30000 });
+    // Only medic.css lays the top bar out as a row.
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('#JellyfinMedicPage .so-topbar')).display === 'flex', null, { timeout: 10000 });
+    return 'top bar laid out as a row';
+});
 await openPage('Medic Profiles', '/configurationpage?name=MedicProfiles', '#MedicProfilesPage .mp-tab', '.mp-tab');
 await openPage('Medic Picks settings', '/configurationpage?name=Medic%20Picks', '#MedicPicksConfigForm');
 
@@ -1050,6 +1217,39 @@ await check('Medic Picks settings: the user boxes show, and a key that isn\'t sa
     } finally {
         await page.unroute(tmdbKey);
         await page.keyboard.press('Escape');
+    }
+});
+
+await check('Medic Picks settings: a Seerr key typed with another server\'s address is the one kept', async () => {
+    // Saving the new address removes the old server's key, so the page must save the typed key after it.
+    const id = 'b34ec5d1-b70f-435f-b77d-9b76979b03c7';
+    const cfg = await ok(`/Plugins/${id}/Configuration`);
+    const typeNewServer = async (url) => {
+        await api('POST', `/Plugins/${id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://seerr.example:5055' });
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-old-seerr-key' });
+        await page.goto(JF + '/web/index.html#/configurationpage?name=Medic%20Picks');
+        await page.reload();
+        await page.waitForFunction(() => (document.querySelector('#SeerrKeyStatus')?.textContent || '').startsWith('A Seerr key is saved'), null, { timeout: 30000 });
+        await page.fill('#JellyseerrUrl', url);
+        await page.fill('#SeerrKey', 'e2e-new-seerr-key');
+    };
+    const keySaved = async () => (await ok('/MedicPicks/Admin/Status')).seerrKeySet;
+    try {
+        await typeNewServer('http://elsewhere.example:5055');
+        await page.click('#SaveSeerrKey');
+        await page.getByText('Seerr key and address saved.').waitFor({ timeout: 10000 });
+        await page.keyboard.press('Escape');
+        expect(await keySaved(), 'Save key: no key left after saving it with the new address');
+
+        await typeNewServer('http://elsewhere.example:5056');
+        const saved = page.waitForResponse((r) => r.url().includes('/MedicPicks/Admin/Status'));
+        await page.click('#MedicPicksConfigPage button[type="submit"]');
+        await saved;
+        expect(await keySaved(), 'Save: no key left after saving it with the new address');
+        return 'kept by Save key and by Save';
+    } finally {
+        await api('POST', `/Plugins/${id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
     }
 });
 
@@ -1365,9 +1565,55 @@ await check('Dashboard panels: a section the server couldn\'t build shows its me
         await page.waitForFunction(() => /IOException/.test(document.getElementById('md-net')?.textContent || ''), null, { timeout: 30000 });
         const summary = await page.textContent('#md-today-summary');
         expect(/planned/.test(summary), 'Today did not render beside the broken section: ' + summary);
+        const rows = await page.evaluate(() => ({ dt: document.querySelectorAll('#md-net dt').length, dd: document.querySelectorAll('#md-net dd').length }));
+        expect(rows.dt === rows.dd, `Network's message: ${rows.dd} values for ${rows.dt} names`);
         return 'Network shows the message; Today: ' + summary;
     } finally {
         await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
+await check('Dashboard panels: a panel that fails to draw says so, and the panels after it still render', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    // A Today section of a shape the page doesn't expect makes that panel throw while drawing.
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Today: { ...data.Today, Planned: 'not a list' } } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => /Couldn't show this panel/.test(document.getElementById('md-today-summary')?.textContent || ''), null, { timeout: 30000 });
+        const seen = await page.evaluate(() => ({
+            later: ['md-net-big', 'md-busy-summary', 'md-people-big'].map((id) => document.getElementById(id).textContent),
+            banner: (() => { const b = document.querySelector('#JellyfinMedicPage #so-status'); return b && !b.hidden ? b.textContent : ''; })()
+        }));
+        expect(seen.later.every((t) => !/Loading/.test(t)) && seen.banner === '', 'after the failed panel: ' + JSON.stringify(seen));
+        return 'Today says it failed; ' + seen.later.join(' | ').slice(0, 80);
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
+await check('Dashboard panels: a section the server couldn\'t build hides its hints until its data comes back', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const failed = 'Couldn\'t be read (IOException). The Jellyfin log has the details.';
+    const broken = { ...data, Today: null, BusyHours: null, Errors: { Today: failed, BusyHours: failed } };
+    let served = 0;
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    await ctx.clock.install();
+    try {
+        const p = await adminPage(ctx);
+        await p.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: served++ === 0 ? broken : data }));
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        await p.waitForFunction(() => /IOException/.test(document.getElementById('md-today-summary')?.textContent || ''), null, { timeout: 30000 });
+        const hints = () => p.evaluate(() => ['md-day-detail', 'md-day-zone', 'md-busy-detail'].map((id) => document.getElementById(id).textContent));
+        const hidden = await hints();
+        expect(hidden.every((t) => t === ''), 'hints beside a failed section: ' + JSON.stringify(hidden));
+        // The next fetch, after 5 minutes, brings the data back.
+        await p.clock.fastForward('05:30');
+        await p.waitForTimeout(2000);
+        const back = await hints();
+        expect(served >= 2 && /to see its details/.test(back[0]) && /to see its runs/.test(back[2]), 'after the data came back: ' + JSON.stringify(back));
+        return 'hidden while failed, back with the data';
+    } finally {
+        await ctx.close();
     }
 });
 
@@ -1389,8 +1635,8 @@ let dashFixtures = null;
 await check('Dashboard panels: fixture data written, and the Dashboard built again from it', async () => {
     const files = dashboardFixtures();
     dashFixtures = Object.fromEntries(Object.keys(files).map((name) => [name, readMedicFile(name)]));
-    const since = Date.now();
     for (const [name, value] of Object.entries(files)) writeMedicFile(name, JSON.stringify(value));
+    const since = Date.now();
     const data = await dashboardAfter(since);
     expect(data.Today.Actual.some((r) => r.TaskName === 'Fixture trickplay'), 'the fixture runs are not in Today: ' + JSON.stringify(data.Today.Actual));
     return `${data.Today.Actual.length} runs today, ${data.Disks.Drives.length} drives`;
@@ -1541,7 +1787,7 @@ await check('Dashboard panels: the 5-minute refresh keeps the keyboard on the ru
             detail: document.getElementById('md-day-detail').textContent
         }));
         expect(today.kept && /Fixture trickplay/.test(today.detail), 'Today after the refresh: ' + JSON.stringify(today));
-        await p.focus('#md-busy .md-busy-clash');
+        await p.focus('#md-busy .md-busy-clash[aria-label*="Fixture scan"]');
         await refresh();
         const busy = await p.evaluate(() => document.activeElement?.classList.contains('md-busy-clash') || false);
         expect(busy, 'the keyboard left the busy hour after the refresh');
@@ -1583,6 +1829,38 @@ await check('Dashboard panels: at the server\'s midnight Today fetches the new d
     }
 });
 
+await check('Dashboard panels: Today names its lanes beside the timeline, where they hide no run or mark', async () => {
+    await medicTab('dashboard', true);
+    await page.waitForFunction(() => document.querySelectorAll('#md-day .md-day-block').length > 0, null, { timeout: 30000 });
+    const seen = await page.evaluate(() => ({
+        inside: document.querySelectorAll('#md-day .md-day-lane').length,
+        beside: Array.from(document.querySelectorAll('.md-day-lanes span')).map((l) => l.textContent)
+    }));
+    expect(seen.inside === 0 && JSON.stringify(seen.beside) === JSON.stringify(['Planned', 'Ran']), 'lane names: ' + JSON.stringify(seen));
+    return seen.beside.join(', ');
+});
+
+await check('Dashboard panels: a failed run late in the evening stays inside Today on a phone', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const late = { TaskId: 'e2e-late', TaskName: 'Fixture late task', StartMinutes: 1430, EndMinutes: 1432, Status: 'Failed', ErrorMessage: 'Fixture error' };
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Today: { ...data.Today, Actual: [...data.Today.Actual, late] } } }));
+    try {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => Array.from(document.querySelectorAll('#md-day .md-run-failed')).some((b) => /Fixture late task/.test(b.getAttribute('aria-label'))), null, { timeout: 30000 });
+        const edges = await page.evaluate(() => {
+            const day = document.getElementById('md-day').getBoundingClientRect();
+            const block = Array.from(document.querySelectorAll('#md-day .md-run-failed')).find((b) => /Fixture late task/.test(b.getAttribute('aria-label'))).getBoundingClientRect();
+            return { day: Math.round(day.right), block: Math.round(block.right), width: Math.round(block.width) };
+        });
+        expect(edges.block <= edges.day, `the late block ends at ${edges.block} px, the timeline at ${edges.day} px`);
+        return `${edges.width} px wide, ends at ${edges.block} of ${edges.day}`;
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+        await page.setViewportSize({ width: 1280, height: 720 });
+    }
+});
+
 await check('Dashboard panels: Network shows the speed test and the suggestion, Repeated log errors the scanner\'s list', async () => {
     await medicTab('dashboard', true);
     await page.waitForFunction(() => /Mbps up/.test(document.getElementById('md-net-big')?.textContent || ''), null, { timeout: 30000 });
@@ -1612,7 +1890,7 @@ await check('Dashboard panels: Busy hours shows 7 by 24 hours, outlines the runs
     if (data.UtcOffsetMinutes !== -new Date().getTimezoneOffset()) expect(/server's/.test(seen.summary), 'the hours are the server\'s, yet the summary does not say so: ' + seen.summary);
     const hint = await page.textContent('#md-busy-detail');
     expect(/to see its runs/.test(hint), 'no hint before an hour is chosen: ' + hint);
-    await page.focus('#md-busy .md-busy-clash');
+    await page.focus('#md-busy .md-busy-clash[aria-label*="Fixture scan"]');
     const detail = await page.textContent('#md-busy-detail');
     expect(/Fixture scan/.test(detail) && /busy/.test(detail), 'the focused hour\'s details: ' + detail);
     return seen.summary;
@@ -1690,10 +1968,10 @@ await check('Dashboard panels: a media report and an unreadable disk history wri
     for (const name of ['media_report.json', 'disk_history.json.bad']) {
         if (!(name in dashFixtures)) dashFixtures[name] = readMedicFile(name);
     }
-    const since = Date.now();
     writeMedicFile('media_report.json', JSON.stringify({ GeneratedUtc: new Date().toISOString(), Files: 16, Bytes: 1, HardwareAcceleration: 'none', Compatibility: { DtsOrTrueHdOnly: 4, ImageSubtitles: 2, OldContainers: 0, Hdr: 0 } }));
     // Medic sets a file it can't read aside as .bad and starts a new one.
     writeMedicFile('disk_history.json', '{ not json');
+    const since = Date.now();
     const data = await dashboardAfter(since);
     expect(data.Transcodes.MediaReportUtc, 'the data has no media report date');
     return `${data.Disks.Drives.length} drives after the unreadable history`;
@@ -1803,7 +2081,6 @@ await check('playback test sends its token in a header, not in the address', asy
 await check('admin banner on the home page for a serious error, and it can be dismissed', async () => {
     // Pretend the database reported damage, by adding the line to the newest log file.
     // Written from inside the container: the log belongs to Jellyfin's user, not the one running the tests.
-    const { execFileSync } = await import('node:child_process');
     const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
     // A warning that only mentions the words must not count (Jellyfin logs these routinely).
@@ -1836,6 +2113,67 @@ await check('admin banner on the home page for a serious error, and it can be di
     expect(!(await banner.isVisible().catch(() => false)), 'banner came back after dismissing');
     const ours = errors.filter((e) => !/ResizeObserver|^CancelledError/i.test(e));
     expect(ours.length === 0, ours.join(' | '));
+});
+
+await check('admin banner goes away on signing out, and an answer that arrives late isn\'t shown to the next person', async () => {
+    // Served by the test: the admin dismissed the real alert above, and the server remembers that on every device.
+    const alert = { Id: 'critical:e2e-sign-out', Kind: 'critical', Title: 'Test alert for admins', Detail: 'Served by the e2e test.' };
+    const name = 'e2e-viewer';
+    const made = await api('POST', '/Users/New', { Name: name, Password: 'e2e-pass' });
+    expect(made.status === 200, 'user not created: ' + made.text);
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await ctx.newPage();
+        let held = null; // a list while answers are kept back, so they arrive late
+        await p.route('**/JellyfinMedic/Alerts', async (route) => {
+            if (held) held.push(route);
+            else await route.fulfill({ json: [alert] });
+        });
+        // Only the visible form: the web app can keep an earlier sign-in page, hidden, after signing out.
+        const signIn = async (user, password) => {
+            await p.waitForSelector('#txtManualName:visible', { timeout: 60000 });
+            await p.fill('#txtManualName:visible', user);
+            await p.fill('#txtManualPassword:visible', password);
+            await p.click('.manualLoginForm button[type="submit"]:visible');
+            await p.waitForURL(/#\/home/, { timeout: 60000 });
+        };
+        const signOut = async () => {
+            await p.click('button[aria-controls="app-user-menu"]');
+            await p.locator('#app-user-menu [role="menuitem"]', { hasText: /sign out/i }).click();
+            await p.waitForSelector('#txtManualName:visible', { timeout: 60000 });
+        };
+        const box = p.locator('#jellyfin-medic-banners');
+        const shown = () => p.evaluate(() => document.getElementById('jellyfin-medic-banners')?.textContent || '');
+        const problems = [];
+
+        await p.goto(JF + '/web/index.html#/login');
+        await signIn('admin', 'admin');
+        expect(await box.waitFor({ timeout: 30000 }).then(() => true, () => false), 'no banner for the admin after signing in, on ' + p.url());
+        await signOut();
+        await box.waitFor({ state: 'detached', timeout: 5000 }).catch(() => { /* reported below */ });
+        const stayed = await shown();
+        if (stayed) problems.push('the banner stayed on the sign-in screen after signing out: ' + stayed);
+
+        // A fresh page, so what follows doesn't depend on the sign-out above being handled.
+        await p.reload();
+        held = [];
+        const asked = p.waitForRequest('**/JellyfinMedic/Alerts', { timeout: 30000 }).then(() => true, () => false);
+        await signIn('admin', 'admin');
+        expect(await asked, 'the banner didn\'t ask for alerts after the admin signed in again');
+        await signOut();
+        await signIn(name, 'e2e-pass');
+        // Released only once the banner has seen who is signed in now, half a second after the page shows.
+        await p.waitForTimeout(3000);
+        for (const route of held) await route.fulfill({ json: [alert] });
+        await box.waitFor({ timeout: 3000 }).catch(() => { /* not shown, as it should be */ });
+        const late = await shown();
+        if (late) problems.push(`the admin's answer, held back until ${name} (not an admin) had signed in, was shown to them: ` + late);
+        expect(problems.length === 0, problems.join('; '));
+        return 'removed on signing out; the late answer was dropped';
+    } finally {
+        await ctx.close();
+        await api('DELETE', `/Users/${made.json.Id}`);
+    }
 });
 
 await check('Picks: 30 + a genre explains a short list, and "Show me different ones" moves on', async () => {

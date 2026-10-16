@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Animated Posters</title>
+</head>
+<body>
+    <div id="AnimatedPostersConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox,emby-textarea">
+        <div data-role="content">
+            <div class="content-primary">
+                <form id="AnimatedPostersConfigForm">
+                    <div class="verticalSection">
+                        <h2 class="sectionTitle">Animated Posters</h2>
+                        <p>Library cards on the home screen cycle through random artwork from each library. Changes apply after a browser refresh.</p>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="Enabled" type="checkbox" is="emby-checkbox" />
+                            <span>Enabled</span>
+                        </label>
+                    </div>
+
+                    <h3 class="sectionTitle">Look</h3>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="HideText" type="checkbox" is="emby-checkbox" />
+                            <span>Hide library names under the cards</span>
+                        </label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="HideBorder" type="checkbox" is="emby-checkbox" />
+                            <span>Remove card borders, rounded corners and shadows</span>
+                        </label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="KenBurns" type="checkbox" is="emby-checkbox" />
+                            <span>Slow pan and zoom on each image</span>
+                        </label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="ShowLogos" type="checkbox" is="emby-checkbox" />
+                            <span>Show the title logo over each image when one exists</span>
+                        </label>
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="OriginalArt">Your library artwork</label>
+                        <select is="emby-select" id="OriginalArt" class="emby-select-withcolor emby-select">
+                            <option value="slide">Keep it in the rotation</option>
+                            <option value="screen">Blend it over every image (best for neon on black art)</option>
+                            <option value="none">Replace it completely</option>
+                        </select>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="OriginalEvery">Show your artwork every N slides</label>
+                        <input id="OriginalEvery" type="number" is="emby-input" min="2" max="50" />
+                        <div class="fieldDescription">Only used when your artwork is kept in the rotation.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="ScreenOpacity">Blend strength (0 to 1)</label>
+                        <input id="ScreenOpacity" type="number" is="emby-input" min="0" max="1" step="0.05" />
+                        <div class="fieldDescription">Only used when your artwork is blended over every image.</div>
+                    </div>
+
+                    <h3 class="sectionTitle">Timing</h3>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="IntervalSeconds">Seconds per image</label>
+                        <input id="IntervalSeconds" type="number" is="emby-input" min="1" max="120" step="0.5" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="FadeSeconds">Crossfade seconds</label>
+                        <input id="FadeSeconds" type="number" is="emby-input" min="0" max="10" step="0.1" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="ItemsPerLibrary">Random items per library</label>
+                        <input id="ItemsPerLibrary" type="number" is="emby-input" min="1" max="200" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RefreshMinutes">Pick new random items every N minutes</label>
+                        <input id="RefreshMinutes" type="number" is="emby-input" min="1" max="1440" />
+                    </div>
+
+                    <h3 class="sectionTitle">Libraries</h3>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="SkipLibraries">Libraries to leave static</label>
+                        <textarea id="SkipLibraries" is="emby-textarea" rows="4"></textarea>
+                        <div class="fieldDescription">One library name per line, exactly as it appears on the card, for example Live TV.</div>
+                    </div>
+
+                    <div>
+                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                            <span>Save</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script type="text/javascript">
+            (function () {
+                var pluginId = '892f168c-c44e-4abf-b72f-6ebce7b90fdc';
+                var checks = ['Enabled', 'HideText', 'HideBorder', 'KenBurns', 'ShowLogos'];
+                var values = ['OriginalArt', 'SkipLibraries'];
+                var numbers = ['OriginalEvery', 'ScreenOpacity', 'IntervalSeconds', 'FadeSeconds', 'ItemsPerLibrary', 'RefreshMinutes'];
+                var page = document.querySelector('#AnimatedPostersConfigPage');
+                var $ = function (id) { return page.querySelector('#' + id); };
+
+                page.addEventListener('pageshow', function () {
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        checks.forEach(function (k) { $(k).checked = !!config[k]; });
+                        values.forEach(function (k) { $(k).value = config[k] || ''; });
+                        numbers.forEach(function (k) { $(k).value = config[k]; });
+                        Dashboard.hideLoadingMsg();
+                    });
+                });
+
+                page.querySelector('#AnimatedPostersConfigForm').addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        checks.forEach(function (k) { config[k] = $(k).checked; });
+                        values.forEach(function (k) { config[k] = $(k).value; });
+                        numbers.forEach(function (k) { config[k] = parseFloat($(k).value); });
+                        ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                        });
+                    });
+                    return false;
+                });
+            })();
+        </script>
+    </div>
+</body>
+</html>

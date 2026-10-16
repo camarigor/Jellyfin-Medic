@@ -178,9 +178,10 @@ public static class AdminAlerts
         }
     }
 
-    private static string Shorten(string line)
+    internal static string Shorten(string line)
     {
-        string text = line.Trim();
+        // Masked before the cut, which can leave too little of a token for it to be recognised.
+        string text = SettingsReader.MaskSecrets(line).Trim();
         return text.Length > 220 ? text[..220] + "…" : text;
     }
 }

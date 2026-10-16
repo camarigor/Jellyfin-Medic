@@ -1,18 +1,24 @@
 using Jellyfin.Plugin.MedicPicks.Picks;
-using MediaBrowser.Common.Configuration;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MedicPicks.Tests;
 
 public sealed class PicksStoreTests : IDisposable
 {
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
     private readonly string _root = Directory.CreateTempSubdirectory("medic-picks-tests-").FullName;
     private readonly PicksStore _store;
 
     public PicksStoreTests()
     {
-        _store = new PicksStore(new Paths(_root), NullLogger<PicksStore>.Instance);
+        _store = new PicksStore(new TestPaths(_root), NullLogger<PicksStore>.Instance);
     }
+
+    private string KeysDir => Path.Combine(_root, "data", "medic-picks");
+
+    private string KeysFile => Path.Combine(KeysDir, "secrets.json");
 
     [Fact]
     public void A_title_hidden_while_picks_were_being_built_is_not_saved_with_them()
@@ -55,46 +61,110 @@ public sealed class PicksStoreTests : IDisposable
         Assert.Equal(ids.OrderBy(i => i), _store.LoadPreferences(user).HiddenItems.OrderBy(i => i));
     }
 
-    public void Dispose() => Directory.Delete(_root, recursive: true);
+    // ---------- The keys file ----------
 
-    private sealed class Paths(string root) : IApplicationPaths
+    [Fact]
+    public void Keys_are_kept_trimmed_and_a_blank_one_removes_only_that_key()
     {
-        public string ProgramDataPath => root;
+        _store.SetTmdbKey("  tmdb-key ");
+        _store.SetSeerrKey("seerr-key");
 
-        public string WebPath => Path.Combine(root, "web");
+        _store.SetSeerrKey("   ");
 
-        public string ProgramSystemPath => Path.Combine(root, "system");
+        Assert.Equal("tmdb-key", _store.GetTmdbKey());
+        Assert.Null(_store.GetSeerrKey());
+    }
 
-        public string DataPath => Path.Combine(root, "data");
-
-        public string ImageCachePath => Path.Combine(root, "cache", "images");
-
-        public string PluginsPath => Path.Combine(root, "plugins");
-
-        public string PluginConfigurationsPath => Path.Combine(root, "plugins", "configurations");
-
-        public string LogDirectoryPath => Path.Combine(root, "log");
-
-        public string ConfigurationDirectoryPath => Path.Combine(root, "config");
-
-        public string SystemConfigurationFilePath => Path.Combine(root, "config", "system.xml");
-
-        public string CachePath => Path.Combine(root, "cache");
-
-        public string TempDirectory => Path.Combine(root, "temp");
-
-        public string VirtualDataPath => Path.Combine(root, "data");
-
-        public string TrickplayPath => Path.Combine(root, "data", "trickplay");
-
-        public string BackupPath => Path.Combine(root, "backups");
-
-        public void MakeSanityCheckOrThrow()
+    [Fact]
+    public void Keys_saved_at_the_same_time_are_both_kept()
+    {
+        for (int round = 0; round < 50; round++)
         {
-        }
+            _store.SetTmdbKey(null);
+            _store.SetSeerrKey(null);
 
-        public void CreateAndCheckMarker(string path, string markerName, bool recursive = false)
-        {
+            Parallel.Invoke(() => _store.SetTmdbKey("tmdb-key"), () => _store.SetSeerrKey("seerr-key"));
+
+            Assert.Equal(("tmdb-key", "seerr-key"), (_store.GetTmdbKey(), _store.GetSeerrKey()));
         }
     }
+
+    [Fact]
+    public void Saving_a_key_leaves_no_temporary_file_behind()
+    {
+        _store.SetTmdbKey("tmdb-key");
+
+        Assert.Equal(new[] { "secrets.json" }, Directory.GetFiles(KeysDir).Select(Path.GetFileName));
+    }
+
+    [UnixFact]
+    [UnsupportedOSPlatform("windows")]
+    public void The_keys_file_is_created_readable_only_by_its_owner()
+    {
+        _store.SetTmdbKey("tmdb-key");
+
+        Assert.Equal(OwnerOnly, File.GetUnixFileMode(KeysFile));
+    }
+
+    [UnixFact]
+    [UnsupportedOSPlatform("windows")]
+    public void A_keys_file_others_can_read_is_made_private_when_first_read()
+    {
+        // As versions before 1.2.4 saved it.
+        Directory.CreateDirectory(KeysDir);
+        File.WriteAllText(KeysFile, """{"tmdbKey":"tmdb-key"}""");
+        File.SetUnixFileMode(KeysFile, OwnerOnly | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        Assert.Equal("tmdb-key", _store.GetTmdbKey());
+        Assert.Equal(OwnerOnly, File.GetUnixFileMode(KeysFile));
+    }
+
+    [Fact]
+    public void A_damaged_keys_file_reads_as_no_keys_and_is_left_alone()
+    {
+        Directory.CreateDirectory(KeysDir);
+        File.WriteAllText(KeysFile, "{ not json");
+
+        Assert.Null(_store.GetTmdbKey());
+        Assert.Equal("{ not json", File.ReadAllText(KeysFile));
+        Assert.Empty(Directory.GetFiles(KeysDir, "*.bad"));
+    }
+
+    [Fact]
+    public void Saving_over_a_damaged_keys_file_keeps_it_aside_with_the_time_in_its_name()
+    {
+        Directory.CreateDirectory(KeysDir);
+        File.WriteAllText(KeysFile, "{ not json");
+
+        _store.SetSeerrKey("seerr-key");
+
+        string kept = Assert.Single(Directory.GetFiles(KeysDir, "secrets.json.*.bad"));
+        Assert.Equal("{ not json", File.ReadAllText(kept));
+        Assert.Equal("seerr-key", _store.GetSeerrKey());
+    }
+
+    // ---------- Each person's choices ----------
+
+    [Fact]
+    public void A_damaged_choices_file_is_kept_aside_when_a_change_is_saved_over_it()
+    {
+        // Writing over it would lose the titles hidden in it.
+        var user = Guid.NewGuid();
+        var hidden = Guid.NewGuid();
+        string prefsDir = Path.Combine(KeysDir, "preferences");
+        Directory.CreateDirectory(prefsDir);
+        File.WriteAllText(Path.Combine(prefsDir, user.ToString("N") + ".json"), "{ not json");
+
+        _store.UpdatePreferences(user, p =>
+        {
+            p.HiddenItems.Add(hidden);
+            return p;
+        });
+
+        string kept = Assert.Single(Directory.GetFiles(prefsDir, user.ToString("N") + ".json.*.bad"));
+        Assert.Equal("{ not json", File.ReadAllText(kept));
+        Assert.Equal(new[] { hidden }, _store.LoadPreferences(user).HiddenItems);
+    }
+
+    public void Dispose() => Directory.Delete(_root, recursive: true);
 }

@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Net;
 using Microsoft.Extensions.Logging;
+using static Medic.Shared.Json;
 
 namespace Jellyfin.Plugin.MedicPicks.Picks;
 
@@ -26,6 +27,9 @@ public class TmdbUnavailableException : Exception
 /// </summary>
 public class TmdbClient
 {
+    // TMDb answers within a second or two; one that has stopped answering counts as unavailable after this.
+    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(20);
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TmdbClient> _logger;
 
@@ -60,6 +64,8 @@ public class TmdbClient
 
         try
         {
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            limit.CancelAfter(CallTimeout);
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             if (isBearer)
@@ -68,7 +74,7 @@ public class TmdbClient
             }
 
             var client = _httpClientFactory.CreateClient(NamedClient.Default);
-            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using var response = await client.SendAsync(request, limit.Token).ConfigureAwait(false);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 return results; // TMDb doesn't know this title: it simply has no recommendations
@@ -80,8 +86,8 @@ public class TmdbClient
                 throw new TmdbUnavailableException($"TMDb answered {(int)response.StatusCode} for {mediaType} {tmdbId}");
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await using var stream = await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: limit.Token).ConfigureAwait(false);
 
             if (!doc.RootElement.TryGetProperty("results", out var items) || items.ValueKind != JsonValueKind.Array)
             {
@@ -95,13 +101,13 @@ public class TmdbClient
                     continue;
                 }
 
-                var title = GetString(item, mediaType == "tv" ? "name" : "title") ?? GetString(item, "title") ?? GetString(item, "name");
+                var title = Text(item, mediaType == "tv" ? "name" : "title") ?? Text(item, "title") ?? Text(item, "name");
                 if (string.IsNullOrWhiteSpace(title))
                 {
                     continue;
                 }
 
-                var date = GetString(item, mediaType == "tv" ? "first_air_date" : "release_date");
+                var date = Text(item, mediaType == "tv" ? "first_air_date" : "release_date");
                 int? year = null;
                 if (!string.IsNullOrEmpty(date) && date.Length >= 4
                     && int.TryParse(date.AsSpan(0, 4), NumberStyles.Integer, CultureInfo.InvariantCulture, out var y))
@@ -121,9 +127,9 @@ public class TmdbClient
                     MediaType = mediaType,
                     Title = title!,
                     Year = year,
-                    Overview = GetString(item, "overview"),
-                    PosterPath = GetString(item, "poster_path"),
-                    OriginalLanguage = GetString(item, "original_language"),
+                    Overview = Text(item, "overview"),
+                    PosterPath = Text(item, "poster_path"),
+                    OriginalLanguage = Text(item, "original_language"),
                     GenreIds = item.TryGetProperty("genre_ids", out var genres) && genres.ValueKind == JsonValueKind.Array
                         ? genres.EnumerateArray().Where(g => g.ValueKind == JsonValueKind.Number).Select(g => g.GetInt32()).ToList()
                         : new List<int>(),
@@ -131,9 +137,11 @@ public class TmdbClient
                 });
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            throw;
+            // Not the run being cancelled: TMDb didn't answer in time (this call's limit or the HTTP client's own).
+            // A cancelled run isn't caught here, so it still ends the run.
+            throw new TmdbUnavailableException($"TMDb didn't answer in time for {mediaType} {tmdbId}", ex);
         }
         catch (TmdbUnavailableException)
         {
@@ -150,12 +158,5 @@ public class TmdbClient
         }
 
         return results;
-    }
-
-    private static string? GetString(JsonElement element, string name)
-    {
-        return element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
     }
 }

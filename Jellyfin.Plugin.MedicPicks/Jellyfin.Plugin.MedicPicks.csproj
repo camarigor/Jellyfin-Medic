@@ -47,4 +47,9 @@
     <EmbeddedResource Include="Web\picks.html" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Code shared with Medic Profiles, compiled into this DLL so the release zip stays one file. -->
+    <Compile Include="..\shared\Medic.Shared\*.cs" LinkBase="Medic.Shared" />
+  </ItemGroup>
+
 </Project>
