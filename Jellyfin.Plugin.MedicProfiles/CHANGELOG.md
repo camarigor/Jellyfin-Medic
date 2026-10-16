@@ -3,7 +3,7 @@
 All notable changes to Medic Profiles are recorded here. The newest version is at the top.
 Jellyfin Medic and Medic Picks have their own changelogs.
 
-## Unreleased
+## [1.1.4] – 2026-10-16
 
 ### Fixed
 - **An error answer from Sonarr or Radarr is never taken for them being out of reach.** One that came as a list without the usual error entries made the Downloads tab say Sonarr or Radarr couldn't be reached. It now says the status they answered with ("Sonarr answered with 400.", say).
