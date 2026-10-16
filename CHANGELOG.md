@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **On Windows and macOS, the hardware acceleration settings are checked too.** With hardware acceleration on, Medic only checked its settings on Linux: hardware encoding, the formats decoded on the GPU, 10-bit HEVC, HEVC encoding and trickplay encoding. These checks now run on every platform and for every method, AMF and VideoToolbox included, so a Windows or macOS server may see these findings for the first time. Whether Jellyfin can see the GPU, and whether the method suits it, is still checked on Linux only, as Medic can't see the GPU elsewhere. "Tone mapping is off" also no longer shows when tone mapping is on through Intel's VPP, with QSV or with VAAPI on an Intel GPU, or through VideoToolbox. When only one format isn't decoded on the GPU, the finding now says "HEVC isn't decoded on the GPU", so if you ignored it, it needs ignoring once more.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
