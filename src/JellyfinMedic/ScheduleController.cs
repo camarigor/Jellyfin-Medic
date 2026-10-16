@@ -506,6 +506,12 @@ public class ScheduleController : ControllerBase
     {
         try
         {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
             ScheduleStorage.WriteJson(path, runs);
             return true;
         }
