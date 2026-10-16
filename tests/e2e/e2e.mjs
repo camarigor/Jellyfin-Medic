@@ -113,6 +113,22 @@ for (const path of medicGets) {
     await check(`GET ${path}`, async () => { await ok(path); });
 }
 
+await check('Jellyfin Medic serves its stylesheet to anyone, and nothing else from there', async () => {
+    // The page links it, and a stylesheet link carries no sign-in, so it's served without one.
+    const css = await fetch(JF + '/JellyfinMedic/Assets/medic.css');
+    const text = await css.text();
+    expect(css.status === 200, 'medic.css: ' + css.status);
+    expect((css.headers.get('content-type') || '').startsWith('text/css'), 'content type: ' + css.headers.get('content-type'));
+    expect(css.headers.get('x-content-type-options') === 'nosniff', 'x-content-type-options: ' + css.headers.get('x-content-type-options'));
+    expect((css.headers.get('cache-control') || '').includes('no-cache'), 'cache-control: ' + css.headers.get('cache-control'));
+    expect(text.includes('#JellyfinMedicPage .so-topbar'), 'not the Medic stylesheet: ' + text.slice(0, 120));
+    for (const name of ['medic.html', 'assist.js', '..%2Fmedic.html']) {
+        const other = await fetch(JF + '/JellyfinMedic/Assets/' + name);
+        expect(other.status === 404, `${name}: ${other.status}`);
+    }
+    return `${text.length} bytes`;
+});
+
 await check('Medic Picks keeps both keys when they are saved at the same time', async () => {
     // The settings page saves the TMDb and Seerr keys together; neither may be lost.
     try {
@@ -1031,6 +1047,14 @@ async function openPage(name, hash, selector, tabs) {
 }
 
 await openPage('Jellyfin Medic', '/configurationpage?name=JellyfinMedic', '#JellyfinMedicPage .so-tab', '.so-tab');
+
+await check('Jellyfin Medic page is styled by its stylesheet', async () => {
+    await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+    await page.waitForSelector('#JellyfinMedicPage .so-topbar', { timeout: 30000 });
+    // Only medic.css lays the top bar out as a row.
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('#JellyfinMedicPage .so-topbar')).display === 'flex', null, { timeout: 10000 });
+    return 'top bar laid out as a row';
+});
 await openPage('Medic Profiles', '/configurationpage?name=MedicProfiles', '#MedicProfilesPage .mp-tab', '.mp-tab');
 await openPage('Medic Picks settings', '/configurationpage?name=Medic%20Picks', '#MedicPicksConfigForm');
 

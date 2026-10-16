@@ -30,6 +30,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="medic.html" />
+    <!-- The page's styles, served by MedicAssetsController. -->
+    <EmbeddedResource Include="medic.css" />
     <!-- The repository's CHANGELOG.md, kept once: the "What's new" panel reads it from here. -->
     <EmbeddedResource Include="../../CHANGELOG.md" LogicalName="JellyfinMedic.CHANGELOG.md" />
     <EmbeddedResource Include="assist.js" />
