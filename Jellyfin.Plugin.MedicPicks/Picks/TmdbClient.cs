@@ -26,6 +26,9 @@ public class TmdbUnavailableException : Exception
 /// </summary>
 public class TmdbClient
 {
+    // TMDb answers within a second or two; one that has stopped answering counts as unavailable after this.
+    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(20);
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TmdbClient> _logger;
 
@@ -60,6 +63,8 @@ public class TmdbClient
 
         try
         {
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            limit.CancelAfter(CallTimeout);
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             if (isBearer)
@@ -68,7 +73,7 @@ public class TmdbClient
             }
 
             var client = _httpClientFactory.CreateClient(NamedClient.Default);
-            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using var response = await client.SendAsync(request, limit.Token).ConfigureAwait(false);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 return results; // TMDb doesn't know this title: it simply has no recommendations
@@ -80,8 +85,8 @@ public class TmdbClient
                 throw new TmdbUnavailableException($"TMDb answered {(int)response.StatusCode} for {mediaType} {tmdbId}");
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await using var stream = await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: limit.Token).ConfigureAwait(false);
 
             if (!doc.RootElement.TryGetProperty("results", out var items) || items.ValueKind != JsonValueKind.Array)
             {
@@ -131,9 +136,11 @@ public class TmdbClient
                 });
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            throw;
+            // Not the run being cancelled: TMDb didn't answer in time (this call's limit or the HTTP client's own).
+            // A cancelled run isn't caught here, so it still ends the run.
+            throw new TmdbUnavailableException($"TMDb didn't answer in time for {mediaType} {tmdbId}", ex);
         }
         catch (TmdbUnavailableException)
         {
