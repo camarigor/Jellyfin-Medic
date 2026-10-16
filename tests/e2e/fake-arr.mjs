@@ -35,7 +35,6 @@ const indexers = [
 const routes = {
     '/api/v3/system/status': () => ({ appName: 'Sonarr', version: '4.0.9.2244' }),
     '/api/v3/indexer': () => indexers,
-    '/api/v3/indexerstatus': () => [{ indexerId: 2, initialFailure: new Date(Date.now() - 3 * 3600e3).toISOString(), mostRecentFailure: new Date().toISOString(), disabledTill: new Date(Date.now() + 3600e3).toISOString() }],
     '/api/v3/health': () => [{ source: 'IndexerStatusCheck', type: 'warning', message: 'Indexers unavailable due to failures: Broken Indexer' }],
     '/api/v3/queue': queuePage,
     '/api/v3/queue/bulk': () => ({}),
