@@ -278,30 +278,6 @@ public static class SecurityAuditor
                     }
                 }
             }
-
-            // Older versions.
-            foreach (var method in activityManager.GetType().GetMethods().Where(m => m.Name is "GetPagedResult" or "GetActivityLogEntries"))
-            {
-                var parameters = method.GetParameters();
-                var args = new object?[parameters.Length];
-                for (int i = 0; i < parameters.Length; i++)
-                {
-                    args[i] = parameters[i].ParameterType switch
-                    {
-                        { } t when t == typeof(int) => i == parameters.Length - 1 ? 500 : 0,
-                        { } t when t == typeof(DateTime) => sinceUtc,
-                        { } t when t == typeof(DateTime?) => sinceUtc,
-                        _ => parameters[i].HasDefaultValue ? parameters[i].DefaultValue : null
-                    };
-                }
-
-                object? result = method.Invoke(activityManager, args);
-                var items = SettingsReader.Get(result, "Items") ?? result;
-                if (items is IEnumerable list && items is not string)
-                {
-                    return list.Cast<object>().Where(e => e is not null).ToList();
-                }
-            }
         }
         catch
         {
