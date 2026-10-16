@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **Track cleanup keeps a film's own audio when only a commentary is in your languages.** A commentary, audio description, isolated score or karaoke track in a language you keep counted as the film's audio, so a Japanese film with an English commentary kept only the commentary, and lost its subtitles too when none were in your languages. These extras, recognised by their track titles, are still kept or removed by their language, but they no longer stand in for the film's own audio: when they're all that would stay, the film's own audio tracks stay as well, and its subtitles are kept as for any film in another language.
+
 ## [1.0.21] – 2026-10-15
 
 ### Added
