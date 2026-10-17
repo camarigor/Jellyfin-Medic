@@ -4,10 +4,10 @@
     "name": "Jellyfin Medic",
     "description": "Health checks, performance tests and usage-aware task scheduling for your Jellyfin server.",
     "overview": "Keeps a busy Jellyfin server healthy: checks, tests and smart scheduling.",
-    "owner": "P1zzm1ssile",
+    "owner": "camarigor",
     "category": "General",
-    "imageUrl": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png",
-    "thumbImage": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png",
+    "imageUrl": "https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png",
+    "thumbImage": "https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png",
     "versions": [
       {
         "version": "1.0.22.0",
@@ -160,10 +160,10 @@
     "name": "Medic Picks",
     "description": "Personal picks for every user, from what they watch.",
     "overview": "A private playlist of picks in every Jellyfin app, plus a My picks page with titles that aren't on the server yet and one-tap Seerr requests.",
-    "owner": "P1zzm1ssile",
+    "owner": "camarigor",
     "category": "General",
-    "imageUrl": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPicks/thumb.png",
-    "thumbImage": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPicks/thumb.png",
+    "imageUrl": "https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPicks/thumb.png",
+    "thumbImage": "https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPicks/thumb.png",
     "versions": [
       {
         "version": "1.2.5.0",
@@ -268,10 +268,10 @@
     "name": "Medic Profiles",
     "description": "Sonarr and Radarr from your Jellyfin dashboard: downloads, fixes and profile advice.",
     "overview": "See what Sonarr and Radarr are downloading, remove, block or import stuck and wrong downloads by hand, and get quality profile advice from what your server actually plays.",
-    "owner": "P1zzm1ssile",
+    "owner": "camarigor",
     "category": "General",
-    "imageUrl": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicProfiles/thumb.png",
-    "thumbImage": "https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicProfiles/thumb.png",
+    "imageUrl": "https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/Jellyfin.Plugin.MedicProfiles/thumb.png",
+    "thumbImage": "https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/Jellyfin.Plugin.MedicProfiles/thumb.png",
     "versions": [
       {
         "version": "1.1.4.0",
