@@ -61,6 +61,12 @@ public class PicksEngine
     {
         var context = new PicksRunContext { TmdbKey = _store.GetTmdbKey() };
 
+        // Only Discover uses these ids, so without it the library isn't read for them.
+        if (Plugin.Instance?.Configuration is { EnableDiscover: false } || string.IsNullOrEmpty(context.TmdbKey))
+        {
+            return context;
+        }
+
         var everything = _libraryManager.GetItemList(new InternalItemsQuery
         {
             IncludeItemTypes = new[] { BaseItemKind.Movie, BaseItemKind.Series },
@@ -146,17 +152,20 @@ public class PicksEngine
 
         var ranked = titles.Values.OrderByDescending(t => t.Weight).ToList();
 
+        // The titles both kinds of library picks choose from, read once for this build.
+        var candidates = new Candidates(_libraryManager, userQuery);
+
         // 2. Library picks.
         if (config.EnableLibraryPicks)
         {
             int libraryCount = prefs.Count > 0 ? prefs.Count : Math.Clamp(config.LibraryPickCount, 1, 100);
-            picks.InLibrary = BuildLibraryPicks(userQuery, ranked, titles, libraryCount, prefs, language);
+            picks.InLibrary = BuildLibraryPicks(userQuery, candidates, ranked, titles, libraryCount, prefs, language);
             if (picks.InLibrary.Count == 0 && prefs.SeenItems.Count > 0)
             {
                 // "Show me different ones" has been through them all, so start again from the best.
                 prefs.SeenItems.Clear();
                 ForgetSeen(userId, items: true);
-                picks.InLibrary = BuildLibraryPicks(userQuery, ranked, titles, libraryCount, prefs, language);
+                picks.InLibrary = BuildLibraryPicks(userQuery, candidates, ranked, titles, libraryCount, prefs, language);
             }
         }
 
@@ -167,7 +176,7 @@ public class PicksEngine
             var alreadyPicked = new HashSet<Guid>(picks.InLibrary.Select(p => p.ItemId));
             try
             {
-                picks.Linked = BuildLinkedPicks(userQuery, ranked, titles, linkedCount, prefs, language, alreadyPicked);
+                picks.Linked = BuildLinkedPicks(userQuery, candidates, ranked, titles, linkedCount, prefs, language, alreadyPicked);
             }
             catch (Exception ex)
             {
@@ -198,9 +207,8 @@ public class PicksEngine
         _store.SaveWithoutHidden(userId, picks);
 
         // 4. Discover picks from TMDb.
-        var discoverAllowed = config.EnableDiscover
-            && !string.IsNullOrEmpty(context.TmdbKey)
-            && !config.DiscoverDisabledUserIds.Any(id => Guid.TryParse(id, out var g) && g == userId);
+        var discoverAllowed = !string.IsNullOrEmpty(context.TmdbKey)
+            && DiscoverAccess.Allowed(config, userId, DiscoverAccess.HasParentalLimits(user));
 
         int discoverCount = prefs.Count > 0 ? prefs.Count : Math.Clamp(config.DiscoverPickCount, 1, 100);
         if (!discoverAllowed)
@@ -292,6 +300,7 @@ public class PicksEngine
     /// </summary>
     private List<LibraryPick> BuildLinkedPicks(
         Func<InternalItemsQuery> userQuery,
+        Candidates candidates,
         List<WatchedTitle> ranked,
         Dictionary<Guid, WatchedTitle> titles,
         int count,
@@ -302,35 +311,15 @@ public class PicksEngine
         var pool = new List<BaseItem>();
         if (prefs.Kind != "series")
         {
-            var movies = userQuery();
-            movies.IncludeItemTypes = new[] { BaseItemKind.Movie };
-            movies.IsPlayed = false;
-            movies.IsResumable = false; // not finished is not enough: started ones are left out too
-            movies.Recursive = true;
-            movies.IsVirtualItem = false;
-            pool.AddRange(_libraryManager.GetItemList(movies));
+            pool.AddRange(candidates.Movies);
         }
 
         if (prefs.Kind != "movies")
         {
-            var series = userQuery();
-            series.IncludeItemTypes = new[] { BaseItemKind.Series };
-            series.Recursive = true;
-            series.IsVirtualItem = false;
-            pool.AddRange(_libraryManager.GetItemList(series));
+            pool.AddRange(candidates.Series);
         }
 
-        // A series with an episode under way has been started, even if no episode is finished yet.
-        var started = new HashSet<Guid>();
-        if (prefs.Kind != "movies")
-        {
-            var underWay = userQuery();
-            underWay.IncludeItemTypes = new[] { BaseItemKind.Episode };
-            underWay.IsResumable = true;
-            underWay.Recursive = true;
-            underWay.IsVirtualItem = false;
-            started.UnionWith(_libraryManager.GetItemList(underWay).OfType<Episode>().Select(e => e.SeriesId));
-        }
+        var started = prefs.Kind != "movies" ? candidates.StartedSeries : new HashSet<Guid>();
 
         var hidden = new HashSet<Guid>(prefs.HiddenItems.Concat(prefs.SeenItems));
         var poolById = pool
@@ -360,8 +349,20 @@ public class PicksEngine
             }
         }
 
-        // 1. Names: a series and its films, a film and its sequels.
+        // 1. Names: a series and its films, a film and its sequels. Looked up through an index of each name and
+        // its leading words, built once, rather than comparing every title watched with every title in the pool.
         var poolNames = poolById.Values.Select(c => (Item: c, Key: NameKey(c.Name))).Where(x => x.Key.Length > 0).ToList();
+        var byName = new Dictionary<string, List<(BaseItem Item, string Key)>>(StringComparer.Ordinal);
+        var byLeadingWords = new Dictionary<string, List<(BaseItem Item, string Key)>>(StringComparer.Ordinal);
+        foreach (var entry in poolNames)
+        {
+            Add(byName, entry.Key, entry);
+            foreach (string lead in LeadingWords(entry.Key))
+            {
+                Add(byLeadingWords, lead, entry);
+            }
+        }
+
         foreach (var seed in ranked)
         {
             string key = NameKey(seed.Item.Name);
@@ -370,18 +371,25 @@ public class PicksEngine
                 continue;
             }
 
-            foreach (var (item, itemKey) in poolNames)
+            // Same name, a longer name starting with this one, or a shorter one this starts with.
+            var matches = new HashSet<(BaseItem Item, string Key)>(byName.GetValueOrDefault(key) ?? new());
+            matches.UnionWith(byLeadingWords.GetValueOrDefault(key) ?? new());
+            foreach (string lead in LeadingWords(key))
+            {
+                matches.UnionWith(byName.GetValueOrDefault(lead) ?? new());
+            }
+
+            foreach (var (item, itemKey) in matches)
             {
                 bool sameKind = item.GetType() == seed.Item.GetType();
                 string shorter = itemKey.Length < key.Length ? itemKey : key;
-                bool prefix = itemKey.StartsWith(key + " ", StringComparison.Ordinal) || key.StartsWith(itemKey + " ", StringComparison.Ordinal);
 
                 // Same name: a film and a series of it. One name starting with the other: a sequel or spin-off,
                 // as long as the shorter name is distinctive. A one-word name ("Avatar") only links the same
                 // kind, so the Avatar films don't pull in Avatar: The Last Airbender.
                 bool linked = itemKey == key
                     ? !sameKind && Distinctive(key)
-                    : prefix && Distinctive(shorter) && (shorter.Contains(' ', StringComparison.Ordinal) || sameKind);
+                    : Distinctive(shorter) && (shorter.Contains(' ', StringComparison.Ordinal) || sameKind);
                 if (linked)
                 {
                     Link(item, seed, "From " + seed.Item.Name, 1.0);
@@ -462,6 +470,75 @@ public class PicksEngine
             .ToList();
     }
 
+    private static void Add<T>(Dictionary<string, List<T>> index, string key, T value)
+    {
+        if (!index.TryGetValue(key, out var list))
+        {
+            list = new List<T>();
+            index[key] = list;
+        }
+
+        list.Add(value);
+    }
+
+    /// <summary>
+    /// What library picks choose from, each read from the library once per build and only when first needed:
+    /// films the person hasn't watched or started, every series, and the series with an episode under way.
+    /// </summary>
+    private sealed class Candidates
+    {
+        private readonly Lazy<List<BaseItem>> _movies;
+        private readonly Lazy<List<BaseItem>> _series;
+        private readonly Lazy<HashSet<Guid>> _started;
+
+        public Candidates(ILibraryManager library, Func<InternalItemsQuery> userQuery)
+        {
+            _movies = new Lazy<List<BaseItem>>(() =>
+            {
+                var q = userQuery();
+                q.IncludeItemTypes = new[] { BaseItemKind.Movie };
+                q.IsPlayed = false;
+                q.IsResumable = false; // not finished is not enough: started ones are left out too
+                q.Recursive = true;
+                q.IsVirtualItem = false;
+                return library.GetItemList(q).ToList();
+            });
+            _series = new Lazy<List<BaseItem>>(() =>
+            {
+                var q = userQuery();
+                q.IncludeItemTypes = new[] { BaseItemKind.Series };
+                q.Recursive = true;
+                q.IsVirtualItem = false;
+                return library.GetItemList(q).ToList();
+            });
+            _started = new Lazy<HashSet<Guid>>(() =>
+            {
+                // A series with an episode under way has been started, even if no episode is finished yet.
+                var q = userQuery();
+                q.IncludeItemTypes = new[] { BaseItemKind.Episode };
+                q.IsResumable = true;
+                q.Recursive = true;
+                q.IsVirtualItem = false;
+                return library.GetItemList(q).OfType<Episode>().Select(e => e.SeriesId).ToHashSet();
+            });
+        }
+
+        public List<BaseItem> Movies => _movies.Value;
+
+        public List<BaseItem> Series => _series.Value;
+
+        public HashSet<Guid> StartedSeries => _started.Value;
+    }
+
+    /// <summary>A name's leading words, shortest first, without the whole name: "a b c" gives "a" and "a b".</summary>
+    public static IEnumerable<string> LeadingWords(string key)
+    {
+        for (int i = key.IndexOf(' ', StringComparison.Ordinal); i > 0; i = key.IndexOf(' ', i + 1))
+        {
+            yield return key[..i];
+        }
+    }
+
     /// <summary>A name to compare on: lower case, letters and digits only, without a leading "the".</summary>
     private static string NameKey(string? name)
     {
@@ -538,7 +615,7 @@ public class PicksEngine
             return fresh;
         });
 
-    private List<LibraryPick> BuildLibraryPicks(Func<InternalItemsQuery> userQuery, List<WatchedTitle> ranked, Dictionary<Guid, WatchedTitle> titles, int count, UserPreferences prefs, AudioLanguage language)
+    private List<LibraryPick> BuildLibraryPicks(Func<InternalItemsQuery> userQuery, Candidates pool, List<WatchedTitle> ranked, Dictionary<Guid, WatchedTitle> titles, int count, UserPreferences prefs, AudioLanguage language)
     {
         // Taste profile: genres from everything watched, people from the most-weighted titles.
         var genres = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -589,27 +666,16 @@ public class PicksEngine
         var maxGenre = genres.Count > 0 ? genres.Values.Max() : 1.0;
         var maxPerson = people.Count > 0 ? people.Values.Max(p => p.Weight) : 1.0;
 
-        // Candidates: unwatched movies, and series the user hasn't started.
-        var movieQuery = userQuery();
-        movieQuery.IncludeItemTypes = new[] { BaseItemKind.Movie };
-        movieQuery.IsPlayed = false;
-        movieQuery.Recursive = true;
-        movieQuery.IsVirtualItem = false;
-
-        var seriesQuery = userQuery();
-        seriesQuery.IncludeItemTypes = new[] { BaseItemKind.Series };
-        seriesQuery.Recursive = true;
-        seriesQuery.IsVirtualItem = false;
-
+        // Candidates: movies the user hasn't watched or started, and series they haven't started.
         var candidates = new List<BaseItem>();
         if (prefs.Kind != "series")
         {
-            candidates.AddRange(_libraryManager.GetItemList(movieQuery));
+            candidates.AddRange(pool.Movies);
         }
 
         if (prefs.Kind != "movies")
         {
-            candidates.AddRange(_libraryManager.GetItemList(seriesQuery).Where(s => !titles.ContainsKey(s.Id)));
+            candidates.AddRange(pool.Series.Where(s => !titles.ContainsKey(s.Id) && !pool.StartedSeries.Contains(s.Id)));
         }
 
         // The person's own choices: titles they hid, and the genres they picked.
@@ -792,22 +858,48 @@ public class PicksEngine
         return first?.Id;
     }
 
-    /// <summary>Deletes last run's private playlist and creates a fresh one owned by the user.</summary>
+    /// <summary>
+    /// Puts these items in the person's private playlist. Last run's playlist is updated in place, so it keeps its
+    /// id (and its place in every app); a new one is made only when there's none, or the old one can't be updated.
+    /// With nothing to put in it, or playlists switched off, the old one is deleted.
+    /// </summary>
     private async Task ReplacePlaylistAsync(Guid userId, UserPicks picks, IReadOnlyList<Guid> items, string name, bool create)
     {
+        string title = string.IsNullOrWhiteSpace(name) ? "Picks for you" : name.Trim();
         try
         {
-            if (picks.PlaylistId.HasValue)
+            var old = picks.PlaylistId is { } oldId ? _libraryManager.GetItemById(oldId) as Playlist : null;
+            if (old is not null && old.OwnerUserId != userId)
             {
-                var old = _libraryManager.GetItemById(picks.PlaylistId.Value);
-                if (old is Playlist playlist && playlist.OwnerUserId == userId)
-                {
-                    _libraryManager.DeleteItem(old, new DeleteOptions { DeleteFileLocation = true });
-                }
-
-                picks.PlaylistId = null;
+                old = null; // never someone else's
             }
 
+            if (old is not null && create && items.Count > 0)
+            {
+                try
+                {
+                    await _playlistManager.UpdatePlaylist(new PlaylistUpdateRequest
+                    {
+                        Id = old.Id,
+                        UserId = userId,
+                        Name = title,
+                        Ids = items.ToArray(),
+                        Public = false
+                    }).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Medic Picks: couldn't update the playlist for user {UserId} in place, so it's made again", userId);
+                }
+            }
+
+            if (old is not null)
+            {
+                _libraryManager.DeleteItem(old, new DeleteOptions { DeleteFileLocation = true });
+            }
+
+            picks.PlaylistId = null;
             if (!create || items.Count == 0)
             {
                 return;
@@ -815,7 +907,7 @@ public class PicksEngine
 
             var result = await _playlistManager.CreatePlaylist(new PlaylistCreationRequest
             {
-                Name = string.IsNullOrWhiteSpace(name) ? "Picks for you" : name.Trim(),
+                Name = title,
                 ItemIdList = items.ToArray(),
                 MediaType = Jellyfin.Data.Enums.MediaType.Video,
                 UserId = userId,
@@ -830,6 +922,39 @@ public class PicksEngine
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Medic Picks: could not update the playlist for user {UserId}", userId);
+        }
+    }
+
+    /// <summary>
+    /// Puts the person's saved library picks in their playlist again, without a build: after they hide a title, so it
+    /// leaves the playlist straight away rather than at the next build.
+    /// </summary>
+    public async Task RefreshPlaylistAsync(Guid userId)
+    {
+        var config = Plugin.Instance!.Configuration;
+        var user = _userManager.GetUserById(userId);
+        var picks = _store.Load(userId);
+        if (user is null || picks is null || !(config.EnableLibraryPicks && config.CreatePlaylists))
+        {
+            return;
+        }
+
+        var gate = UserLocks.GetOrAdd(userId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            Func<InternalItemsQuery> userQuery = () => new InternalItemsQuery(user);
+            var items = picks.InLibrary.Select(p => GetPlayableId(userQuery, p)).OfType<Guid>().ToList();
+            Guid? before = picks.PlaylistId;
+            await ReplacePlaylistAsync(userId, picks, items, config.PlaylistName, true).ConfigureAwait(false);
+            if (picks.PlaylistId != before)
+            {
+                _store.SaveWithoutHidden(userId, picks);
+            }
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 

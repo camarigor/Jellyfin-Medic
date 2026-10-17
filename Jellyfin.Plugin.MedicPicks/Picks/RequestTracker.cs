@@ -110,15 +110,12 @@ public class RequestTracker
             return (null, true);
         }
 
-        var rows = new List<RequestRow>();
-        foreach (var request in Results(doc).Where(r => RequestedBy(r) == seerrUserId))
-        {
-            var row = await ToRowAsync(baseUrl, request, jellyfinUserId, includeRequester: false, ct).ConfigureAwait(false);
-            if (row is not null && !FinishedLongAgo(row, request))
-            {
-                rows.Add(row);
-            }
-        }
+        var mine = Results(doc).Where(r => RequestedBy(r) == seerrUserId).ToList();
+        var rows = (await RowsAsync(baseUrl, mine, jellyfinUserId, includeRequester: false, ct).ConfigureAwait(false))
+            .Zip(mine)
+            .Where(x => x.First is not null && !FinishedLongAgo(x.First, x.Second))
+            .Select(x => x.First!)
+            .ToList();
 
         return (Ordered(rows), true);
     }
@@ -136,17 +133,29 @@ public class RequestTracker
             return null;
         }
 
-        var rows = new List<RequestRow>();
-        foreach (var request in Results(doc))
-        {
-            var row = await ToRowAsync(baseUrl, request, adminUserId, includeRequester: true, ct).ConfigureAwait(false);
-            if (row is not null && row.State == "pending")
-            {
-                rows.Add(row);
-            }
-        }
+        var rows = await RowsAsync(baseUrl, Results(doc).ToList(), adminUserId, includeRequester: true, ct).ConfigureAwait(false);
+        return rows.OfType<RequestRow>().Where(r => r.State == "pending").OrderBy(r => r.RequestedUtc).ToList();
+    }
 
-        return rows.OrderBy(r => r.RequestedUtc).ToList();
+    // Titles are looked up this many at a time: 30 rows one after another could take minutes when Seerr is slow.
+    private const int LookupsAtOnce = 4;
+
+    /// <summary>A row for each request, in the same order (null where a request can't be shown).</summary>
+    private async Task<RequestRow?[]> RowsAsync(string baseUrl, IReadOnlyList<JsonElement> requests, Guid viewerId, bool includeRequester, CancellationToken ct)
+    {
+        using var gate = new SemaphoreSlim(LookupsAtOnce);
+        return await Task.WhenAll(requests.Select(async request =>
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                return await ToRowAsync(baseUrl, request, viewerId, includeRequester, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        })).ConfigureAwait(false);
     }
 
     private static IEnumerable<JsonElement> Results(JsonDocument doc) =>
@@ -301,7 +310,9 @@ public class RequestTracker
 
         var item = _libraryManager.GetItemById(itemId);
         var user = _userManager.GetUserById(userId);
-        return item is not null && user is not null && item.IsVisible(user) ? itemId : null;
+        // IsVisibleStandalone also checks the folders above the item, so a title in a library this person has no
+        // access to isn't offered to play; IsVisible alone covers only parental limits.
+        return item is not null && user is not null && item.IsVisibleStandalone(user) ? itemId : null;
     }
 
     private static bool FinishedLongAgo(RequestRow row, JsonElement request)

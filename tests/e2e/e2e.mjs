@@ -804,6 +804,28 @@ await check('Medic Picks builds picks from watch history', async () => {
     return `${picks.length} picks: ${order.split(', ').slice(0, 4).join(', ')}, ...`;
 });
 
+await check('Medic Picks updates the playlist in place on the next build, keeping its id', async () => {
+    const find = async () => (await ok(`/Items?Recursive=true&IncludeItemTypes=Playlist&userId=${ctx.userId}`)).Items
+        .filter((i) => /picks for you/i.test(i.Name));
+    const before = await find();
+    expect(before.length === 1, 'playlists before: ' + before.map((p) => p.Name).join(', '));
+    const was = (await ok('/MedicPicks/Me')).generatedUtc;
+    const build = (await ok('/ScheduledTasks')).find((t) => t.Key === 'MedicPicksBuild' || /personal picks/i.test(t.Name));
+    await api('POST', `/ScheduledTasks/Running/${build.Id}`);
+    let me = null;
+    for (let i = 0; i < 60 && !(me?.generatedUtc && me.generatedUtc !== was && !me.rebuilding); i++) {
+        await sleep(1000);
+        me = (await api('GET', '/MedicPicks/Me')).json;
+    }
+    // The task saves part-way through; wait for it to finish.
+    for (let i = 0; i < 60 && (await ok('/ScheduledTasks')).find((t) => t.Id === build.Id).State !== 'Idle'; i++) await sleep(1000);
+    const after = await find();
+    expect(after.length === 1 && after[0].Id === before[0].Id, `playlist ${before[0].Id} became ${after.map((p) => p.Id).join(', ')}`);
+    const items = (await ok(`/Playlists/${after[0].Id}/Items?userId=${ctx.userId}`)).Items;
+    expect(items.length === me.inLibrary.length, `${items.length} items in the playlist for ${me.inLibrary.length} picks`);
+    return `kept ${after[0].Id} with ${items.length} items`;
+});
+
 await check('My picks page is served with no-cache', async () => {
     const res = await api('GET', '/MedicPicks/Page', undefined, true);
     expect(res.status === 200, 'status ' + res.status);

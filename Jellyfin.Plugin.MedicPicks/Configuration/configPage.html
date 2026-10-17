@@ -123,7 +123,8 @@
 
                 <h3>Who gets Discover picks</h3>
                 <div class="fieldDescription" style="margin-bottom:0.8em;">
-                    Untick children's accounts. Discover titles come from TMDb, so your parental controls can't filter them.
+                    Untick children's accounts. Discover titles come from TMDb, so your parental controls can't filter them:
+                    accounts with parental controls (a maximum rating, or blocked or allowed tags) start unticked, and only get Discover if you tick them.
                     Picks from your own library always follow each user's parental controls.
                 </div>
                 <div id="DiscoverUsers"></div>
@@ -202,10 +203,25 @@
                     .catch(function () { $('TmdbKeyStatus').textContent = 'Could not check the key.'; });
             }
 
-            function renderUsers(users, disabled) {
+            // Parental controls the server applies to an account; Discover can't follow them.
+            function hasLimits(u) {
+                var p = u.Policy || {};
+                return (p.MaxParentalRating !== null && p.MaxParentalRating !== undefined)
+                    || (p.BlockedTags || []).length > 0 || (p.AllowedTags || []).length > 0;
+            }
+
+            // Ids of the accounts unticked on the page now.
+            function untickedIds() {
+                return Array.prototype.slice.call(page.querySelectorAll('.discoverUser'))
+                    .filter(function (box) { return !box.checked; })
+                    .map(function (box) { return norm(box.getAttribute('data-userid')); });
+            }
+
+            function renderUsers(users, disabled, allowedLimited) {
                 var box = $('DiscoverUsers');
                 box.innerHTML = '';
                 users.forEach(function (u) {
+                    var limited = hasLimits(u);
                     var wrap = document.createElement('div');
                     wrap.className = 'checkboxContainer';
                     var label = document.createElement('label');
@@ -214,9 +230,10 @@
                     input.setAttribute('is', 'emby-checkbox');
                     input.className = 'discoverUser';
                     input.setAttribute('data-userid', u.Id);
-                    input.checked = disabled.indexOf(u.Id.replace(/-/g, '').toLowerCase()) === -1;
+                    if (limited) input.setAttribute('data-limited', 'true');
+                    input.checked = limited ? allowedLimited.indexOf(norm(u.Id)) !== -1 : disabled.indexOf(norm(u.Id)) === -1;
                     var span = document.createElement('span');
-                    span.textContent = u.Name;
+                    span.textContent = u.Name + (limited ? ' (has parental controls)' : '');
                     label.appendChild(input);
                     label.appendChild(span);
                     wrap.appendChild(label);
@@ -242,7 +259,6 @@
                         $('PlaylistName').value = config.PlaylistName || '';
                         $('EnableDiscover').checked = config.EnableDiscover;
                         savedDiscover = config.EnableDiscover;
-                        savedDisabled = (config.DiscoverDisabledUserIds || []).map(norm);
                         $('DiscoverPickCount').value = config.DiscoverPickCount;
                         $('TmdbLanguage').value = config.TmdbLanguage || 'en-GB';
                         $('JellyseerrUrl').value = config.JellyseerrUrl || '';
@@ -252,7 +268,8 @@
                         $('MinimumWatchedTitles').value = config.MinimumWatchedTitles;
                         $('AddMenuLink').checked = config.AddMenuLink !== false;
                         $('MenuLinkName').value = config.MenuLinkName || 'My picks';
-                        renderUsers(users, (config.DiscoverDisabledUserIds || []).map(norm));
+                        renderUsers(users, (config.DiscoverDisabledUserIds || []).map(norm), (config.DiscoverAllowedLimitedUserIds || []).map(norm));
+                        savedDisabled = untickedIds();
                         refreshStatus();
                         Dashboard.hideLoadingMsg();
                     })
@@ -278,11 +295,15 @@
                     config.MinimumWatchedTitles = parseInt($('MinimumWatchedTitles').value, 10) || 3;
                     config.AddMenuLink = $('AddMenuLink').checked;
                     config.MenuLinkName = $('MenuLinkName').value.trim() || 'My picks';
-                    config.DiscoverDisabledUserIds = Array.prototype.slice
-                        .call(page.querySelectorAll('.discoverUser'))
-                        .filter(function (box) { return !box.checked; })
+                    var boxes = Array.prototype.slice.call(page.querySelectorAll('.discoverUser'));
+                    // An account with parental controls is off unless ticked, so it's kept in its own list.
+                    config.DiscoverDisabledUserIds = boxes
+                        .filter(function (box) { return !box.checked && !box.hasAttribute('data-limited'); })
                         .map(function (box) { return box.getAttribute('data-userid'); });
-                    var disabled = config.DiscoverDisabledUserIds.map(norm);
+                    config.DiscoverAllowedLimitedUserIds = boxes
+                        .filter(function (box) { return box.checked && box.hasAttribute('data-limited'); })
+                        .map(function (box) { return box.getAttribute('data-userid'); });
+                    var disabled = untickedIds();
                     var discoverChanged = config.EnableDiscover !== savedDiscover;
                     // Only people ticked or unticked since the last save; with Discover off for everyone, nobody's picks change.
                     var peopleChanged = !config.EnableDiscover ? [] : disabled

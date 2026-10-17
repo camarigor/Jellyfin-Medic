@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.MedicPicks.Picks;
 using Jellyfin.Plugin.MedicPicks.ScheduledTasks;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Tasks;
@@ -31,6 +32,13 @@ public class PicksController : ControllerBase
     // A change during a rebuild doesn't start a second one: the running one goes round once more, so
     // repeated clicks can't pile up library scans and TMDb calls, and the latest choices still apply.
     private static readonly System.Collections.Generic.Dictionary<Guid, bool> Rebuilding = new();
+
+    // A person's rebuilds start at least this far apart, so clicking away at the page can't keep the server
+    // reading the library. Choices made meanwhile are saved and go into the next one.
+    public static readonly TimeSpan MinRebuildGap = TimeSpan.FromSeconds(20);
+
+    // When each person's last rebuild started (under the Rebuilding lock).
+    private static readonly System.Collections.Generic.Dictionary<Guid, DateTime> LastRebuildUtc = new();
 
     private readonly PicksStore _store;
     private readonly ITaskManager _taskManager;
@@ -192,6 +200,24 @@ public class PicksController : ControllerBase
         // A rebuild that started before this goes round again, to fill the gap; any rebuild, the nightly
         // one included, leaves hidden titles out when it saves.
         RebuildAgainIfRunning(userId);
+
+        // The playlist follows straight away, rather than at the next build.
+        if (request.ItemId is not null && !IsRebuilding(userId))
+        {
+            var engine = _engine;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await engine.RefreshPlaylistAsync(userId).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Medic Picks: couldn't take a hidden title out of the playlist for user {UserId}", userId);
+                }
+            });
+        }
+
         return NoContent();
     }
 
@@ -243,6 +269,22 @@ public class PicksController : ControllerBase
             {
                 try
                 {
+                    TimeSpan wait;
+                    lock (Rebuilding)
+                    {
+                        wait = WaitBeforeRebuild(LastRebuildUtc.TryGetValue(userId, out var last) ? last : null, DateTime.UtcNow);
+                    }
+
+                    if (wait > TimeSpan.Zero)
+                    {
+                        await Task.Delay(wait).ConfigureAwait(false);
+                    }
+
+                    lock (Rebuilding)
+                    {
+                        LastRebuildUtc[userId] = DateTime.UtcNow;
+                    }
+
                     await _engine.BuildForUserAsync(userId, _engine.CreateRunContext(), System.Threading.CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -263,6 +305,18 @@ public class PicksController : ControllerBase
                 }
             }
         });
+    }
+
+    /// <summary>How long a rebuild waits so it starts at least MinRebuildGap after the person's last one.</summary>
+    public static TimeSpan WaitBeforeRebuild(DateTime? lastUtc, DateTime nowUtc)
+    {
+        if (lastUtc is not { } last)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var wait = last + MinRebuildGap - nowUtc;
+        return wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
     }
 
     /// <summary>If a rebuild is running for this person, it goes round again so it doesn't undo a change.</summary>
@@ -521,9 +575,15 @@ public class PicksController : ControllerBase
         public string? MediaType { get; set; }
     }
 
-    /// <summary>Whether this person gets Discover picks: switched on for the server, and not unticked for them.</summary>
-    private static bool DiscoverShownTo(Configuration.PluginConfiguration config, Guid userId) =>
-        config.EnableDiscover && !config.DiscoverDisabledUserIds.Any(id => Guid.TryParse(id, out var g) && g == userId);
+    /// <summary>
+    /// Whether this person gets Discover picks: switched on for the server, not unticked for them, and, for an
+    /// account with parental limits, ticked by an admin.
+    /// </summary>
+    private bool DiscoverShownTo(Configuration.PluginConfiguration config, Guid userId)
+    {
+        var users = HttpContext?.RequestServices?.GetService(typeof(IUserManager)) as IUserManager;
+        return DiscoverAccess.Allowed(config, userId, DiscoverAccess.HasParentalLimits(users?.GetUserById(userId)));
+    }
 
     private string RequestMode(Configuration.PluginConfiguration config)
     {
