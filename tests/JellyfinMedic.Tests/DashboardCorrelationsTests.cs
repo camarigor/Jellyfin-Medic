@@ -406,12 +406,14 @@ public sealed class DiskOutlookTests
 
     private static (double FreeGb, double TotalGb)? Unreadable(string path) => null;
 
+    private static bool Present(string path) => true;
+
     [Fact]
     public void A_drive_with_under_3_days_of_readings_has_no_rate_yet()
     {
         var history = new[] { Reading("/mnt/a", "2026-10-13", 500), Reading("/mnt/a", "2026-10-14", 498) };
 
-        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (480.0, 1000.0), Array.Empty<FreedDay>(), Today).Drives);
+        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (480.0, 1000.0), Array.Empty<FreedDay>(), Today, Present).Drives);
 
         Assert.Null(drive.GbPerDay);
         Assert.Null(drive.DaysToFull);
@@ -426,7 +428,7 @@ public sealed class DiskOutlookTests
         // 30 GB used over 10 days is 3 GB a day, so 300 GB free now lasts 100 days.
         var history = new[] { Reading("/mnt/a", "2026-10-04", 330, "Films"), Reading("/mnt/a", "2026-10-14", 300) };
 
-        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (300.0, 2000.0), Array.Empty<FreedDay>(), Today).Drives);
+        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (300.0, 2000.0), Array.Empty<FreedDay>(), Today, Present).Drives);
 
         Assert.Equal(3.0, drive.GbPerDay);
         Assert.Equal(100.0, drive.DaysToFull);
@@ -438,7 +440,7 @@ public sealed class DiskOutlookTests
     {
         var history = new[] { Reading("/mnt/usb", "2026-10-14", 120, "Backups") };
 
-        var drive = Assert.Single(DashboardCorrelations.Disks(history, Unreadable, Array.Empty<FreedDay>(), Today).Drives);
+        var drive = Assert.Single(DashboardCorrelations.Disks(history, Unreadable, Array.Empty<FreedDay>(), Today, Present).Drives);
 
         Assert.Equal(120.0, drive.FreeGb);
         Assert.Equal(0.0, drive.TotalGb);
@@ -455,7 +457,7 @@ public sealed class DiskOutlookTests
         };
         var freed = new[] { new FreedDay { Day = "2026-10-12", Bytes = 5 }, new FreedDay { Day = "2026-10-03", Bytes = 7 } };
 
-        var section = DashboardCorrelations.Disks(history, path => path.StartsWith("/mnt/b", StringComparison.Ordinal) ? (50.0, 100.0) : (100.0, 100.0), freed, Today);
+        var section = DashboardCorrelations.Disks(history, path => path.StartsWith("/mnt/b", StringComparison.Ordinal) ? (50.0, 100.0) : (100.0, 100.0), freed, Today, Present);
 
         Assert.Equal(new[] { "/mnt/b", "/mnt/a" }, section.Drives.Select(d => d.Key));
         Assert.Equal(new[] { "2026-10-03", "2026-10-12" }, section.Freed.Select(f => f.Day));
@@ -467,9 +469,35 @@ public sealed class DiskOutlookTests
         // A drive that's gone, or a key no longer used, keeps its old readings for 30 days.
         var history = new[] { Reading("/mnt/a", "2026-10-14", 100), Reading("931.5/500.0", "2026-10-06", 500) };
 
-        var section = DashboardCorrelations.Disks(history, _ => (100.0, 200.0), Array.Empty<FreedDay>(), Today);
+        var section = DashboardCorrelations.Disks(history, _ => (100.0, 200.0), Array.Empty<FreedDay>(), Today, Present);
 
         Assert.Equal("/mnt/a", Assert.Single(section.Drives).Key);
+    }
+
+    [Fact]
+    public void A_library_drive_whose_folder_is_gone_is_missing_not_read_through_its_parent()
+    {
+        var history = new[] { Reading("/mnt/usb", "2026-10-04", 300, "Films"), Reading("/mnt/usb", "2026-10-14", 200) };
+
+        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (40.0, 100.0), Array.Empty<FreedDay>(), Today, _ => false).Drives);
+
+        Assert.True(drive.Missing);
+        Assert.Equal("/mnt/usb/media", drive.Path);
+        Assert.Equal(200.0, drive.FreeGb);
+        Assert.Equal(0.0, drive.TotalGb);
+        Assert.Null(drive.GbPerDay);
+        Assert.Null(drive.DaysToFull);
+    }
+
+    [Fact]
+    public void A_transcode_folder_not_made_yet_is_not_missing()
+    {
+        var history = new[] { Reading("/", "2026-10-14", 50, "transcodes, Films") };
+
+        var drive = Assert.Single(DashboardCorrelations.Disks(history, _ => (40.0, 100.0), Array.Empty<FreedDay>(), Today, _ => false).Drives);
+
+        Assert.False(drive.Missing);
+        Assert.Equal(40.0, drive.FreeGb);
     }
 }
 

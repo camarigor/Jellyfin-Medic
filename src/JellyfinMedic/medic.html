@@ -1676,6 +1676,12 @@
                         text.textContent = 'Disk data starts after the first daily reading.';
                         return;
                     }
+                    const missing = drives.filter(function (d) { return pick(d, 'Missing'); });
+                    if (missing.length) {
+                        big.textContent = missing.length === 1 ? '1 drive missing' : missing.length + ' drives missing';
+                        text.textContent = (pick(missing[0], 'Holds') || pick(missing[0], 'Key')) + ': its folder can\'t be found';
+                        return;
+                    }
                     const share = function (d) { return pick(d, 'TotalGb') > 0 ? pick(d, 'FreeGb') / pick(d, 'TotalGb') : 1; };
                     const worst = drives.slice().sort(function (a, b) { return share(a) - share(b); })[0];
                     big.textContent = pick(worst, 'TotalGb') > 0 ? Math.round(share(worst) * 100) + '% free' : gb(pick(worst, 'FreeGb')) + ' free';
@@ -2059,9 +2065,14 @@
                         const days = pick(d, 'DaysToFull');
                         const filling = days !== null && days !== undefined;
                         const series = pick(d, 'Series') || [];
+                        wrap.appendChild(el('strong', null, name));
+                        if (pick(d, 'Missing')) {
+                            wrap.appendChild(el('span', 'so-small md-num-bad', 'The folder ' + pick(d, 'Path') + ' can\'t be found, so this drive wasn\'t read (is it mounted?). Last reading: ' + gb(free) + ' free.'));
+                            box.appendChild(wrap);
+                            return;
+                        }
                         const status = gb(free) + ' free' + (total ? ' of ' + gb(total) : '') +
                             (rate === null || rate === undefined ? '' : filling ? ', using ' + fmtNum(rate) + ' GB a day, full in ' + daysText(days) : ', not filling');
-                        wrap.appendChild(el('strong', null, name));
                         if (rate === null || rate === undefined) {
                             wrap.appendChild(el('span', 'so-small', status + '. The trend shows after 3 days of readings.'));
                             box.appendChild(wrap);

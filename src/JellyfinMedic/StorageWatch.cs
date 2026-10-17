@@ -64,17 +64,28 @@ public static class StorageWatch
 
     private static string HistoryPath(string pluginConfigDir) => Path.Combine(pluginConfigDir, "JellyfinMedic", "disk_history.json");
 
+    // What WatchedDrives calls Jellyfin's own folders, which come before the libraries in a drive's Holds.
+    private static readonly string[] SystemFolders = { "config & database", "cache", "transcodes" };
+
+    /// <summary>Whether a drive's Holds starts with one of Jellyfin's own folders, rather than a library.</summary>
+    internal static bool SystemFolder(string holds) => SystemFolders.Contains(holds.Split(", ")[0], StringComparer.Ordinal);
+
     /// <summary>
     /// The distinct drives behind the given folders. Folders on the same drive are merged, so a
-    /// library spread over several folders on one disk shows once.
+    /// library spread over several folders on one disk shows once. A library folder that's missing
+    /// or empty (a drive that didn't mount often leaves an empty mount point) is skipped, as its
+    /// space would be the parent drive's; Jellyfin's own folders may not exist yet and are read through their parent.
     /// </summary>
-    public static List<DriveStatus> Drives(IEnumerable<(string Holds, string Path)> folders)
+    public static List<DriveStatus> Drives(IEnumerable<(string Holds, string Path)> folders) => Drives(folders, HasEntries);
+
+    internal static List<DriveStatus> Drives(IEnumerable<(string Holds, string Path)> folders, Func<string, bool> libraryPresent)
     {
         var byKey = new Dictionary<string, DriveStatus>(StringComparer.Ordinal);
         var roots = new Lazy<List<string>>(DriveRoots);
         foreach (var (holds, path) in folders)
         {
-            if (string.IsNullOrWhiteSpace(path) || SystemProbe.Space(path) is not { } space || space.TotalGb <= 0)
+            if (string.IsNullOrWhiteSpace(path) || (!SystemFolder(holds) && !libraryPresent(path))
+                || SystemProbe.Space(path) is not { } space || space.TotalGb <= 0)
             {
                 continue;
             }
@@ -173,6 +184,18 @@ public static class StorageWatch
         if (drives.Count > 0)
         {
             Record(pluginConfigDir, drives);
+        }
+    }
+
+    private static bool HasEntries(string path)
+    {
+        try
+        {
+            return Directory.EnumerateFileSystemEntries(path).Any();
+        }
+        catch
+        {
+            return false;
         }
     }
 

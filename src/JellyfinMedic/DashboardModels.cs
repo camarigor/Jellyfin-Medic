@@ -266,6 +266,12 @@ public sealed class DiskOutlook
     // 0 when the drive can't be read now.
     public double TotalGb { get; set; }
 
+    // The library folder it was read through no longer exists (a drive that didn't mount, say); FreeGb is then the last reading.
+    public bool Missing { get; set; }
+
+    // That folder, when Missing.
+    public string Path { get; set; } = string.Empty;
+
     // Null until the readings span 3 days.
     public double? GbPerDay { get; set; }
 

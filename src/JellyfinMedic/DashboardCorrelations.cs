@@ -258,10 +258,12 @@ internal static class DashboardCorrelations
     /// drive; the last reading stands in when it can't), how fast it's filling and when it will be full (the
     /// rules StorageWatch and DriveStatus use), what it holds from its latest reading that recorded it, and its
     /// daily readings. Soonest full first, with the days Medic freed space. A drive not read for a week (by
-    /// <paramref name="today"/>, server local) is left out.
+    /// <paramref name="today"/>, server local) is left out. A library drive whose folder is gone (<paramref name="present"/>,
+    /// Directory.Exists by default) is marked missing rather than read, as reading it would measure the parent's drive.
     /// </summary>
-    internal static DisksSection Disks(IEnumerable<DiskSample> history, Func<string, (double FreeGb, double TotalGb)?> space, IEnumerable<FreedDay> freed, DateTime today)
+    internal static DisksSection Disks(IEnumerable<DiskSample> history, Func<string, (double FreeGb, double TotalGb)?> space, IEnumerable<FreedDay> freed, DateTime today, Func<string, bool>? present = null)
     {
+        present ??= Directory.Exists;
         string stale = today.AddDays(-StaleDriveDays).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var drives = new List<DiskOutlook>();
         foreach (var drive in history.GroupBy(h => h.Key, StringComparer.Ordinal))
@@ -273,12 +275,18 @@ internal static class DashboardCorrelations
                 continue;
             }
 
-            var now = space(latest.Path);
-            var status = new DriveStatus { FreeGb = now?.FreeGb ?? latest.FreeGb, TotalGb = now?.TotalGb ?? 0, GbPerDay = StorageWatch.FillRate(days) };
+            string holds = days.LastOrDefault(h => h.Holds.Length > 0)?.Holds ?? string.Empty;
+            // Medic's own folders come first in a drive's list and may not exist yet (no transcode has run), so only a
+            // drive read through a library folder can be missing.
+            bool missing = latest.Path.Length > 0 && !StorageWatch.SystemFolder(holds) && !present(latest.Path);
+            var now = missing ? null : space(latest.Path);
+            var status = new DriveStatus { FreeGb = now?.FreeGb ?? latest.FreeGb, TotalGb = now?.TotalGb ?? 0, GbPerDay = missing ? null : StorageWatch.FillRate(days) };
             drives.Add(new DiskOutlook
             {
                 Key = drive.Key,
-                Holds = days.LastOrDefault(h => h.Holds.Length > 0)?.Holds ?? string.Empty,
+                Holds = holds,
+                Missing = missing,
+                Path = missing ? latest.Path : string.Empty,
                 FreeGb = status.FreeGb,
                 TotalGb = status.TotalGb,
                 GbPerDay = status.GbPerDay,
