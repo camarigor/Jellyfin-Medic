@@ -1708,6 +1708,53 @@ await check('Medic Profiles can\'t save its settings: the old key stays with the
     }
 });
 
+await check('Medic Profiles import list: Change film on a rejected file imports only what the box shows', async () => {
+    const radarrServer = await fakeArr.startRadarr(P(18998));
+    fakeArr.radarr.commands.length = 0;
+    try {
+        const saved = await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: `http://host.docker.internal:${P(18998)}`, RadarrKey: 'test-key' });
+        expect(saved.status === 200 || saved.status === 204, `saving Radarr returned ${saved.status} ${saved.text.slice(0, 200)}`);
+        await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
+        await page.reload();
+        await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
+        const card = page.locator('#mp-queue .mp-card', { hasText: 'Fake Film' });
+        await card.getByRole('button', { name: 'Import manually' }).click({ timeout: 15000 });
+        const file = card.locator('.mp-file');
+        await file.waitFor({ timeout: 15000 });
+        const box = file.locator('input[type="checkbox"]').first();
+        const untickedNote = file.getByText('Left unticked because the app rejected it');
+        expect(!(await box.isChecked()), 'a rejected file started ticked');
+
+        await file.getByRole('button', { name: 'Change film' }).click();
+        await file.locator('input[type="search"]').fill('fake');
+        await file.getByRole('button', { name: 'Fake Film (2001)' }).click({ timeout: 10000 });
+        await file.getByText('Is: Fake Film (2001)').waitFor({ timeout: 5000 });
+        const ticked = await box.isChecked();
+        const noteShown = await untickedNote.isVisible();
+        expect(noteShown === !ticked, `the box is ${ticked ? 'ticked' : 'unticked'} but the "left unticked" note is ${noteShown ? 'shown' : 'gone'}`);
+
+        await card.getByRole('button', { name: 'Import', exact: true }).click();
+        await card.locator('.mp-note.ok, .mp-note.bad').waitFor({ timeout: 10000 });
+        await sleep(500);
+        const sent = fakeArr.radarr.commands.flatMap((c) => c.files || []);
+        expect(sent.length === (ticked ? 1 : 0), `with the box ${ticked ? 'ticked' : 'unticked'}, Import sent ${sent.length} file(s)`);
+
+        // Ticking it by hand still imports it, as the film chosen.
+        if (!ticked) {
+            await box.check();
+            expect(!(await untickedNote.isVisible()), 'the "left unticked" note stayed after ticking the box');
+            await card.getByRole('button', { name: 'Import', exact: true }).click();
+            await card.locator('.mp-note.ok').waitFor({ timeout: 10000 });
+            const after = fakeArr.radarr.commands.flatMap((c) => c.files || []);
+            expect(after.length === 1 && after[0].movieId === 7, `ticked, Import sent ${JSON.stringify(after)}`);
+        }
+        return ticked ? 'picking the film ticked it' : 'stays unticked until ticked, then imported as film 7';
+    } finally {
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '' });
+        radarrServer.close();
+    }
+});
+
 await check('My picks page opens signed in', async () => {
     errors.length = 0;
     await page.goto(JF + '/MedicPicks/Page');

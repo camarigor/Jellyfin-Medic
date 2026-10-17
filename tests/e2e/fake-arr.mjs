@@ -61,6 +61,49 @@ export function start(port) {
     return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
 }
 
+// A pretend Radarr with one finished download it refused to import: its one file is matched to a film
+// but rejected. It remembers the commands posted to it.
+export const radarr = { commands: [] };
+
+const radarrFilm = { id: 7, title: 'Fake Film', year: 2001 };
+
+const radarrRoutes = {
+    '/api/v3/system/status': () => ({ appName: 'Radarr', version: '5.14.0.9383' }),
+    '/api/v3/queue': () => ({
+        page: 1, pageSize: 100, totalRecords: 1, records: [{
+            id: 1, downloadId: 'film-download', title: 'Fake.Film.2001.1080p', status: 'completed', trackedDownloadState: 'importBlocked',
+            size: 1000, sizeleft: 0, added: new Date().toISOString(), movieId: radarrFilm.id, movie: radarrFilm
+        }]
+    }),
+    '/api/v3/manualimport': () => [{
+        path: '/downloads/Fake.Film.2001.1080p/Fake.Film.2001.1080p.mkv', relativePath: 'Fake.Film.2001.1080p.mkv', size: 1000,
+        quality: { quality: { id: 7, name: 'Bluray-1080p' } }, languages: [{ id: 1, name: 'English' }],
+        movie: radarrFilm, rejections: [{ reason: 'Not an upgrade for existing movie file', type: 'permanent' }]
+    }],
+    '/api/v3/movie': () => [radarrFilm]
+};
+
+export function startRadarr(port) {
+    const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+            const path = req.url.split('?')[0];
+            if (req.headers['x-api-key'] !== 'test-key') { res.writeHead(401); res.end(); return; }
+            res.setHeader('Content-Type', 'application/json');
+            if (req.method === 'POST' && path === '/api/v3/command') {
+                radarr.commands.push(JSON.parse(body));
+                res.end(JSON.stringify({ id: radarr.commands.length, name: 'ManualImport' }));
+                return;
+            }
+            const route = req.method === 'GET' && radarrRoutes[path];
+            res.writeHead(route ? 200 : 404);
+            res.end(route ? JSON.stringify(route()) : '{}');
+        });
+    });
+    return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
+}
+
 // A pretend qBittorrent Web UI: sign-in with admin/secret, and the "Excluded file names" preference.
 // v52 answers sign-ins the way qBittorrent 5.2 does (204 with no text, 401 for a wrong password, a
 // QBT_SID_<port> cookie); banned answers 403, as qBittorrent does after too many wrong passwords.
