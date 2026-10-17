@@ -1218,47 +1218,7 @@ public static class TrackCleaner
             }
             else
             {
-                // A kept original that the current file isn't Medic's cleaned copy of belongs to an earlier
-                // release (Sonarr or Radarr replaced the file between runs). It's moved aside under a dated name, so
-                // the current file is kept as this file's original and nothing is lost.
-                string kept = OriginalPath(plan.Path);
-                if (File.Exists(kept) && !MadeByMedic(plan.Path))
-                {
-                    string aside = ReplacedPath(kept, DateTime.Now);
-                    File.Move(kept, aside);
-                    Note($"Kept {Path.GetFileName(aside)}: the original of an earlier release of {plan.Title}, replaced since it was cleaned");
-                }
-
-                // Safe default: move the original into the hidden .medic-originals folder beside it, then put
-                // the cleaned file in its place under the same name. The library keeps one file per title, and
-                // Jellyfin keeps the same item, artwork and watched status. If a kept original is already there
-                // (this file was cleaned before), that one is the true original, so it's left alone.
-                if (File.Exists(kept))
-                {
-                    File.Move(temp, plan.Path, overwrite: true);
-                    freedNow = saved; // the earlier cleaned copy is replaced, not kept
-                }
-                else
-                {
-                    // Two moves: if Jellyfin stops between them, the next run (or "Tidy copies") puts the original
-                    // back, as the temp file beside the empty path shows the swap didn't finish.
-                    await EnsureOriginalsFolder(plan.Path, ct).ConfigureAwait(false);
-                    File.Move(plan.Path, kept);
-                    try
-                    {
-                        File.Move(temp, plan.Path);
-                    }
-                    catch
-                    {
-                        File.Move(kept, plan.Path); // put the original back
-                        throw;
-                    }
-
-                    keptNow = before;
-                    keptAs = kept;
-                }
-
-                RecordCleaned(plan.Path);
+                (freedNow, keptNow, keptAs) = await SwapKeepingOriginal(plan.Path, temp, plan.Title, before, saved, ct).ConfigureAwait(false);
             }
 
             // Languages set by hand are in the file now, and its track numbers have changed.
@@ -1286,6 +1246,62 @@ public static class TrackCleaner
         {
             Interlocked.Add(ref _writing, -size);
         }
+    }
+
+    /// <summary>
+    /// The safe default's swap: the cleaned copy at temp takes the file's place and the file's original is kept in
+    /// .medic-originals. Returns the space freed now, the space the kept original holds, and where it's kept.
+    /// </summary>
+    internal static async Task<(long FreedNow, long KeptNow, string? KeptAs)> SwapKeepingOriginal(string path, string temp, string title, long before, long saved, CancellationToken ct)
+    {
+        long freedNow = 0;
+        long keptNow = 0;
+        string? keptAs = null;
+
+        // A kept original whose file Medic recorded, and which isn't that file any more, belongs to an earlier
+        // release (Sonarr or Radarr replaced the file between runs). It's moved aside under a dated name, so
+        // the current file is kept as this file's original and nothing is lost.
+        string kept = OriginalPath(path);
+        if (File.Exists(kept) && ReplacedSinceCleaned(path))
+        {
+            string aside = ReplacedPath(kept, DateTime.Now);
+            File.Move(kept, aside);
+            Note($"Kept {Path.GetFileName(aside)}: the original of an earlier release of {title}, replaced since it was cleaned");
+        }
+
+        // Safe default: move the original into the hidden .medic-originals folder beside it, then put
+        // the cleaned file in its place under the same name. The library keeps one file per title, and
+        // Jellyfin keeps the same item, artwork and watched status. If a kept original is already there
+        // (this file was cleaned before), that one is the true original, so it's left alone.
+        if (File.Exists(kept))
+        {
+            File.Move(temp, path, overwrite: true);
+            freedNow = saved; // the earlier cleaned copy is replaced, not kept
+            keptAs = kept;
+        }
+        else
+        {
+            // Two moves: if Jellyfin stops between them, the next run (or "Tidy copies") puts the original
+            // back, as the temp file beside the empty path shows the swap didn't finish.
+            await EnsureOriginalsFolder(path, ct).ConfigureAwait(false);
+            File.Move(path, kept);
+            try
+            {
+                File.Move(temp, path);
+            }
+            catch
+            {
+                File.Move(kept, path); // put the original back
+                throw;
+            }
+
+            keptNow = before;
+            keptAs = kept;
+        }
+
+        RecordCleaned(path);
+
+        return (freedNow, keptNow, keptAs);
     }
 
     /// <summary>Why a run didn't change a file it planned to clean.</summary>
@@ -1350,7 +1366,8 @@ public static class TrackCleaner
         Path.Combine(Path.GetDirectoryName(kept) ?? string.Empty,
             Path.GetFileNameWithoutExtension(kept) + ".replaced-" + when.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + Path.GetExtension(kept));
 
-    private sealed record CleanedFile(long Length, DateTime WrittenUtc);
+    // The time is kept for older records; only the length tells a replacement (see ReplacedSinceCleaned).
+    private sealed record CleanedFile(long? Length, DateTime WrittenUtc);
 
     private static string CleanedRecordPath(string mediaPath) =>
         Path.Combine(Path.GetDirectoryName(mediaPath) ?? string.Empty, OriginalsFolder, CleanedRecord);
@@ -1389,10 +1406,13 @@ public static class TrackCleaner
     }
 
     /// <summary>
-    /// Whether the file at this path is still the cleaned copy Medic made. Without a record (files cleaned before Medic
-    /// kept one) it isn't taken to be, so the current file is kept rather than lost.
+    /// Whether the file at this path has been replaced since Medic put it in place: its length differs from the record.
+    /// The time alone isn't enough, as a copy without -t, a restore or a tag edit that keeps the size changes it while
+    /// the file is still Medic's. Without a record of the length (cleaned by 1.0.22 or earlier) a replacement can't be
+    /// told apart, so it's taken to be unchanged. Either way the kept original then stays the title's, instead of being
+    /// moved aside on a guess and counted as an orphan that "Delete those with no file too" deletes.
     /// </summary>
-    private static bool MadeByMedic(string mediaPath)
+    private static bool ReplacedSinceCleaned(string mediaPath)
     {
         Dictionary<string, CleanedFile> files;
         lock (SpaceSync)
@@ -1401,7 +1421,7 @@ public static class TrackCleaner
         }
 
         return files.TryGetValue(Path.GetFileName(mediaPath), out var made)
-            && made.Length == Size(mediaPath) && made.WrittenUtc == File.GetLastWriteTimeUtc(mediaPath);
+            && made.Length is { } length && length != Size(mediaPath);
     }
 
     /// <summary>One file a run changed.</summary>
@@ -1758,6 +1778,12 @@ public static class TrackCleaner
                 File.Move(best, original, overwrite: true);
                 titles++;
 
+                // The copy in place is Medic's own, so a later release under this name can be told from it.
+                if (!deleteOriginals && File.Exists(keptOriginal))
+                {
+                    RecordCleaned(original);
+                }
+
                 if (deleteOriginals && File.Exists(keptOriginal))
                 {
                     freed += Size(keptOriginal);
@@ -1897,12 +1923,15 @@ public static class TrackCleaner
         try { return Directory.GetFiles(dir); } catch { return Array.Empty<string>(); }
     }
 
+    // What Medic itself writes in a .medic-originals folder; with only these left, no original is kept there.
+    private static readonly HashSet<string> MedicsOwn = new(StringComparer.Ordinal) { ".ignore", CleanedRecord, CleanedRecord + ".tmp" };
+
     private static void RemoveIfEmpty(string folder)
     {
         try
         {
             var left = Directory.GetFileSystemEntries(folder);
-            if (left.All(e => Path.GetFileName(e) == ".ignore"))
+            if (left.All(e => MedicsOwn.Contains(Path.GetFileName(e))))
             {
                 foreach (var e in left) { File.Delete(e); }
                 Directory.Delete(folder);
