@@ -1,8 +1,8 @@
 ===============================================================================
-         JELLYFIN MEDIC, MEDIC PICKS AND MEDIC PROFILES: FULL FEATURE LIST
+         JELLYFIN MEDIC, MEDIC PICKS, MEDIC PROFILES AND THE POSTER PLUGINS
 ===============================================================================
 
-This repository contains three Jellyfin plugins:
+This repository contains five Jellyfin plugins:
 
   1. JELLYFIN MEDIC
      For the person who runs the server. Health checks, performance tests,
@@ -19,10 +19,20 @@ This repository contains three Jellyfin plugins:
      dashboard: downloads, fixes, and quality profile advice.
      Needs Jellyfin 12.0 or later. Administrators only.
 
-Each plugin's current version and what changed are in its changelog (CHANGELOG.md,
-Jellyfin.Plugin.MedicPicks/CHANGELOG.md, Jellyfin.Plugin.MedicProfiles/CHANGELOG.md).
+  4. ANIMATED POSTERS
+     Library cards on the home screen that fade between artwork from each
+     library, in the browser and desktop apps. See its section in README.md.
 
-All three are installed from the same plugin repository:
+  5. MEDIC POSTERS
+     For everyone who uses the server, set up by the person who runs it.
+     Animated posters for every film, cut from moments of the film.
+     Needs Jellyfin 12.0 or later. Settings are for administrators only.
+
+Each plugin's current version and what changed are in its changelog (CHANGELOG.md,
+Jellyfin.Plugin.MedicPicks/CHANGELOG.md, Jellyfin.Plugin.MedicProfiles/CHANGELOG.md,
+Jellyfin.Plugin.MedicPosters/CHANGELOG.md).
+
+All five are installed from the same plugin repository:
   https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/manifest.json
 
 
@@ -311,6 +321,9 @@ films for it to leave alone.
 What it leaves alone:
   - Folders, shows or films you list under "Leave these alone" (a folder, or
     part of a name, one per line).
+  - Files with more than one hard link (usually a torrent client seeding
+    them), symlinked files, and files whose link count can't be read. On
+    Windows only the link count isn't checked.
 
 What it keeps:
   - Your chosen languages (default: eng). Codes with two forms (fre/fra,
@@ -741,6 +754,65 @@ press a button. Tabs: Downloads, Blocked, Indexers, Profiles, History, Settings.
     file, separate from other settings, and never sent to a browser.
   - Release names from indexers are shown as plain text, never as page code.
   - Talks only to your own Sonarr and Radarr.
+
+
+===============================================================================
+PART 4: MEDIC POSTERS (PLUGIN 5)
+===============================================================================
+
+Found under Plugins -> Medic Posters. Settings are for administrators only.
+
+
+-------------------------------------------------------------------------------
+4.1  THE POSTERS
+-------------------------------------------------------------------------------
+
+  - A short animated GIF for each film: a few moments of the film (spread
+    from 15% to 75% of the way through), cropped to a 2:3 poster.
+  - The title in capitals in Bodoni Moda over a soft dark band, and a
+    rounded white frame. Either can be turned off.
+  - GIF because Jellyfin never resizes a GIF, so the poster reaches apps
+    still animated. Other formats are turned into a still picture.
+  - HDR films are converted to normal colour first.
+  - Made by Jellyfin's own FFmpeg. Nothing else to install.
+
+
+-------------------------------------------------------------------------------
+4.2  MAKING THEM
+-------------------------------------------------------------------------------
+
+  - "Make animated posters" scheduled task, nightly at 4 am to begin with:
+    makes posters for films that don't have one yet.
+  - Make posters now, Make them all again, and Stop on the settings page,
+    with progress while it runs.
+  - Posters changed by hand (or by a metadata refresh that replaces images)
+    are left alone, unless you press Make them all again.
+  - Preview: a poster for a random film with the current settings, and its
+    size, without changing the film.
+  - Films without a poster are listed with the reason (a stream, a disc
+    folder, a missing file, or one FFmpeg can't read).
+
+
+-------------------------------------------------------------------------------
+4.3  SETTINGS
+-------------------------------------------------------------------------------
+
+  - Which film libraries (all of them if none are ticked).
+  - Size: 160 x 240, 200 x 300, 240 x 360 or 300 x 450.
+  - How many moments (1 to 6) and how long each plays (0.5 to 3 seconds).
+  - Frames per second (6 to 15) and colours (48 to 256).
+  - Title and frame on or off.
+
+
+-------------------------------------------------------------------------------
+4.4  PRIVACY AND SAFETY (MEDIC POSTERS)
+-------------------------------------------------------------------------------
+
+  - Nothing in your media folders is changed or deleted. Posters are kept
+    in the server's data folder, under medic-posters.
+  - Each film's own poster is remembered, and Put back (one film) or Put
+    back the original posters (all of them) brings them back.
+  - Nothing is sent anywhere: the posters are made on your server.
 
 
 ===============================================================================
