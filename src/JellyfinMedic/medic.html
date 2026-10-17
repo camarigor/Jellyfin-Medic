@@ -383,7 +383,7 @@
                 </div>
                 <div class="so-panel">
                     <h3>Remove duplicate files</h3>
-                    <p class="so-muted so-small">Medic 1.0.4 to 1.0.7 left a stripped copy beside each original (for example "Film.medic-stripped.mkv"), and could strip that copy again. This puts each title back to a single file under its original name and deletes the copies of copies. The original is kept in a hidden .medic-originals folder unless you tick the box below.</p>
+                    <p class="so-muted so-small">Medic 1.0.4 to 1.0.7 left a stripped copy beside each original (for example "Film.medic-stripped.mkv"), and could strip that copy again. This puts each title back to a single file under its original name and deletes the copies of copies. A copy FFprobe doesn't read like the film (missing its video or audio, or shorter) is left where it is, and so is the film. The original is kept in a hidden .medic-originals folder unless you tick the box below.</p>
                     <label class="md-check"><input type="checkbox" id="md-tracks-tidy-delorig"> Delete the originals too, keeping only the cleaned file (frees the most space; can't be undone)</label>
                     <div class="md-row md-wrap" style="margin-top:10px">
                         <button type="button" id="md-tracks-tidy" class="so-btn so-btn-accent">Remove duplicate files</button>
@@ -2617,6 +2617,19 @@
                     }
                 }
 
+                // ApiClient rejects with the server's response: a Problem has its message in "detail", other errors send text.
+                async function serverMessage(err) {
+                    if (!err || typeof err.text !== 'function') return '';
+                    let text = '';
+                    try { text = (await err.text()).trim(); } catch (e) { return ''; }
+                    try {
+                        const body = JSON.parse(text);
+                        return String(typeof body === 'string' ? body : (body && (body.detail || body.title)) || '').slice(0, 300);
+                    } catch (e) {
+                        return text.slice(0, 300);
+                    }
+                }
+
                 async function httpError(res, what) {
                     let reason = '';
                     try { reason = (await res.text()).trim().slice(0, 300); } catch (e) { /* no body */ }
@@ -4473,16 +4486,22 @@
                     $('md-tracks-tidy-result').textContent = 'Removing duplicates…';
                     try {
                         const r = await postJson('/JellyfinMedic/Tracks/TidyCopies?deleteOriginals=' + (delOrig ? 'true' : 'false'));
-                        const titles = pick(r, 'Titles') || 0, extra = pick(r, 'CopiesDeleted') || 0;
-                        $('md-tracks-tidy-result').textContent = titles === 0
+                        const titles = pick(r, 'Titles') || 0, extra = pick(r, 'CopiesDeleted') || 0, left = pick(r, 'LeftTitles') || [];
+                        let text = titles === 0 && left.length === 0
                             ? 'Nothing to tidy: no duplicate files found.'
+                            : titles === 0 ? ''
                             : titles + ' title(s) back to one file. ' + extra + ' extra file' + (extra === 1 ? '' : 's') + ' deleted, freeing ' + pick(r, 'FreedText') + '.';
+                        if (left.length > 0) {
+                            text = (text ? text + ' ' : '') + left.length + ' title(s) left as they are, as their copy didn\'t check out: '
+                                + left.map(function (t) { return pick(t, 'Name') + ' (' + pick(t, 'Reason') + ')'; }).join('; ') + '.';
+                        }
+                        $('md-tracks-tidy-result').textContent = text;
                         if (titles > 0) rescanHint();
                         tracksScan = null;
                         $('md-tracks-summary').innerHTML = '';
                         loadKept();
                     } catch (e) {
-                        $('md-tracks-tidy-result').textContent = 'Couldn\'t remove duplicates. If a track run is going, wait for it to finish.';
+                        $('md-tracks-tidy-result').textContent = (await serverMessage(e)) || 'Couldn\'t remove duplicates. If a track run is going, wait for it to finish.';
                     } finally {
                         btn.disabled = false;
                     }

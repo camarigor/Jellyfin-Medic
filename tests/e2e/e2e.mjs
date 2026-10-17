@@ -627,8 +627,7 @@ await check('track cleanup checks the file itself before changing it', async () 
     makeFilm(replacement, ['fre', 'eng'], 4);
     fs.renameSync(replacement, file);
 
-    // In place, so the test leaves no folder owned by the container's user behind.
-    return withTrackSettings({ TracksExclude: 'Keep Me Too', TracksReplaceInPlace: true }, async () => {
+    return withTrackSettings({ TracksExclude: 'Keep Me Too' }, async () => {
         const first = await runTracks();
         expect(first.Changed === 0 && first.Failed === 1, 'stale plan was not refused: ' + JSON.stringify(first.Recent));
         expect(audioLanguages(file) === 'fre,eng', 'the file was changed anyway: ' + audioLanguages(file));
@@ -708,19 +707,55 @@ await check('track cleanup leaves hardlinked files alone', async () => {
 });
 
 await check('track cleanup keeps the file\'s owner and permissions', async () => {
-    // Jellyfin runs as root here and writes the new copy; Sonarr and Radarr, as another user, must still be able to manage it.
+    // Jellyfin runs as root here and writes the new copy and the originals folder; Sonarr and Radarr, as another
+    // user, must still be able to manage both.
     const file = await addFilm('Owned (2020)', ['eng', 'fre'], 4);
+    const dir = `${movies}/Owned (2020)`;
+    fs.chmodSync(dir, 0o2770);
     fs.chmodSync(file, 0o660);
     const before = fs.statSync(file);
-    return withTrackSettings({ TracksExclude: 'Cut Short\nSeeded', TracksReplaceInPlace: true }, async () => {
+    const folder = fs.statSync(dir);
+    return withTrackSettings({ TracksExclude: 'Cut Short\nSeeded' }, async () => {
         const p = await runTracks();
         expect(p.Changed === 1 && p.Failed === 0, 'not cleaned: ' + JSON.stringify(p.Recent));
         const after = fs.statSync(file);
         expect(audioLanguages(file) === 'eng', 'cleaned film: ' + audioLanguages(file));
         expect((after.mode & 0o777) === 0o660 && after.uid === before.uid && after.gid === before.gid,
             `now ${(after.mode & 0o777).toString(8)} ${after.uid}:${after.gid}, was 660 ${before.uid}:${before.gid}`);
-        return 'mode 660 and owner kept';
+        const describe = (st) => `${(st.mode & 0o7777).toString(8)} ${st.uid}:${st.gid}`;
+        const originals = fs.statSync(`${dir}/.medic-originals`);
+        const ignore = fs.statSync(`${dir}/.medic-originals/.ignore`);
+        expect(describe(originals) === `2770 ${folder.uid}:${folder.gid}` && describe(ignore) === `660 ${folder.uid}:${folder.gid}`,
+            `.medic-originals is ${describe(originals)} and its .ignore ${describe(ignore)}, the film's folder ${describe(folder)}`);
+        return 'mode 660 and owner kept, originals folder like the film\'s';
     });
+});
+
+await check('tidying earlier copies leaves a copy that doesn\'t check out', async () => {
+    // Medic 1.0.4 to 1.0.7 left "Name.medic-stripped.mkv" beside the film, made with optional maps, so one
+    // can lack the film's audio. It must not take the film's place; a sound one still does.
+    const file = await addFilm('Leftover (2022)', ['eng', 'fre'], 4);
+    const copy = file.replace(/\.mkv$/, '.medic-stripped.mkv');
+    const kept = `${movies}/Leftover (2022)/.medic-originals/Leftover (2022).mkv`;
+    const size = fs.statSync(file).size;
+    try {
+        execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', file, '-map', '0:v', '-c', 'copy', copy]);
+        const refused = await api('POST', '/JellyfinMedic/Tracks/TidyCopies');
+        expect(refused.status === 200 && refused.json?.Titles === 0
+            && JSON.stringify(refused.json?.LeftTitles) === JSON.stringify([{ Name: 'Leftover (2022).mkv', Reason: 'it has no audio' }]), 'tidy: ' + refused.status + ' ' + refused.text);
+        expect(fs.statSync(file).size === size && audioLanguages(file) === 'eng,fre', 'the film was changed');
+        expect(fs.existsSync(copy) && !fs.existsSync(kept), 'the copy was moved');
+        const notes = JSON.stringify((await ok('/JellyfinMedic/Tracks/Progress')).Recent);
+        expect(/Left Leftover \(2022\)\.mkv and its earlier copy as they are: .*it has no audio/.test(notes), 'no warning: ' + notes);
+
+        execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', file, '-map', '0:v', '-map', '0:a:0', '-c', 'copy', copy]);
+        const tidied = await api('POST', '/JellyfinMedic/Tracks/TidyCopies');
+        expect(tidied.status === 200 && tidied.json?.Titles === 1 && tidied.json?.LeftTitles?.length === 0, 'second tidy: ' + tidied.status + ' ' + tidied.text);
+        expect(audioLanguages(file) === 'eng' && audioLanguages(kept) === 'eng,fre' && !fs.existsSync(copy), 'the sound copy did not take the film\'s place');
+        return 'copy without audio left with a warning, sound copy put in place';
+    } finally {
+        fs.rmSync(copy, { force: true });
+    }
 });
 
 await check('track cleanup keeps the film\'s own audio when only a commentary is in your language', async () => {
@@ -2408,6 +2443,38 @@ await check('playback test sends its token in a header, not in the address', asy
         page.off('request', watch);
         page.off('dialog', accept);
         await page.unroute(/\/Items\?.*MinWidth=1800/);
+    }
+});
+
+await check('"Remove duplicate files" says which titles it left and shows the server\'s own error', async () => {
+    const tidy = /\/JellyfinMedic\/Tracks\/TidyCopies/;
+    const accept = (dialog) => dialog.accept();
+    page.on('dialog', accept);
+    try {
+        await medicTab('tracks', true);
+        const result = page.locator('#md-tracks-tidy-result');
+        const press = async (reply) => {
+            await page.unroute(tidy);
+            await page.route(tidy, reply);
+            await page.click('#md-tracks-tidy');
+            await page.waitForFunction(() => !document.querySelector('#md-tracks-tidy').disabled, null, { timeout: 10000 });
+            return (await result.textContent()).trim();
+        };
+        // A name that looks like markup must show as text.
+        const leftTitles = [{ Name: 'Film <b>(2020)</b>.mkv', Reason: 'it has no audio' }, { Name: 'Other (2021).mkv', Reason: 'FFprobe couldn\'t read it' }];
+        const left = await press((route) => route.fulfill({ json: { Titles: 1, CopiesDeleted: 0, Freed: 0, FreedText: '0 KB', LeftTitles: leftTitles } }));
+        expect(left.includes('1 title(s) back to one file.')
+            && left.includes('2 title(s) left as they are, as their copy didn\'t check out: Film <b>(2020)</b>.mkv (it has no audio); Other (2021).mkv (FFprobe couldn\'t read it).')
+            && (await result.locator('b').count()) === 0, 'shown: ' + left);
+        const problem = 'FFprobe couldn\'t be found, so the earlier copies can\'t be checked and nothing was tidied.';
+        const missing = await press((route) => route.fulfill({ status: 500, contentType: 'application/problem+json', body: JSON.stringify({ title: 'An error occurred', status: 500, detail: problem }) }));
+        expect(missing === problem, 'shown: ' + missing);
+        const busy = await press((route) => route.fulfill({ status: 409, contentType: 'text/plain', body: 'Wait for the track run to finish first.' }));
+        expect(busy === 'Wait for the track run to finish first.', 'shown: ' + busy);
+        return 'left titles with their reason, then the Problem and the 409 messages';
+    } finally {
+        page.off('dialog', accept);
+        await page.unroute(tidy);
     }
 });
 

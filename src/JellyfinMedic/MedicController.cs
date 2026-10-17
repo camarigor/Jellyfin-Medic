@@ -357,17 +357,25 @@ public class MedicController : ControllerBase
 
     /// <summary>Puts titles left with several copies by earlier versions back to a single file.</summary>
     [HttpPost("Tracks/TidyCopies")]
-    public ActionResult<object> TracksTidyCopies([FromQuery] bool deleteOriginals = false)
+    public async Task<ActionResult<object>> TracksTidyCopies([FromQuery] bool deleteOriginals = false)
     {
         if (TrackCleaner.CurrentProgress().Running)
         {
             return StatusCode(StatusCodes.Status409Conflict, "Wait for the track run to finish first.");
         }
 
-        var (titles, copies, freed) = TrackCleaner.TidyEarlierCopies(_library, _engine.Libraries, deleteOriginals);
+        // Each earlier copy is read before it takes the original's place, and that needs FFprobe.
+        string? ffmpeg = FfmpegPath();
+        string? ffprobe = ffmpeg is null ? null : TrackCleaner.FfprobePath(ffmpeg);
+        if (ffprobe is null)
+        {
+            return Problem("FFprobe couldn't be found, so the earlier copies can't be checked and nothing was tidied.");
+        }
+
+        var (titles, copies, freed, left) = await TrackCleaner.TidyEarlierCopies(_library, _engine.Libraries, ffprobe, deleteOriginals).ConfigureAwait(false);
         WeeklyLedger.AddFreed("Duplicate files", freed);
         TrackCleaner.ClearScan();
-        return Ok(new { Titles = titles, CopiesDeleted = copies, Freed = freed, FreedText = SystemProbe.Size(freed) });
+        return Ok(new { Titles = titles, CopiesDeleted = copies, Freed = freed, FreedText = SystemProbe.Size(freed), LeftTitles = left });
     }
 
     /// <summary>How many originals Medic is keeping, and how much space they take.</summary>
