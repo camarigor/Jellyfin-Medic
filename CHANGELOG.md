@@ -11,6 +11,8 @@ Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
 ### Fixed
 - **The schedule plan no longer ranks quiet hours by memory noise.** On a server where other services keep memory high all day (say 85 to 89%), memory counted in every hour of the server load profile at a level higher than the CPU or the drives, so the plan picked night hours by a few points of memory instead of by when the drives are actually quiet, for example while downloads write to them. Memory now counts only when it rises above the server's usual level, so CPU and drive activity decide again, and a real memory peak still keeps tasks away.
+- **Checks says when the server's memory sits above Medic's memory ceiling.** When other programs keep the whole server's memory at or above the ceiling, Medic postpones every heavy task that starts, scheduled or started by hand, and runs it two hours later at the same memory level. Checks said nothing about it. When tasks were postponed on three or more of the last seven days, Checks now says so, with the server's highest memory reading and the ceiling, and suggests raising the ceiling just above the server's normal use, or freeing memory other programs use.
+- **"You could transcode to RAM" goes by the memory the server has free.** It went by the memory Jellyfin may address, which in a container without a memory limit is the whole machine, so a server with a few GB free was told to map an 8 GB RAM folder. The tip now shows only when the server has at least 12 GB free, and says how much is free.
 
 ## [1.0.24] - 2026-10-17
 

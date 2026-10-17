@@ -198,17 +198,9 @@ public sealed class DiagnosticsEngine
 
         Guard(AreaTasks, () =>
         {
-            var events = LoadGuardLog.Load(_paths);
-            var recent = events.Where(e => e.TimestampUtc > DateTime.UtcNow.AddDays(-7) && e.Action == "stopped").ToList();
-            if (recent.Count > 0)
-            {
-                var last = recent[0];
-                Add(AreaTasks, Sev.Improve, "Tasks have been overloading memory",
-                    $"Medic stopped {recent.Count} heavy task run(s) in the last 7 days to keep the server up (last: {last.TaskName}, memory {last.MemoryUsedGb:0.#} GB)",
-                    HostPlatform.IsContainer ? "Space these tasks out, or give the container more memory" : "Space these tasks out, or add memory",
-                    "When several heavy scans run at once they can use all the memory and crash the server. Medic's load guard stopped the extras and restarted them later, but it's better to stop them colliding: Apply the recommended schedule so they don't overlap, and check whether another plugin or a manual scan is starting them at the same time.",
-                    "Medic → Schedule");
-            }
+            var settings = Plugin.Instance?.Configuration;
+            int? ceiling = settings is { LoadGuardEnabled: true } ? Math.Clamp(settings.MemoryCeilingPercent, 60, 95) : null;
+            _report.Findings.AddRange(LoadGuardFindings(LoadGuardLog.Load(_paths), DateTime.UtcNow, ceiling, HostPlatform.IsContainer));
         });
 
         _report.Findings.AddRange(pluginReports.SelectMany(p => p.Findings));
@@ -238,6 +230,41 @@ public sealed class DiagnosticsEngine
             .ToList();
 
         return _report;
+    }
+
+    /// <summary>What LoadGuard's log says about the last week, on plain inputs so tests can give it any log.</summary>
+    internal static List<Finding> LoadGuardFindings(IReadOnlyList<LoadGuardEvent> events, DateTime nowUtc, int? ceilingPercent, bool isContainer)
+    {
+        var findings = new List<Finding>();
+        var recent = events.Where(e => e.TimestampUtc > nowUtc.AddDays(-7) && e.Action == "stopped").ToList();
+        if (recent.Count > 0)
+        {
+            var last = recent[0];
+            findings.Add(NewFinding(AreaTasks, Sev.Improve, "Tasks have been overloading memory",
+                $"Medic stopped {recent.Count} heavy task run(s) in the last 7 days to keep the server up (last: {last.TaskName}, memory {last.MemoryUsedGb:0.#} GB)",
+                isContainer ? "Space these tasks out, or give the container more memory" : "Space these tasks out, or add memory",
+                "When several heavy scans run at once they can use all the memory and crash the server. Medic's load guard stopped the extras and restarted them later, but it's better to stop them colliding: Apply the recommended schedule so they don't overlap, and check whether another plugin or a manual scan is starting them at the same time.",
+                "Medic → Schedule"));
+        }
+
+        // A postponement on most days means memory sits there normally, so holding tasks back protects nothing.
+        var postponed = events.Where(e => e.Action == "postponed" && e.TimestampUtc > nowUtc.AddDays(-7) && e.TimestampUtc <= nowUtc).ToList();
+        int days = postponed.Select(e => (int)(nowUtc - e.TimestampUtc).TotalDays).Distinct().Count();
+        if (ceilingPercent is { } ceiling && days >= 3)
+        {
+            var last = postponed[0];
+            double highest = postponed.Where(e => e.MemoryLimitGb > 0).Select(e => e.MemoryUsedGb / e.MemoryLimitGb * 100).DefaultIfEmpty(ceiling).Max();
+            int above = (int)Math.Ceiling(highest) + 2;
+            findings.Add(NewFinding(AreaTasks, Sev.Improve, "The server's memory sits above Medic's memory ceiling",
+                $"Medic postponed {postponed.Count} heavy task run(s) on {days} of the last 7 days: the whole server's memory was up to {highest:0}% and the ceiling is {ceiling}% (last: {last.TaskName}, {last.MemoryUsedGb:0.#} of {last.MemoryLimitGb:0.#} GB)",
+                above <= 95
+                    ? $"Raise the memory ceiling to {above}% if this is the server's normal use, or free memory other programs use"
+                    : "Free memory other programs use: the ceiling can't go above 95%",
+                $"Medic holds back any heavy task (library scans, metadata refreshes, trickplay and the like, including ones started by hand) that starts while the whole server's memory, other programs included, is at or above the ceiling. It starts it again once memory falls to {ceiling - 12}%, or after two hours. On a server whose memory normally sits above the ceiling, it doesn't fall, so each task just runs two hours late at the same level, and scheduled tasks drift out of the quiet hours. If this is normal for the machine, raise the ceiling just above it so Medic only acts on real spikes; if not, find which program fills the memory.",
+                "Medic → Settings → Memory ceiling"));
+        }
+
+        return findings;
     }
 
     /// <summary>Task Advisor and Setup Optimiser are replaced by Medic and shouldn't run alongside it.</summary>
@@ -595,15 +622,31 @@ public sealed class DiagnosticsEngine
                     "A 4K transcode can use several GB of temporary space; when it runs out, playback stops.", WhereTranscoding);
             }
 
-            if (hw.MemoryGb >= 16 && HostPlatform.RamTranscodeHow is { } how)
+            if (HostPlatform.RamTranscodeHow is { } how
+                && RamTranscodeTip(transcodePath, how, HostPlatform.Kind, hw.MemoryGb, FreeMemoryGb()) is { } tip)
             {
-                Add(AreaHardware, Sev.Tip, "You could transcode to RAM", transcodePath, how,
-                    $"Jellyfin can use {SystemProbe.Gb(hw.MemoryGb)} of memory. Transcoding to RAM saves SSD wear and is slightly faster. This is optional: "
-                        + (HostPlatform.Kind == HostKind.Unraid ? "an SSD cache pool is perfectly fine." : "an SSD is perfectly fine too."),
-                    WhereDocker + ", then Dashboard → Playback → Transcoding");
+                _report.Findings.Add(tip);
             }
         }
     }
+
+    // The largest RAM folder the tip suggests, and what the server should still have free beside it.
+    private const double RamFolderGb = 8;
+    private const double RamFolderMarginGb = 4;
+
+    /// <summary>The "transcode to RAM" tip, on plain inputs so tests can give it any memory.</summary>
+    /// <remarks>
+    /// Goes by the memory free on the server, not what .NET may address: in a container without a limit that is the whole
+    /// machine, and a RAM folder filled by a 4K transcode can't be reclaimed, so it pushes a busy server into swap.
+    /// </remarks>
+    internal static Finding? RamTranscodeTip(string transcodePath, string how, HostKind kind, double memoryGb, double? freeGb) =>
+        memoryGb < 16 || freeGb is not { } free || free < RamFolderGb + RamFolderMarginGb ? null : NewFinding(AreaHardware, Sev.Tip, "You could transcode to RAM", transcodePath, how,
+            $"The server has {SystemProbe.Gb(free)} of memory free now. Transcoding to RAM saves SSD wear and is slightly faster. This is optional: "
+                + (kind == HostKind.Unraid ? "an SSD cache pool is perfectly fine." : "an SSD is perfectly fine too."),
+            WhereDocker + ", then Dashboard → Playback → Transcoding");
+
+    private static double? FreeMemoryGb() =>
+        ServerMemory.UsedPercent(out double usedGb, out double totalGb) is null ? null : totalGb - usedGb;
 
     // ---------- Storage ----------
 
