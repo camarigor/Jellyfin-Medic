@@ -15,6 +15,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 - **Odd answers and failed saves give a clear error.** A Sonarr or Radarr answer that wasn't the expected JSON made the page fail with a server error; it now says what came back. Saving writes the keys and password before the new addresses, so a failed key write leaves the old settings in place, instead of pairing the old key with the new server.
 - **Changing the qBittorrent address forgets what was added to the old one.** The record of which exclusions Medic Profiles added was kept when the address changed, so Stop blocking on the new qBittorrent could remove entries its owner had added there.
 - **An empty library search no longer fails.** Clearing the search box and searching answered with an error.
+- **A failed save changes nothing.** When the keys were written but the new addresses then couldn't be saved (a full disk, say), a key typed for a new server stayed paired with the old address; when one key couldn't be written, the password or key written before it stayed saved, although the page was told nothing had changed. The keys and password written by that save are now put back as they were, the addresses stay, and the page shows what the server said went wrong instead of only "Couldn't save. Try again.".
 
 Thanks @camarigor for reporting these (#159, #206).
 

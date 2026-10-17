@@ -1653,6 +1653,37 @@ await check('Medic Profiles settings: Try qBittorrent again shows after a refusa
     }
 });
 
+await check('Medic Profiles can\'t save its settings: the old key stays with the old address, and the page says nothing was changed', async () => {
+    const status = () => ok('/MedicProfiles/Status');
+    const saved = await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
+    expect(saved.status === 204, 'setting up: ' + saved.status);
+    // A folder where Jellyfin writes Medic Profiles' settings makes that write fail, as a full disk would.
+    const file = '/config/plugins/configurations/Jellyfin.Plugin.MedicProfiles.xml';
+    execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', 'mv "$1" "$1.e2e-aside" && mkdir "$1"', 'sh', file]);
+    try {
+        const other = `http://host.docker.internal:${P(18994)}`;
+        const failed = await api('POST', '/MedicProfiles/Settings', { SonarrUrl: other, SonarrKey: 'other-key', RadarrUrl: '' });
+        expect(failed.status === 500 && /nothing was changed/.test(failed.json?.detail || ''), `failed save: ${failed.status} ${failed.text.slice(0, 200)}`);
+        const after = await status();
+        expect(after.sonarr.url === ARR && after.sonarr.keySet, 'settings after the failed save: ' + JSON.stringify(after.sonarr));
+        // The pretend Sonarr only takes test-key, so this passes only with the old key back.
+        const test = await api('POST', '/MedicProfiles/Test/sonarr');
+        expect(test.json?.ok, 'the old key was not put back: ' + test.text);
+
+        await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
+        await page.reload();
+        await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
+        await page.click('#MedicProfilesPage .mp-tab[data-tab="settings"]');
+        await page.fill('#mp-sonarr-url', other);
+        await page.fill('#mp-sonarr-key', 'other-key');
+        await page.click('#mp-settings button[type="submit"]');
+        await page.locator('#mp-settings-note', { hasText: 'nothing was changed' }).waitFor({ timeout: 10000 });
+        return await page.locator('#mp-settings-note').textContent();
+    } finally {
+        execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', 'rmdir "$1" && mv "$1.e2e-aside" "$1"', 'sh', file]);
+    }
+});
+
 await check('My picks page opens signed in', async () => {
     errors.length = 0;
     await page.goto(JF + '/MedicPicks/Page');
