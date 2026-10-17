@@ -285,7 +285,7 @@ public class PicksController : ControllerBase
                         LastRebuildUtc[userId] = DateTime.UtcNow;
                     }
 
-                    await _engine.BuildForUserAsync(userId, _engine.CreateRunContext(), System.Threading.CancellationToken.None).ConfigureAwait(false);
+                    await _engine.BuildForUserAsync(userId, _engine.CreateRebuildContext(), System.Threading.CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {

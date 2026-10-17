@@ -20,6 +20,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
 Thanks @camarigor for reporting the Seerr key redirect (#206).
 - **Hiding a title while the picks are being built keeps the new playlist.** A hide during a build, the nightly one included, then put the picks from before the build back into the playlist, and when the build had replaced the playlist it made a second one and saved the old picks over the new ones. The playlist now follows a hide with the picks saved last, after any build under way ends. Hides within 2 seconds of each other also share one playlist update instead of one each.
+- **Builds read the library once, and only what they use.** "On your server", Linked picks and the genres on the picks page each read the films and series on their own; they now share one reading per build, and Linked picks match names through a list made once per build instead of comparing every title watched with every title in the library. Each reading also leaves out the images and settings nothing in a build looks at, and the play state of every account where it isn't needed. Without Discover the library isn't read for TMDb ids at all; with Discover on, each "Update my picks" read every film and series on the server again for their TMDb ids, and a rebuild now reuses them for up to 10 minutes, until a film or series is added, changed or removed, and the nightly run still reads them afresh. The picks themselves are the same.
 
 ## [1.2.5] – 2026-10-17
 
