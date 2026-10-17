@@ -38,31 +38,43 @@ PART 1: JELLYFIN MEDIC
 
 Everything lives on one page in the dashboard sidebar, under
 Plugins > Jellyfin Medic. Only administrators can open it. The page has these
-tabs: Dashboard, Schedule, Checks, Tests, IPTV, Tracks, Media report,
-Plugin directory, and Settings and support.
+tabs: Dashboard, Schedule, History, Checks, IPTV, Tracks, Media report,
+Tests, Plugins, Plugin directory, Settings, and Contact.
 
 
 -------------------------------------------------------------------------------
 1.1  DASHBOARD
 -------------------------------------------------------------------------------
 
-A single screen of tiles:
+A single screen of 15 tiles:
 
   - Health: how many things need fixing, by severity.
-  - This week: issues fixed and issues that appeared in the last 7 days, how
-    much disk space Medic freed (track cleanup, clean-ups, duplicates), and
-    how often Medic restarted Jellyfin.
-  - Tonight's tasks: what is scheduled to run and when.
   - Right now: live CPU, memory (as a percentage) and who is watching;
     running tasks with roughly how long each has left; and what Jellyfin
     plus the FFmpeg processes it starts are using (CPU, memory, disk and,
     for NVIDIA and AMD, GPU), with this week's spells of heavy use and what
     was running at the time (tasks, transcodes, trickplay and so on).
+  - Disks: free space on every library drive and Jellyfin's own folders,
+    and any library drive that is missing.
+  - This week: issues fixed and issues that appeared in the last 7 days, how
+    much disk space Medic freed (track cleanup, clean-ups, duplicates), and
+    how often Medic restarted Jellyfin.
   - Top issues: the most serious findings from Checks.
-  - Last 24 hours: what ran, what failed, what happened.
-  - Users and access: account summary.
-  - Updates waiting: plugin updates and pending restarts.
-  - Load guard: reports any action the memory guard has taken.
+  - Load, last 10 minutes: CPU, memory and disk over the last 10 minutes,
+    with the tasks LoadGuard is holding back.
+  - Today, planned and actual: today's tasks as scheduled, beside what really
+    ran, failed, was stopped or cancelled, or didn't run.
+  - Busy hours and tasks: when people usually watch, and which tasks run in
+    those hours.
+  - Why it transcodes: what was caught transcoding and why, with library
+    counts from the media report.
+  - Disk trend and forecast: free space over the last 30 days for each drive,
+    with when it would be full at the current rate.
+  - Network: the last speed test and the streaming limit it suggests.
+  - Repeated log errors: errors that keep appearing in today's log.
+  - People and access: accounts, administrators, and sign-ins from several
+    places.
+  - Updates: plugin updates waiting and pending restarts.
   - Maintenance panel:
       * Free up disk space: left-over transcode files, and metadata or image
         folders for items no longer in your library. Scanning is read-only;
@@ -465,10 +477,21 @@ Running it:
   - Playback records are anonymous: how many people are watching, and which
     titles were transcoded and why. Not who.
   - No passwords are ever read, stored or sent.
-  - Internet use only when you ask: the speed test (Cloudflare) and the
-    exposure check (sends only a port number) run when you press the button;
-    the Plugin directory fetches the public awesome-jellyfin list and checks
-    your own plugin repositories.
+  - What reaches the internet, and when:
+      * Building the checks (when the page opens, and after "Check
+        again") checks that addresses the server already uses still answer:
+        every enabled plugin repository, the outside .js and .css files
+        JavaScript Injector scripts load, and the @imports in the theme's
+        custom CSS, kept for 10 minutes. It also asks Jellyfin which plugin
+        updates are waiting.
+      * The speed test (Cloudflare) and the exposure check run only when you
+        press their buttons. The exposure check connects to the address you
+        give; for an IP address it may ask portchecker.io, which gets that
+        address and the port.
+      * "Use my IP + 8096" asks ipify for the server's public address, or
+        icanhazip.com and then checkip.amazonaws.com if it doesn't answer,
+        at most once an hour.
+      * The Plugin directory fetches the public awesome-jellyfin list.
 
 
 ===============================================================================
@@ -753,7 +776,7 @@ press a button. Tabs: Downloads, Blocked, Indexers, Profiles, History, Settings.
   - The Sonarr and Radarr API keys are stored on the server in their own
     file, separate from other settings, and never sent to a browser.
   - Release names from indexers are shown as plain text, never as page code.
-  - Talks only to your own Sonarr and Radarr.
+  - Talks only to your own Sonarr, Radarr and qBittorrent.
 
 
 ===============================================================================

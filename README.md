@@ -18,7 +18,7 @@ Everything lives on one page in the dashboard sidebar, under **Plugins → Jelly
 
 ### Dashboard
 
-A single screen of tiles: how many things need fixing, what changed this week (issues fixed, space freed), tonight's tasks, what the server is doing right now (CPU, memory, who's watching), your top issues, the last 24 hours, users and access, updates waiting, and a maintenance panel to free up disk space (including old log files), check whether your server is exposed to the internet, or stop running tasks.
+A single screen of 15 tiles: health (how many things need fixing), what the server is doing right now (CPU, memory, who's watching, running tasks), disks, this week (issues fixed, space freed), top issues, load over the last 10 minutes (with any tasks LoadGuard held back), today's tasks as planned against what actually ran, busy hours and the tasks that run in them, why things transcode, each disk's trend and forecast, the network (speed test and streaming limit), repeated log errors, people and access, updates waiting, and a maintenance panel to free up disk space (including old log files), check whether your server is exposed to the internet, or stop running tasks.
 
 ### Schedule
 
@@ -185,7 +185,13 @@ Because Jellyfin sends GIF posters at their full size, every poster on a page is
 - **Playback records are anonymous.** To learn your quiet hours and spot transcodes, Medic notes how many people are watching and which titles were transcoded and why. It doesn't record who was watching.
 - **Server load is totals only.** On Linux, Medic notes how busy the whole machine is every 5 minutes (CPU, memory and disk, from the totals in /proc) and keeps them as averages by hour of the week. It never looks at which program, container or app is using them.
 - **No passwords are ever read, stored or sent.** Medic deliberately does not test password strength, because that can't be done without handling real passwords.
-- **What reaches the internet, and when:** the speed test (Cloudflare) and the "Is your server open to the internet?" check run only when you press their buttons. That check connects to the address you give; for an IP address it may ask portchecker.io instead, which gets only that address and port. "Use my IP + 8096" asks a public IP service (ipify) for your address. Opening the Plugin directory tab fetches the public awesome-jellyfin plugin list and checks your own plugin repositories, the same ones Jellyfin uses for updates. None of these send your settings, files or accounts.
+- **What reaches the internet, and when:**
+  - Each time Medic's page builds its checks (when you open it, and after "Check again"), it checks that the addresses your server already uses still answer: each enabled plugin repository, the outside `.js` and `.css` files that JavaScript Injector scripts load, and the `@import`s in your theme's custom CSS. The results are kept for 10 minutes. It also asks Jellyfin which plugin updates are waiting, which Jellyfin looks up in those same repositories.
+  - The speed test (Cloudflare) and the "Is your server open to the internet?" check run only when you press their buttons. That check connects to the address you give; for an IP address it may ask portchecker.io instead, which gets only that address and port.
+  - "Use my IP + 8096" asks a public IP service for your address: ipify, or if it doesn't answer, icanhazip.com and then checkip.amazonaws.com. The answer is kept for an hour.
+  - Opening the Plugin directory tab fetches the public awesome-jellyfin plugin list.
+  - None of these send your settings, files or accounts.
+  - Medic Picks contacts TMDb and Seerr only when an admin has set them up (see its own privacy notes). Medic Profiles contacts only the Sonarr, Radarr and qBittorrent addresses you give it.
 - **The "help improve Medic" export** masks passwords, keys, tokens, usernames and credentials in links before you ever see the file, and asks you to read it before sending. Sending it is always your choice. If anything personal reaches the maintainer, it's deleted and not used.
 
 ---
