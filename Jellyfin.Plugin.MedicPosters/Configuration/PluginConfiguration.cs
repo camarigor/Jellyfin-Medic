@@ -6,7 +6,7 @@ namespace Jellyfin.Plugin.MedicPosters.Configuration;
 /// <summary>Medic Posters' settings.</summary>
 public class PluginConfiguration : BasePluginConfiguration
 {
-    /// <summary>Film libraries to make posters for. Empty: every film library.</summary>
+    /// <summary>Libraries to make posters (and covers) for. Empty: every film, TV, home video and music video library.</summary>
     public string[] LibraryIds { get; set; } = Array.Empty<string>();
 
     /// <summary>Poster width in pixels; the height is 1.5 times this. Jellyfin sends GIF posters at full size, so smaller loads faster.</summary>
@@ -29,4 +29,10 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>The rounded white frame.</summary>
     public bool ShowFrame { get; set; } = true;
+
+    /// <summary>Also give each library an animated cover, made from moments of what's in it, with the library's name.</summary>
+    public bool MakeLibraryCovers { get; set; } = true;
+
+    /// <summary>Library cover width in pixels; covers are 16:9, like Jellyfin's library cards.</summary>
+    public int CoverWidth { get; set; } = 480;
 }

@@ -8,12 +8,15 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicPosters.Posters;
 
-/// <summary>A poster Medic Posters made, and the poster the film had before, so it can be put back.</summary>
+/// <summary>A poster or library cover Medic Posters made, and the picture the item had before, so it can be put back.</summary>
 public class PosterRecord
 {
     public Guid ItemId { get; set; }
 
     public string Title { get; set; } = string.Empty;
+
+    /// <summary>"poster" for a film or series, "cover" for a library. Records from 1.0.0 have none, and were posters.</summary>
+    public string Kind { get; set; } = "poster";
 
     public DateTime MadeUtc { get; set; }
 

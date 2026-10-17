@@ -2,7 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
-using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -48,7 +48,7 @@ public sealed class PosterKeeper : IHostedService, IDisposable
 
     private void OnItemUpdated(object? sender, ItemChangeEventArgs e)
     {
-        if (e.Item is not Movie film || !_store.Read(s => s.Posters.ContainsKey(film.Id)) || !_pending.TryAdd(film.Id, 0))
+        if (e.Item is not BaseItem film || !_store.Read(s => s.Posters.ContainsKey(film.Id)) || !_pending.TryAdd(film.Id, 0))
         {
             return;
         }
