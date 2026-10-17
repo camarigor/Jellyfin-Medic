@@ -17,11 +17,19 @@ public static class ScheduleStorage
 {
     public static readonly object SyncRoot = new();
 
-    private const int MaxRunHistory = 4000;
+    // Every run of the last week is kept, since the Dashboard's Busy hours counts a week of runs.
+    private static readonly TimeSpan RunHistoryWeek = TimeSpan.FromDays(7);
 
-    // Per task, so one that runs every few minutes can't push every other task's runs out. A day of
-    // runs every 5 minutes is 288.
-    internal const int MaxRunsPerTask = 300;
+    // A task's newest runs are kept however old, so one that runs once a day or less still has a history.
+    internal const int KeptRunsPerTask = 300;
+
+    // Per task, so one that runs every minute can't push every other task's runs out. A week of runs
+    // every 5 minutes is 2,016; the rest leaves room for runs started by hand.
+    internal const int MaxRunsPerTask = 2100;
+
+    // In all, oldest first, so a week of five tasks that run every 5 minutes still fits. A run takes about
+    // 320 bytes, so under 4 MB; only if every run failed with the longest error details would it reach about 55 MB.
+    internal const int MaxRunHistory = 12000;
 
     // Runs that finish this close together are written to disk together.
     private static readonly TimeSpan RunWriteDelay = TimeSpan.FromSeconds(5);
@@ -267,7 +275,7 @@ public static class ScheduleStorage
 
                 var runs = ReadList<RunRecord>(path);
                 runs.AddRange(pending);
-                WriteJson(path, Trim(runs));
+                WriteJson(path, Trim(runs, DateTime.UtcNow));
             }
         }
         catch (Exception ex)
@@ -292,14 +300,22 @@ public static class ScheduleStorage
         }
     }
 
-    /// <summary>Keeps the newest runs: up to MaxRunsPerTask of each task, and MaxRunHistory in all. Oldest first.</summary>
-    internal static List<RunRecord> Trim(IEnumerable<RunRecord> runs) =>
-        runs.GroupBy(r => r.TaskId, StringComparer.OrdinalIgnoreCase)
-            .SelectMany(g => g.OrderByDescending(r => r.EndUtc).Take(MaxRunsPerTask))
+    /// <summary>
+    /// Keeps of each task its newest KeptRunsPerTask runs and every run of the last week, up to MaxRunsPerTask,
+    /// then the newest MaxRunHistory in all. Oldest first.
+    /// </summary>
+    internal static List<RunRecord> Trim(IEnumerable<RunRecord> runs, DateTime nowUtc)
+    {
+        var weekAgo = AsUtc(nowUtc) - RunHistoryWeek;
+        return runs.GroupBy(r => r.TaskId, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(g => g.OrderByDescending(r => r.EndUtc)
+                .Where((r, i) => i < KeptRunsPerTask || AsUtc(r.EndUtc) >= weekAgo)
+                .Take(MaxRunsPerTask))
             .OrderByDescending(r => r.EndUtc)
             .Take(MaxRunHistory)
             .OrderBy(r => r.EndUtc)
             .ToList();
+    }
 
     /// <summary>
     /// Forgets any pending back-off for these tasks, so a later successful run
