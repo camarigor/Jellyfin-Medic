@@ -1051,7 +1051,14 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
     }
 });
 
-await check('Medic Profiles signs in to qBittorrent 5.2, and saving the settings retries a refused sign-in at once', async () => {
+// What the page's "Try qBittorrent again" button posts.
+async function tryQbitAgain() {
+    const r = await api('POST', '/MedicProfiles/FileFilter/Retry', {});
+    expect(r.status === 200, `FileFilter/Retry returned ${r.status} ${r.text.slice(0, 200)}`);
+    return r.json;
+}
+
+await check('Medic Profiles signs in to qBittorrent 5.2, and tries a refused sign-in again only when asked', async () => {
     const qbitServer = await fakeArr.startQbit(18080);
     Object.assign(fakeArr.qbit, { v52: true, banned: true, logins: 0, failedLogins: 0 });
     try {
@@ -1060,22 +1067,75 @@ await check('Medic Profiles signs in to qBittorrent 5.2, and saving the settings
         // Banned: the page says so, and opening it again doesn't knock on qBittorrent's door.
         await save();
         let state = await ok('/MedicProfiles/FileFilter');
-        expect(!state.reachable && /blocked sign-ins/.test(state.message), 'banned: ' + JSON.stringify(state));
+        expect(!state.reachable && state.refused && /blocked sign-ins/.test(state.message), 'banned: ' + JSON.stringify(state));
         await ok('/MedicProfiles/FileFilter');
         expect(fakeArr.qbit.logins === 1, `tried ${fakeArr.qbit.logins} times while banned`);
-        // The ban ends; saving the same settings again signs in straight away, with 5.2's empty 204 answer.
+        // The ban ends. Saving the same settings doesn't sign in; Try again does, with 5.2's empty 204 answer.
         fakeArr.qbit.banned = false;
         await save();
-        state = await ok('/MedicProfiles/FileFilter');
-        expect(state.reachable, 'after the ban: ' + JSON.stringify(state));
+        await ok('/MedicProfiles/FileFilter');
+        expect(fakeArr.qbit.logins === 1, `saving the same settings signed in: ${fakeArr.qbit.logins} sign-ins`);
+        state = await tryQbitAgain();
+        expect(state.reachable && !state.refused, 'after the ban: ' + JSON.stringify(state));
         expect(fakeArr.qbit.logins === 2, `signed in ${fakeArr.qbit.logins} times`);
         // 5.2 answers a wrong password with 401.
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'wrong' });
         state = await ok('/MedicProfiles/FileFilter');
         expect(!state.reachable && /user name and password/.test(state.message), 'wrong password: ' + JSON.stringify(state));
-        return 'ban reported, retried on save, 204 sign-in accepted, 401 refused';
+        return 'ban reported, retried on Try again, 204 sign-in accepted, 401 refused';
     } finally {
         Object.assign(fakeArr.qbit, { v52: false, banned: false });
+        qbitServer.close();
+    }
+});
+
+await check('Medic Profiles spends no qBittorrent sign-in on save, Test or block after a refusal, and Try again spends one', async () => {
+    const qbitServer = await fakeArr.startQbit(18080);
+    Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
+    try {
+        const QB = ARR.replace('18989', '18080');
+        // What the page sends: the password box is empty unless a new one was typed.
+        const save = (password, extra) => api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: password, ...extra });
+        // Start signed in, so the wrong password below is new to Medic and not one an earlier check left refused.
+        await save('secret');
+        await ok('/MedicProfiles/FileFilter');
+        Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
+        await save('wrong');
+        let state = await ok('/MedicProfiles/FileFilter');
+        expect(!state.reachable && state.refused, 'wrong password: ' + JSON.stringify(state));
+        expect(fakeArr.qbit.logins === 1, `the wrong password was tried ${fakeArr.qbit.logins} times`);
+
+        // Every button the page has posts the settings first; none of them may spend another sign-in.
+        await save('');
+        await ok('/MedicProfiles/FileFilter');
+        await save('');
+        await api('POST', '/MedicProfiles/Test/sonarr', {});
+        await save('', { ClearRadarrKey: true });
+        await save('');
+        const blocked = await api('POST', '/MedicProfiles/FileFilter', { block: true, archives: false });
+        expect(blocked.json && !blocked.json.ok && blocked.json.refused, 'block: ' + blocked.text);
+        await save('');
+        await api('POST', '/MedicProfiles/FileFilter', { block: false, archives: false });
+        await ok('/MedicProfiles/FileFilter');
+        expect(fakeArr.qbit.logins === 1, `save, Test, Remove key and block spent ${fakeArr.qbit.logins - 1} more sign-ins`);
+
+        // Try again spends exactly one; the second refusal stops sign-ins until the password changes or Try again.
+        state = await tryQbitAgain();
+        expect(fakeArr.qbit.logins === 2, `Try again signed in ${fakeArr.qbit.logins - 1} times`);
+        expect(state.refused && /stopped/.test(state.message), 'second refusal: ' + JSON.stringify(state));
+        await save('');
+        await ok('/MedicProfiles/FileFilter');
+        expect(fakeArr.qbit.logins === 2, `signed in after stopping: ${fakeArr.qbit.logins} sign-ins`);
+        await tryQbitAgain();
+        expect(fakeArr.qbit.logins === 3, `Try again after two refusals signed in ${fakeArr.qbit.logins - 2} times`);
+
+        // A password changed in Medic is tried at once.
+        await save('secret');
+        state = await ok('/MedicProfiles/FileFilter');
+        expect(state.reachable && !state.refused, 'right password: ' + JSON.stringify(state));
+        expect(fakeArr.qbit.logins === 4, `the new password took ${fakeArr.qbit.logins - 3} sign-ins`);
+        return `${fakeArr.qbit.logins} sign-ins in all`;
+    } finally {
         qbitServer.close();
     }
 });
@@ -1424,6 +1484,28 @@ await check('Medic Profiles says so when one of its lists can\'t be loaded', asy
         await page.getByText('Medic Profiles couldn’t load the blocked list').waitFor({ timeout: 10000 });
     } finally {
         await page.unroute(blocked);
+    }
+});
+
+await check('Medic Profiles settings: Try qBittorrent again shows after a refusal and spends one sign-in a click', async () => {
+    const qbitServer = await fakeArr.startQbit(18080);
+    Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
+    try {
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: ARR.replace('18989', '18080'), QbitUser: 'admin', QbitPassword: 'wrong' });
+        await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
+        await page.reload();
+        await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
+        await page.click('#MedicProfilesPage .mp-tab[data-tab="settings"]');
+        const button = page.locator('#mp-qbit-retry');
+        await button.waitFor({ state: 'visible', timeout: 10000 });
+        expect(fakeArr.qbit.logins === 1, `opening the page signed in ${fakeArr.qbit.logins} times`);
+        await button.click();
+        await page.locator('#mp-qbit-state', { hasText: 'stopped' }).waitFor({ timeout: 10000 });
+        expect(await button.isVisible(), 'the button went away while sign-ins are stopped');
+        expect(fakeArr.qbit.logins === 2, `one click signed in ${fakeArr.qbit.logins - 1} times`);
+        return 'shown, one sign-in';
+    } finally {
+        qbitServer.close();
     }
 });
 

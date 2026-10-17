@@ -89,7 +89,6 @@ public class ProfilesController : ControllerBase
         }
 
         plugin.SaveConfiguration();
-        _qbit.ForgetRefusal();
 
         // A blank key box means "keep the saved key" (for the same server); Remove clears it.
         if (request.ClearSonarrKey || (newSonarrHost && string.IsNullOrWhiteSpace(request.SonarrKey)))
@@ -164,6 +163,11 @@ public class ProfilesController : ControllerBase
     [HttpGet("FileFilter")]
     public async Task<ActionResult> GetFileFilter(CancellationToken ct) => Json(await _qbit.StateAsync(ct).ConfigureAwait(false));
 
+    // Every button on the page saves the settings and reloads this state, so a refused sign-in is only tried
+    // again here, when the owner asks: each failure counts towards qBittorrent's ban on this server.
+    [HttpPost("FileFilter/Retry")]
+    public async Task<ActionResult> RetryFileFilter(CancellationToken ct) => Json(await _qbit.RetryAsync(ct).ConfigureAwait(false));
+
     [HttpPost("FileFilter")]
     public async Task<ActionResult> SetFileFilter([FromBody] FileFilterRequest request, CancellationToken ct)
     {
@@ -172,7 +176,7 @@ public class ProfilesController : ControllerBase
             return BadRequest();
         }
 
-        var (ok, message) = await _qbit.ApplyAsync(request.Block, request.Archives, ct).ConfigureAwait(false);
+        var (ok, message, refused) = await _qbit.ApplyAsync(request.Block, request.Archives, ct).ConfigureAwait(false);
         if (ok)
         {
             _store.Record(new ActionRecord
@@ -186,7 +190,7 @@ public class ProfilesController : ControllerBase
             });
         }
 
-        return Json(new { ok, message });
+        return Json(new { ok, message, refused });
     }
 
     public class FileFilterRequest

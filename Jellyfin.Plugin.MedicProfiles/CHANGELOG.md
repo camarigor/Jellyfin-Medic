@@ -5,6 +5,9 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 
 ## Unreleased
 
+### Changed
+- **A refused qBittorrent sign-in is only tried again when you ask.** Since 1.1.3, saving the settings, Test, Remove key, Block and Stop blocking each tried a refused password again at once. qBittorrent bans the server's address after 5 failed sign-ins by default, so a few ordinary clicks with a wrong password got Medic Profiles banned. Those buttons no longer sign in after a refusal. A new password typed in Medic Profiles is still tried at once. If you fixed the password in qBittorrent, or its ban has ended, the new **Try qBittorrent again** button signs in exactly once per click. After one refusal Medic Profiles waits 5 minutes before trying the same details again; after two it stops until the password changes or you press the button.
+
 ### Fixed
 - **An error answer from Sonarr or Radarr is never taken for them being out of reach.** One that came as a list without the usual error entries made the Downloads tab say Sonarr or Radarr couldn't be reached. It now says the status they answered with ("Sonarr answered with 400.", say).
 - **The action history survives a damaged file.** A history file that couldn't be read was written over by the next action on the Downloads tab, losing every earlier action in it. It's now kept beside it, as the keys file already was, and a new history starts.
