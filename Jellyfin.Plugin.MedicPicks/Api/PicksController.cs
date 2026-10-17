@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.MedicPicks.Picks;
 using Jellyfin.Plugin.MedicPicks.ScheduledTasks;
 using MediaBrowser.Controller.Net;
+using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -34,17 +35,19 @@ public class PicksController : ControllerBase
     private readonly PicksStore _store;
     private readonly ITaskManager _taskManager;
     private readonly IAuthorizationContext _authContext;
+    private readonly ILocalizationManager _localization;
     private readonly PicksEngine _engine;
     private readonly SeerrClient _seerr;
     private readonly RequestTracker _requests;
     private readonly ILogger<PicksController> _logger;
 
-    public PicksController(PicksStore store, ITaskManager taskManager, IAuthorizationContext authContext, PicksEngine engine, SeerrClient seerr, RequestTracker requests, ILogger<PicksController> logger)
+    public PicksController(PicksStore store, ITaskManager taskManager, IAuthorizationContext authContext, ILocalizationManager localization, PicksEngine engine, SeerrClient seerr, RequestTracker requests, ILogger<PicksController> logger)
     {
         _requests = requests;
         _store = store;
         _taskManager = taskManager;
         _authContext = authContext;
+        _localization = localization;
         _engine = engine;
         _seerr = seerr;
         _logger = logger;
@@ -63,6 +66,7 @@ public class PicksController : ControllerBase
 
         var config = Plugin.Instance!.Configuration;
         var picks = _store.Load(userId);
+        var dub = AudioLanguage.FromTmdb(config.TmdbLanguage, _localization.FindLanguageInfo);
 
         var body = new
         {
@@ -79,8 +83,8 @@ public class PicksController : ControllerBase
             seasonalGenres = Genres.Seasonal,
             countChoices = UserPreferences.CountChoices,
             defaultCount = Math.Clamp(config.LibraryPickCount, 1, 100),
-            dubLanguage = AudioLanguage.FromTmdb(config.TmdbLanguage).Name,
-            dubLanguageCode = AudioLanguage.FromTmdb(config.TmdbLanguage).TwoLetter,
+            dubLanguage = dub.Name,
+            dubLanguageCode = dub.TwoLetter,
             playlistName = config.CreatePlaylists && picks?.PlaylistId is not null ? config.PlaylistName : null,
             inLibrary = picks?.InLibrary ?? new System.Collections.Generic.List<LibraryPick>(),
             linked = picks?.Linked ?? new System.Collections.Generic.List<LibraryPick>(),
