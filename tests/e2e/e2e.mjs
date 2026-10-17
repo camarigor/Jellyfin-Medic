@@ -1855,6 +1855,92 @@ await check('Medic Profiles import list: Change film on a rejected file imports 
     }
 });
 
+// With a few downloads in the pretend Sonarr's queue; the check puts it back to 0.
+async function openProfilesQueue() {
+    fakeArr.queue.total = 3;
+    await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
+    await page.reload();
+    await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
+    await page.locator('#mp-queue > li').first().waitFor({ timeout: 15000 });
+}
+
+await check('Medic Profiles keeps a Remove panel opened while the queue was on its way', async () => {
+    const queueRoute = /\/MedicProfiles\/Queue(\?|$)/;
+    let release = () => {};
+    const held = new Promise((r) => { release = r; });
+    let asked = false;
+    try {
+        await openProfilesQueue();
+        await page.route(queueRoute, async (route) => { asked = true; await held; await route.continue(); });
+        await page.click('#mp-refresh');
+        for (let i = 0; i < 50 && !asked; i++) await sleep(100);
+        expect(asked, 'Refresh never asked for the queue');
+        const card = page.locator('#mp-queue > li').first();
+        await card.getByRole('button', { name: 'Remove', exact: true }).click();
+        await card.locator('.mp-confirm').waitFor({ timeout: 5000 });
+        const answered = page.waitForResponse(queueRoute, { timeout: 15000 });
+        release();
+        await answered;
+        await sleep(500);
+        expect(await card.locator('.mp-confirm').count() === 1, 'the queue answer wiped the Remove panel opened while it was on its way');
+        return 'panel kept';
+    } finally {
+        release();
+        await page.unroute(queueRoute);
+        fakeArr.queue.total = 0;
+    }
+});
+
+await check('Medic Profiles stops refreshing the Downloads tab while the browser tab is hidden, and refreshes on return', async () => {
+    const queueRoute = /\/MedicProfiles\/Queue(\?|$)/;
+    const timers = () => page.evaluate(() => ({ set: window.__mpTimers.slice(), cleared: window.__mpCleared.slice() }));
+    try {
+        await openProfilesQueue();
+        // The 30 second refresh is seen through setTimeout, so the check doesn't have to wait for it.
+        await page.evaluate(() => {
+            const w = window, set = w.setTimeout, clear = w.clearTimeout;
+            w.__mpTimers = [];
+            w.__mpCleared = [];
+            w.setTimeout = function (fn, ms, ...rest) { const id = set.call(w, fn, ms, ...rest); if (ms === 30000) w.__mpTimers.push(id); return id; };
+            w.clearTimeout = function (id) { w.__mpCleared.push(id); return clear.call(w, id); };
+            w.__mpHide = (hidden) => {
+                Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+                Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
+                document.dispatchEvent(new Event('visibilitychange'));
+            };
+        });
+        let answered = page.waitForResponse(queueRoute, { timeout: 15000 });
+        await page.click('#mp-refresh');
+        await answered;
+        await sleep(300);
+        const pending = (await timers()).set.at(-1);
+        expect(pending !== undefined, 'no 30 second refresh was scheduled while the tab was shown');
+
+        await page.evaluate(() => window.__mpHide(true));
+        expect((await timers()).cleared.includes(pending), 'the 30 second refresh stayed scheduled after the browser tab was hidden');
+        // An answer that lands while the tab is hidden doesn't schedule another one.
+        const before = (await timers()).set.length;
+        answered = page.waitForResponse(queueRoute, { timeout: 15000 });
+        await page.click('#mp-refresh');
+        await answered;
+        await sleep(300);
+        expect((await timers()).set.length === before, 'a refresh was scheduled while the browser tab was hidden');
+
+        answered = page.waitForResponse(queueRoute, { timeout: 5000 });
+        await page.evaluate(() => window.__mpHide(false));
+        await answered.catch(() => { throw new Error('showing the tab again didn\'t refresh the queue'); });
+        await sleep(300);
+        expect((await timers()).set.length === before + 1, 'the 30 second refresh didn\'t start again once the tab was shown');
+        return 'stopped while hidden, refreshed on return';
+    } finally {
+        fakeArr.queue.total = 0;
+        await page.evaluate(() => {
+            delete document.hidden;
+            delete document.visibilityState;
+        }).catch(() => {});
+    }
+});
+
 await check('My picks page opens signed in', async () => {
     errors.length = 0;
     await page.goto(JF + '/MedicPicks/Page');

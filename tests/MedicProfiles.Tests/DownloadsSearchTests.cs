@@ -57,12 +57,54 @@ public sealed class DownloadsSearchTests : IDisposable
         Assert.EndsWith("/api/v3/movie", Assert.Single(_asked), StringComparison.Ordinal);
     }
 
-    private DownloadsService Service()
+    // The ids belong to the server they came from: sent to another one, an import would land on whatever film has
+    // that id there, so a list kept from before the address or key changed mustn't be offered.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_kept_library_isnt_used_once_the_address_or_key_changes(bool newAddress)
+    {
+        var service = Service(request => request.Headers.GetValues("X-Api-Key").Single() == "other-key" || request.RequestUri!.Host == "radarr2"
+            ? """[ { "id": 7, "title": "The Long Film", "year": 2019 } ]"""
+            : Library);
+        Assert.Equal(new[] { 2, 1 }, (await service.SearchLibraryAsync(ArrApp.Radarr, "long", CancellationToken.None)).Results!.Select(r => r.Id));
+
+        if (newAddress)
+        {
+            Plugin.Instance!.Configuration.RadarrUrl = "http://radarr2:7878";
+        }
+        else
+        {
+            _store.SetKey(ArrApp.Radarr, "other-key");
+        }
+
+        var (results, error) = await service.SearchLibraryAsync(ArrApp.Radarr, "long", CancellationToken.None);
+
+        Assert.Null(error);
+        Assert.Equal(new[] { 7 }, results!.Select(r => r.Id));
+        Assert.Equal(2, _asked.Count);
+    }
+
+    // Within the same server the list is kept, so typing a title doesn't fetch thousands of entries per letter.
+    [Fact]
+    public async Task The_library_is_kept_while_the_server_stays_the_same()
+    {
+        var service = Service();
+        await service.SearchLibraryAsync(ArrApp.Radarr, "long", CancellationToken.None);
+
+        var (results, _) = await service.SearchLibraryAsync(ArrApp.Radarr, "film", CancellationToken.None);
+
+        Assert.Equal(new[] { 1 }, results!.Select(r => r.Id));
+        Assert.Single(_asked);
+    }
+
+    private DownloadsService Service(Func<HttpRequestMessage, string>? library = null)
     {
         var arr = new ArrClient(new Factory(new Answers(request =>
         {
             _asked.Add(request.RequestUri!.AbsolutePath);
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Library, Encoding.UTF8, "application/json"), RequestMessage = request });
+            string body = library is null ? Library : library(request);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json"), RequestMessage = request });
         })), _store, NullLogger<ArrClient>.Instance);
         return new DownloadsService(arr, _store);
     }

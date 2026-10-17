@@ -300,6 +300,8 @@
                 let timer = null;
                 // While a confirm or import panel is open, the list isn't redrawn under the admin's hands.
                 let busyPanels = 0;
+                // Counts every panel opened, so an answer can tell whether one was opened while it was on its way.
+                let panelsOpened = 0;
 
                 // ---------- Tabs ----------
                 const tabs = Array.prototype.slice.call(page.querySelectorAll('.mp-tab'));
@@ -367,11 +369,15 @@
                 // auto: the 30-second refresh, which waits while a confirm or import panel is open.
                 function loadQueue(auto) {
                     if (auto === true && busyPanels > 0) { scheduleQueue(); return; }
+                    const opened = panelsOpened;
                     getJson('Queue').then(function (data) {
                         showSetup(data.configured);
                         showErrors(data.errors);
                         queue = data.rows || [];
                         queueNotes = data.notes || {};
+                        // A panel opened while this was on its way stays: redrawing would throw away the admin's
+                        // choices, or the answer to an Import already pressed. The list catches up on a later refresh.
+                        if (busyPanels > 0 && (auto === true || panelsOpened !== opened)) return;
                         renderQueue();
                     }).catch(function () {
                         showFailure('the queue');
@@ -380,8 +386,14 @@
 
                 function scheduleQueue() {
                     clearTimeout(timer);
-                    if (activeTab === 'downloads' && !page._mpHidden) timer = setTimeout(function () { loadQueue(true); }, REFRESH_MS);
+                    // A browser tab in the background doesn't keep Sonarr and Radarr busy; it catches up when shown.
+                    if (activeTab === 'downloads' && !page._mpHidden && !document.hidden) timer = setTimeout(function () { loadQueue(true); }, REFRESH_MS);
                 }
+
+                document.addEventListener('visibilitychange', function () {
+                    if (document.hidden) clearTimeout(timer);
+                    else if (activeTab === 'downloads' && !page._mpHidden) loadQueue(true);
+                });
 
                 function renderQueue() {
                     const list = $('mp-queue');
@@ -469,6 +481,7 @@
                     container.appendChild(box);
                     container._open = true;
                     busyPanels++;
+                    panelsOpened++;
                     return box;
                 }
 
