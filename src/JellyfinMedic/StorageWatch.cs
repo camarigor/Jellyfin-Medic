@@ -187,7 +187,11 @@ public static class StorageWatch
         }
     }
 
-    private static bool HasEntries(string path)
+    /// <summary>
+    /// Whether a library folder is there to be read: missing or empty, it's taken as a drive that didn't mount, whose
+    /// empty mount point would report the parent drive's space. The Dashboard's Disks panel goes by the same test.
+    /// </summary>
+    internal static bool HasEntries(string path)
     {
         try
         {
