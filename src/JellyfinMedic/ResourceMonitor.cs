@@ -168,17 +168,25 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
     private void Watch(string resource, bool high, string level, List<(int Pid, string Role, double CpuSeconds)> ffmpeg)
     {
         _highFor[resource] = high ? _highFor.GetValueOrDefault(resource) + 1 : 0;
-        if (_highFor[resource] != SustainedSamples
-            || (_lastEvent.TryGetValue(resource, out var last) && DateTime.UtcNow - last < Cooldown))
+        var now = DateTime.UtcNow;
+        if (!ShouldRecord(_highFor[resource], _lastEvent.TryGetValue(resource, out var last) ? last : null, now))
         {
             return;
         }
 
-        _lastEvent[resource] = DateTime.UtcNow;
-        var entry = new ResourceEvent { TimeUtc = DateTime.UtcNow, Resource = resource, Level = level, Causes = Causes(ffmpeg) };
+        _lastEvent[resource] = now;
+        var entry = new ResourceEvent { TimeUtc = now, Resource = resource, Level = level, Causes = Causes(ffmpeg) };
         ResourceLog.Add(_paths, entry);
         _logger.LogInformation("Jellyfin Medic: high {Resource} use ({Level}). Running: {Causes}", resource, level, string.Join("; ", entry.Causes));
     }
+
+    /// <summary>
+    /// Whether a spell of heavy use that has lasted <paramref name="highFor"/> readings becomes an event: once it
+    /// reaches 3 readings, and at least 15 minutes after the last event for the same resource. A spell that reaches 3
+    /// readings during those 15 minutes is recorded when they're over, if it's still going, rather than never.
+    /// </summary>
+    internal static bool ShouldRecord(int highFor, DateTime? lastEventUtc, DateTime nowUtc) =>
+        highFor >= SustainedSamples && (lastEventUtc is not { } last || nowUtc - last >= Cooldown);
 
     private List<string> Causes(List<(int Pid, string Role, double CpuSeconds)> ffmpeg)
     {
@@ -226,12 +234,14 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
     {
         ffmpeg = new List<(int, string, double)>();
         var self = Process.GetCurrentProcess();
-        double cpuSeconds = self.TotalProcessorTime.TotalSeconds;
+        double cpuSeconds;
         double memoryBytes = self.WorkingSet64;
         double? ioBytes = ReadIo(self.Id);
 
-        if (OperatingSystem.IsLinux())
+        // Jellyfin's own line rather than TotalProcessorTime, which leaves out the FFmpeg processes it has reaped.
+        if ((OperatingSystem.IsLinux() ? ReadStat(self.Id) : null) is { } own)
         {
+            var descendants = new List<ProcessStat>();
             foreach (int pid in Children(self.Id))
             {
                 var stat = ReadStat(pid);
@@ -240,7 +250,7 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
                     continue;
                 }
 
-                cpuSeconds += stat.Value.CpuSeconds;
+                descendants.Add(stat.Value);
                 memoryBytes += stat.Value.RssBytes;
                 if (ioBytes is not null && ReadIo(pid) is { } io)
                 {
@@ -252,6 +262,13 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
                     ffmpeg.Add((pid, FfmpegRole(pid), stat.Value.CpuSeconds));
                 }
             }
+
+            cpuSeconds = TreeCpuSeconds(own, descendants);
+        }
+        else
+        {
+            // Without Jellyfin's line in /proc, as on Windows and macOS, its own time is all that can be read.
+            cpuSeconds = self.TotalProcessorTime.TotalSeconds;
         }
 
         var now = DateTime.UtcNow;
@@ -267,7 +284,7 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
         return new ResourceSample
         {
             TimeUtc = now,
-            // Children that finished since the last reading take their CPU time with them, so this can dip; never below 0.
+            // A process handed to a parent outside Jellyfin, or reaped during this reading, can still make this dip; never below 0.
             CpuPercent = Math.Round(Math.Clamp((cpuSeconds - prev.CpuSeconds) / wall / Environment.ProcessorCount * 100, 0, 100), 1),
             MemoryGb = Math.Round(memoryBytes / 1073741824d, 2),
             MemoryPercent = limit > 0 ? Math.Round(Math.Clamp(memoryBytes / limit * 100, 0, 100), 1) : 0,
@@ -306,30 +323,43 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
         return found;
     }
 
-    private static (string Name, int ParentPid, double CpuSeconds, double RssBytes)? ReadStat(int pid)
+    /// <summary>
+    /// CPU seconds used so far by Jellyfin and the processes it started. A process that exits leaves the tree, but once
+    /// its parent reaps it Linux adds its time to the parent's own line, so the sum keeps it instead of dropping.
+    /// </summary>
+    internal static double TreeCpuSeconds(ProcessStat self, IEnumerable<ProcessStat> descendants) =>
+        self.CpuSeconds + self.FinishedChildrenCpuSeconds + descendants.Sum(d => d.CpuSeconds + d.FinishedChildrenCpuSeconds);
+
+    private static ProcessStat? ReadStat(int pid)
     {
         try
         {
-            string text = File.ReadAllText($"/proc/{pid}/stat");
-            int open = text.IndexOf('(');
-            int close = text.LastIndexOf(')');
-            if (open < 0 || close < open)
-            {
-                return null;
-            }
-
-            string name = text[(open + 1)..close];
-            var f = text[(close + 2)..].Split(' ');
-            // After the name: state(0) ppid(1) ... utime(11) stime(12) ... rss(21), in pages.
-            const double Ticks = 100; // USER_HZ on every Linux Jellyfin runs on
-            return (name, int.Parse(f[1], CultureInfo.InvariantCulture),
-                (double.Parse(f[11], CultureInfo.InvariantCulture) + double.Parse(f[12], CultureInfo.InvariantCulture)) / Ticks,
-                double.Parse(f[21], CultureInfo.InvariantCulture) * Environment.SystemPageSize);
+            return ParseStat(File.ReadAllText($"/proc/{pid}/stat"));
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>The fields Medic uses from a /proc/&lt;pid&gt;/stat line.</summary>
+    internal static ProcessStat? ParseStat(string text)
+    {
+        int open = text.IndexOf('(');
+        int close = text.LastIndexOf(')');
+        if (open < 0 || close < open)
+        {
+            return null;
+        }
+
+        string name = text[(open + 1)..close];
+        var f = text[(close + 2)..].Split(' ');
+        // After the name: state(0) ppid(1) ... utime(11) stime(12) cutime(13) cstime(14) ... rss(21), in pages.
+        const double Ticks = 100; // USER_HZ on every Linux Jellyfin runs on
+        return new ProcessStat(name, int.Parse(f[1], CultureInfo.InvariantCulture),
+            (double.Parse(f[11], CultureInfo.InvariantCulture) + double.Parse(f[12], CultureInfo.InvariantCulture)) / Ticks,
+            (double.Parse(f[13], CultureInfo.InvariantCulture) + double.Parse(f[14], CultureInfo.InvariantCulture)) / Ticks,
+            double.Parse(f[21], CultureInfo.InvariantCulture) * Environment.SystemPageSize);
     }
 
     private static double? ReadIo(int pid)
@@ -451,6 +481,12 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
             return null;
         }
     }
+
+    /// <summary>
+    /// From a process's line in /proc/&lt;pid&gt;/stat: its own CPU time and that of the children it has reaped (cutime and
+    /// cstime), in seconds, and its memory in bytes.
+    /// </summary>
+    internal readonly record struct ProcessStat(string Name, int ParentPid, double CpuSeconds, double FinishedChildrenCpuSeconds, double RssBytes);
 }
 
 /// <summary>Spells of heavy use, kept for 14 days (up to 200).</summary>
