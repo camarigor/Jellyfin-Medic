@@ -64,7 +64,7 @@ public sealed class KeptOriginalsDeleteTests : IDisposable
     [Fact]
     public void The_default_delete_takes_only_originals_whose_cleaned_file_is_in_place()
     {
-        var (deleted, freed) = TrackCleaner.DeleteOriginals(_library, new[] { Films });
+        var (deleted, freed, _) = TrackCleaner.DeleteOriginals(_library, new[] { Films });
 
         Assert.False(File.Exists(_inPlace));
         Assert.True(File.Exists(_orphan), "An orphan was deleted without being asked for.");
@@ -75,7 +75,7 @@ public sealed class KeptOriginalsDeleteTests : IDisposable
     [Fact]
     public void Deleting_orphans_too_also_takes_originals_with_no_file_of_their_name()
     {
-        var (deleted, _) = TrackCleaner.DeleteOriginals(_library, new[] { Films }, orphans: true);
+        var (deleted, _, _) = TrackCleaner.DeleteOriginals(_library, new[] { Films }, orphans: true);
 
         Assert.False(File.Exists(_inPlace));
         Assert.False(File.Exists(_orphan));
@@ -115,6 +115,62 @@ public sealed class KeptOriginalsDeleteTests : IDisposable
         Assert.Equal((1, 2), (byDefault, withOrphans));
         Assert.False(File.Exists(episode));
         Assert.False(Directory.Exists(left));
+    }
+
+    [Fact]
+    public void Deleting_an_original_saves_only_what_cleaning_took_off_the_file_in_its_place()
+    {
+        // Cleaning wrote the 7 byte copy and kept the 8 byte original, so the drive comes out 1 byte ahead, not 8.
+        var (_, freed, saved) = TrackCleaner.DeleteOriginals(_library, new[] { Films });
+
+        Assert.Equal("original".Length, freed);
+        Assert.Equal("original".Length - "cleaned".Length, saved);
+    }
+
+    [Fact]
+    public async Task Deleting_an_original_medic_recorded_saves_what_its_first_cleaning_took_off()
+    {
+        string film = Path.Combine(_root, "Recorded.mkv");
+        File.WriteAllText(film, "a recorded original");
+        await Swap(film, "cleaned");
+
+        // Cleaned again in place since: that run already counted what it took off the first copy.
+        File.WriteAllText(film, "again");
+        var (_, _, saved) = TrackCleaner.DeleteOriginals(_library, new[] { Films });
+
+        Assert.Equal(("a recorded original".Length - "cleaned".Length) + ("original".Length - "cleaned".Length), saved);
+    }
+
+    [Fact]
+    public async Task Cleaning_twice_and_deleting_the_original_saves_what_the_drive_gained()
+    {
+        string film = Path.Combine(_root, "Twice.mkv");
+        File.WriteAllText(film, "a twice cleaned original");
+        await Swap(film, "cleaned once");
+        await Swap(film, "twice");
+        File.Delete(_inPlace);
+
+        var (_, _, saved) = TrackCleaner.DeleteOriginals(_library, new[] { Films });
+
+        Assert.Equal("a twice cleaned original".Length - "twice".Length, saved);
+    }
+
+    [Fact]
+    public void Deleting_an_orphan_saves_its_whole_size()
+    {
+        // Its copy is gone already, replaced by Sonarr or Radarr, so nothing Medic wrote for it is left on the drive.
+        var (_, freed, saved) = TrackCleaner.DeleteOriginals(_library, new[] { Films }, orphans: true);
+
+        Assert.Equal(2 * "original".Length, freed);
+        Assert.Equal("original".Length + ("original".Length - "cleaned".Length), saved);
+    }
+
+    /// <summary>Cleans the film the way keep mode does, with a copy of this text.</summary>
+    private static async Task Swap(string film, string copy)
+    {
+        string temp = film + ".medic-tmp.mkv";
+        File.WriteAllText(temp, copy);
+        await TrackCleaner.SwapKeepingOriginal(film, temp, Path.GetFileNameWithoutExtension(film), new FileInfo(film).Length, CancellationToken.None);
     }
 
     /// <summary>"Tidy copies" (like the next run) puts the original back under its own name and drops the temp file.</summary>

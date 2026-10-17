@@ -28,8 +28,8 @@ public sealed class ReCleanTests : IDisposable
         return temp;
     }
 
-    private Task<(long FreedNow, long KeptNow, string? KeptAs)> Clean(string text) =>
-        TrackCleaner.SwapKeepingOriginal(_film, Temp(text), "Film (2020)", new FileInfo(_film).Length, 1, CancellationToken.None);
+    private Task<(long KeptNow, string? KeptAs)> Clean(string text) =>
+        TrackCleaner.SwapKeepingOriginal(_film, Temp(text), "Film (2020)", new FileInfo(_film).Length, CancellationToken.None);
 
     /// <summary>A title cleaned by 1.0.22 or earlier: the original kept, the cleaned file in place, and no record.</summary>
     private async Task CleanedWithoutRecord()
@@ -56,7 +56,7 @@ public sealed class ReCleanTests : IDisposable
         Assert.Empty(Aside());
         Assert.False(TrackCleaner.IsOrphan(_dir, _kept));
         Assert.Equal(_kept, result.KeptAs);
-        Assert.Equal((1L, 0L), (result.FreedNow, result.KeptNow));
+        Assert.Equal(0L, result.KeptNow);
     }
 
     [Fact]

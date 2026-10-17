@@ -429,8 +429,10 @@ public class MedicController : ControllerBase
             return StatusCode(StatusCodes.Status409Conflict, "Wait for the track run to finish first.");
         }
 
-        var (deleted, freed) = TrackCleaner.DeleteOriginals(_library, _engine.Libraries, orphans);
-        WeeklyLedger.AddFreed("Kept originals", freed);
+        // The drive gains each original's whole size now, but it has held the cleaned copy since the run, so only the
+        // difference is space the cleanup freed.
+        var (deleted, freed, saved) = TrackCleaner.DeleteOriginals(_library, _engine.Libraries, orphans);
+        WeeklyLedger.AddFreed("Kept originals", saved);
         return Ok(new { Deleted = deleted, Freed = freed, FreedText = SystemProbe.Size(freed) });
     }
 

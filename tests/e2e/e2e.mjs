@@ -814,11 +814,30 @@ await check('track cleanup leaves hardlinked files alone', async () => {
     fs.linkSync(file, seed);
     try {
         return await withTrackSettings({ TracksExclude: 'Cut Short' }, async () => {
+            // The scan and the dry run must say what the real run does, not promise space it never frees.
+            expect((await api('POST', '/JellyfinMedic/Tracks/Scan/Start')).status === 200, 'the scan didn\'t start');
+            let scan = null;
+            for (let i = 0; i < 60 && (!scan || scan.Running); i++) {
+                await sleep(1000);
+                scan = await ok('/JellyfinMedic/Tracks/Scan/Status');
+            }
+            const listed = await ok('/JellyfinMedic/Tracks/Scan/Changes?search=Seeded');
+            expect(scan.Result?.FilesLinked >= 1 && listed.Total === 0, `the scan listed the hardlinked film: ${scan.Result?.FilesLinked} linked, ${listed.Total} listed`);
+            expect((await api('POST', '/JellyfinMedic/Tracks/Run?dryRun=true')).status === 200, 'the dry run didn\'t start');
+            let dry = null;
+            for (let i = 0; i < 60 && (!dry || dry.Running); i++) {
+                await sleep(1000);
+                dry = await ok('/JellyfinMedic/Tracks/Progress');
+            }
+            const dryNotes = JSON.stringify(dry.Recent);
+            // Run on its own, this check finds other films not cleaned yet, so only Seeded is looked at.
+            expect(/Skipped Seeded.*2 hard links/.test(dryNotes) && !/Would change Seeded/.test(dryNotes), 'the dry run counted the hardlinked film as changed: ' + dryNotes);
+
             const p = await runTracks();
             const notes = JSON.stringify(p.Recent);
             expect(p.Changed === 0 && p.Skipped === 1 && p.Failed === 0 && /Seeded.*2 hard links/.test(notes), 'the hardlinked film was cleaned: ' + notes);
             expect(audioLanguages(file) === 'eng,fre' && fs.statSync(file).nlink === 2, 'the film was changed');
-            return 'skipped, still shared with the seeding copy';
+            return 'scan, dry run and run all leave it alone, still shared with the seeding copy';
         });
     } finally {
         fs.unlinkSync(seed);
@@ -3365,6 +3384,33 @@ await check('Tracks: unsaved track settings are saved before a scan or a run sta
         page.off('dialog', accept);
         await page.unroute('**/JellyfinMedic/Tracks/Run?*');
         await api('POST', '/JellyfinMedic/MedicSettings', before);
+    }
+});
+
+await check('Tracks page: the scan counts label-only and linked files apart, and says a label costs a full copy', async () => {
+    const scan = {
+        Running: false, Done: 0, Total: 0,
+        Result: { GeneratedUtc: new Date().toISOString(), FilesScanned: 40, FilesWouldChange: 3, AudioToRemove: 2, SubtitlesToRemove: 0,
+            FilesLinked: 5, FilesLabelOnly: 2, LabelOnlyBytes: 64424509440, UntaggedCount: 0, Undetermined: [], Sample: [] }
+    };
+    const labelled = { Title: 'Labelled', Path: '/media/Labelled.mkv', RemovingAudio: 0, RemovingSubtitles: 0, TagsToWrite: 1, SavingBytes: 0, SizeBytes: 32212254720, LabelOnly: true, Tracks: [] };
+    await page.route('**/JellyfinMedic/Tracks/Scan/Status', (route) => route.fulfill({ json: scan }));
+    await page.route('**/JellyfinMedic/Tracks/Scan/Changes?*', (route) => route.fulfill({ json: { Total: 1, Page: 1, Pages: 1, Items: [labelled] } }));
+    try {
+        await medicTab('tracks', true);
+        await page.waitForSelector('#md-tracks-preview details summary', { timeout: 15000 });
+        const summary = await page.locator('#md-tracks-summary').textContent();
+        for (const part of ['Of these, freeing space1', 'only getting a language label2 (60.0 GB)', 'Left alone (linked)5', 'free no space', '60.0 GB in all', 'more than one hard link']) {
+            expect(summary.includes(part), `the summary doesn't say "${part}": ${summary}`);
+        }
+        const row = await page.locator('#md-tracks-preview details summary').first().textContent();
+        expect(/labels only: the whole file is copied and nothing is freed/.test(row), 'the label-only film doesn\'t say what it costs: ' + row);
+        const bulk = await page.locator('#md-bulk-cost').textContent();
+        expect(/copying the whole film/.test(bulk) && /full size/.test(bulk), 'the bulk panel doesn\'t say what a label costs: ' + bulk);
+        return 'label-only and linked files counted apart';
+    } finally {
+        await page.unroute('**/JellyfinMedic/Tracks/Scan/Status');
+        await page.unroute('**/JellyfinMedic/Tracks/Scan/Changes?*');
     }
 });
 

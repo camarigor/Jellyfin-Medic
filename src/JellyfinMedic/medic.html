@@ -430,6 +430,7 @@
                         <label class="md-check"><input type="checkbox" id="md-bulk-only" checked> Audio: only where it's the film's only audio track</label>
                         <label class="md-check"><input type="checkbox" id="md-bulk-anime" checked> Skip anime (its untagged audio is often Japanese)</label>
                         <p class="so-muted so-small" style="margin:6px 0 0">Separate subtitle files aren't included: rename those one at a time. Nothing changes in your files until you press Strip tracks for real.</p>
+                        <p id="md-bulk-cost" class="so-muted so-small" style="margin:6px 0 0">A language label costs as much as a removal: Medic writes it by copying the whole film, so a film that only gets labels frees no space, and while originals are kept, its original stays in .medic-originals at full size until you delete it.</p>
                         <p id="md-bulk-result" class="so-small" aria-live="polite"></p>
                     </details>
                     <div class="so-scroll"><table class="so-table"><thead><tr><th>Film</th><th>Type</th><th>Format</th><th>File size</th><th>Track size</th><th>Language</th></tr></thead><tbody id="md-untag-body"></tbody></table></div>
@@ -4253,10 +4254,26 @@
                     const dl = el('dl', 'so-kv');
                     function row(k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); }
                     row('Local files scanned', scanned.toLocaleString('en-GB'));
+                    const labelOnly = pick(tracksScan, 'FilesLabelOnly') || 0;
+                    const linked = pick(tracksScan, 'FilesLinked') || 0;
                     row('Files that would change', changing.toLocaleString('en-GB'));
+                    if (labelOnly) {
+                        row('Of these, freeing space', (changing - labelOnly).toLocaleString('en-GB'));
+                        row('Of these, only getting a language label', labelOnly.toLocaleString('en-GB') + ' (' + tracksSize(pick(tracksScan, 'LabelOnlyBytes') || 0) + ')');
+                    }
                     row('Audio tracks to remove', (pick(tracksScan, 'AudioToRemove') || 0).toLocaleString('en-GB'));
                     row('Subtitle tracks to remove', (pick(tracksScan, 'SubtitlesToRemove') || 0).toLocaleString('en-GB'));
+                    if (linked) row('Left alone (linked)', linked.toLocaleString('en-GB'));
                     $('md-tracks-summary').appendChild(dl);
+
+                    // A label is written by copying the whole film, so these cost a full copy and, while originals are kept, a full-size original each.
+                    if (labelOnly) {
+                        $('md-tracks-summary').appendChild(el('p', 'so-muted so-small', labelOnly.toLocaleString('en-GB') + ' file' + (labelOnly === 1 ? ' only gets' : 's only get') + ' a language label. Medic writes a label by copying the whole file, so ' + (labelOnly === 1 ? 'it frees' : 'they free') + ' no space'
+                            + ($('md-tracks-inplace-in').checked ? '.' : ', and each original stays in .medic-originals at full size (' + tracksSize(pick(tracksScan, 'LabelOnlyBytes') || 0) + ' in all) until you delete the kept originals.')));
+                    }
+                    if (linked) {
+                        $('md-tracks-summary').appendChild(el('p', 'so-muted so-small', linked.toLocaleString('en-GB') + (linked === 1 ? ' file is' : ' files are') + ' left alone and not listed: each has more than one hard link (a torrent client is probably seeding it) or is a symbolic link, so cleaning it would use more space, not less. Runs skip them too.'));
+                    }
 
                     if (pick(tracksScan, 'Stale')) {
                         $('md-tracks-summary').appendChild(el('p', 'so-muted so-small', 'Files have changed since this scan. Scan again to see where things stand now.'));
@@ -4447,6 +4464,7 @@
                     if (pick(f, 'RemovingSubtitles')) bits.push('remove ' + pick(f, 'RemovingSubtitles') + ' subtitle' + (pick(f, 'RemovingSubtitles') === 1 ? '' : 's'));
                     if (pick(f, 'TagsToWrite')) bits.push('set ' + pick(f, 'TagsToWrite') + ' language' + (pick(f, 'TagsToWrite') === 1 ? '' : 's'));
                     if (pick(f, 'SavingBytes')) bits.push('frees about ' + tracksSize(pick(f, 'SavingBytes')));
+                    if (pick(f, 'LabelOnly')) bits.push('labels only: the whole file is copied and nothing is freed');
                     if (pick(f, 'SizeBytes')) bits.push('file ' + tracksSize(pick(f, 'SizeBytes')));
                     d.appendChild(el('summary', null, (pick(f, 'Title') || (pick(f, 'Path') || '').split(/[\\/]/).pop()) + ' — ' + bits.join(' · ')));
                     const tbl = el('table', 'so-table');
@@ -4479,7 +4497,7 @@
                     const scope = $('md-bulk-scope').value;
                     const count = scope === 'page' ? $('md-untag-body').querySelectorAll('tr').length : ($('md-untag-count').textContent || '').replace(/[^0-9]/g, '');
                     const lang = $('md-bulk-lang').options[$('md-bulk-lang').selectedIndex].text;
-                    if (!window.confirm('Set up to ' + count + ' tracks to ' + lang + '? Medic skips the ones the ticked options leave out. Nothing changes in your files until you strip tracks.')) return;
+                    if (!window.confirm('Set up to ' + count + ' tracks to ' + lang + '? Medic skips the ones the ticked options leave out. Nothing changes in your files until you strip tracks, and then each film that only gets a label is copied in full and frees no space.')) return;
                     $('md-bulk-go').disabled = true;
                     try {
                         const r = await postJson('/JellyfinMedic/Tracks/SetLanguageBulk', {

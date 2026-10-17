@@ -72,6 +72,10 @@ public class FilePlan
 
     public bool WouldChange => RemovingAudio + RemovingSubtitles + TagsToWrite > 0;
 
+    // Only languages to write: FFmpeg can't label a track in place, so the whole file is still copied, and in keep
+    // mode its original, the same size, is kept. It frees nothing.
+    public bool LabelOnly => RemovingAudio + RemovingSubtitles == 0 && TagsToWrite > 0;
+
     public bool HasStrippedCopy { get; set; }
 
     // File size when the run started; remuxing time tracks size far better than file count.
@@ -178,6 +182,15 @@ public class TrackScanResult
     public List<FilePlan> Sample { get; set; } = new(); // first N changing files, for preview
 
     public int UntaggedCount { get; set; }
+
+    // Files the run would leave alone for their links (seeded through a hard link, or a symbolic link), left out of
+    // FilesWouldChange and the list of what would change.
+    public int FilesLinked { get; set; }
+
+    // Of FilesWouldChange, those that only get a language label, and their size: each is copied in full and frees nothing.
+    public int FilesLabelOnly { get; set; }
+
+    public long LabelOnlyBytes { get; set; }
 
     // Files have been changed since this scan, so it may be out of date.
     public bool Stale { get; set; }
@@ -334,11 +347,24 @@ public static class TrackCleaner
                 }
 
                 result.FilesScanned++;
-                if (plan.WouldChange)
+
+                // The run leaves linked files alone, so listing them would promise space it never frees. A file that
+                // isn't there can't be stat'ed, and the run passes over it anyway.
+                if (plan.WouldChange && File.Exists(path) && LinkedReason(path, CancellationToken.None).GetAwaiter().GetResult() is not null)
+                {
+                    result.FilesLinked++;
+                }
+                else if (plan.WouldChange)
                 {
                     result.FilesWouldChange++;
                     result.AudioToRemove += plan.RemovingAudio;
                     result.SubtitlesToRemove += plan.RemovingSubtitles;
+                    if (plan.LabelOnly)
+                    {
+                        result.FilesLabelOnly++;
+                        result.LabelOnlyBytes += plan.SizeBytes;
+                    }
+
                     result.Changing.Add(plan);
                     if (result.Sample.Count < sampleSize)
                     {
@@ -1093,6 +1119,13 @@ public static class TrackCleaner
 
         if (dryRun)
         {
+            // The real run's link check, so the dry run doesn't count files it will leave alone as changed.
+            if (await LinkedReason(plan.Path, ct).ConfigureAwait(false) is { } linked)
+            {
+                NotChanged(plan, Unchanged.Linked, linked);
+                return;
+            }
+
             lock (Sync) { Progress.Done++; Progress.Changed++; }
             Note($"Would change {plan.Title}: {Summary(plan)}");
             return;
@@ -1219,7 +1252,7 @@ public static class TrackCleaner
             }
             else
             {
-                (freedNow, keptNow, keptAs) = await SwapKeepingOriginal(plan.Path, temp, plan.Title, before, saved, ct).ConfigureAwait(false);
+                (keptNow, keptAs) = await SwapKeepingOriginal(plan.Path, temp, plan.Title, before, ct).ConfigureAwait(false);
             }
 
             // Languages set by hand are in the file now, and its track numbers have changed.
@@ -1251,11 +1284,11 @@ public static class TrackCleaner
 
     /// <summary>
     /// The safe default's swap: the cleaned copy at temp takes the file's place and the file's original is kept in
-    /// .medic-originals. Returns the space freed now, the space the kept original holds, and where it's kept.
+    /// .medic-originals. Returns the space the kept original holds and where it's kept. Nothing counts as freed while an
+    /// original is kept: deleting it counts what the cleaning took off.
     /// </summary>
-    internal static async Task<(long FreedNow, long KeptNow, string? KeptAs)> SwapKeepingOriginal(string path, string temp, string title, long before, long saved, CancellationToken ct)
+    internal static async Task<(long KeptNow, string? KeptAs)> SwapKeepingOriginal(string path, string temp, string title, long before, CancellationToken ct)
     {
-        long freedNow = 0;
         long keptNow = 0;
         string? keptAs = null;
 
@@ -1276,8 +1309,9 @@ public static class TrackCleaner
         // (this file was cleaned before), that one is the true original, so it's left alone.
         if (File.Exists(kept))
         {
+            // The earlier cleaned copy is replaced, not kept. What this takes off is counted when the kept original is
+            // deleted, as its size less the copy recorded below; counting it now as well would count it twice.
             File.Move(temp, path, overwrite: true);
-            freedNow = saved; // the earlier cleaned copy is replaced, not kept
             keptAs = kept;
         }
         else
@@ -1302,7 +1336,7 @@ public static class TrackCleaner
 
         RecordCleaned(path);
 
-        return (freedNow, keptNow, keptAs);
+        return (keptNow, keptAs);
     }
 
     /// <summary>Why a run didn't change a file it planned to clean.</summary>
@@ -1575,6 +1609,10 @@ public static class TrackCleaner
         return f.Links > 1 ? $"it has {f.Links} hard links (a torrent client is probably seeding it), so cleaning it would use more space, not less" : null;
     }
 
+    /// <summary>Why a run leaves this file alone for its links, or null, as <see cref="LinkSkipReason"/> decides it after one stat.</summary>
+    internal static async Task<string?> LinkedReason(string path, CancellationToken ct) =>
+        LinkSkipReason(await FileFacts(path, ct).ConfigureAwait(false), IsSymlink(path), countLinks: !OperatingSystem.IsWindows());
+
     private static bool IsSymlink(string path)
     {
         try
@@ -1711,10 +1749,11 @@ public static class TrackCleaner
     /// Deletes kept originals whose cleaned file is still in place under the same name. With orphans, also those with
     /// no file of that name any more (Sonarr or Radarr renamed or replaced it). Never one whose swap was cut short.
     /// </summary>
-    public static (int Deleted, long Freed) DeleteOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries, bool orphans = false)
+    public static (int Deleted, long Freed, long Saved) DeleteOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries, bool orphans = false)
     {
         int deleted = 0;
         long freed = 0;
+        long saved = 0;
         try
         {
             foreach (var dir in LibraryFolders(library, libraries))
@@ -1723,6 +1762,12 @@ public static class TrackCleaner
                 if (!Directory.Exists(folder))
                 {
                     continue;
+                }
+
+                Dictionary<string, CleanedFile> made;
+                lock (SpaceSync)
+                {
+                    made = ReadCleaned(Path.Combine(folder, CleanedRecord));
                 }
 
                 foreach (var kept in SafeFiles(folder).Where(IsKeptOriginal))
@@ -1738,8 +1783,10 @@ public static class TrackCleaner
                     try
                     {
                         long size = Size(kept);
+                        long gained = SavedByDeleting(size, made.TryGetValue(Path.GetFileName(kept), out var copy) ? copy.Length : null, File.Exists(twin) ? Size(twin) : null);
                         File.Delete(kept);
                         freed += size;
+                        saved += gained;
                         deleted++;
                     }
                     catch
@@ -1756,8 +1803,16 @@ public static class TrackCleaner
             KeptOriginalsWalk.Clear();
         }
 
-        return (deleted, freed);
+        return (deleted, freed, saved);
     }
+
+    /// <summary>
+    /// What deleting a kept original gains on the drive over the untouched file: its size less the copy cleaning wrote in
+    /// its place, which the drive has held since. Medic's record of that copy comes first, as a later clean in place
+    /// counted its own saving when it ran; without a record, the file in its place stands in. With neither, the copy is
+    /// gone already (Sonarr or Radarr replaced it), so the whole size is gained.
+    /// </summary>
+    internal static long SavedByDeleting(long kept, long? recorded, long? inPlace) => Math.Max(0, kept - (recorded ?? inPlace ?? 0));
 
     // ---------- Tidy up copies left by Medic 1.0.4–1.0.7 ----------
 

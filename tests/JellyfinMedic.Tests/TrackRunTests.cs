@@ -166,12 +166,78 @@ public sealed class TrackRunTests : IDisposable
         Assert.Equal(20, File.ReadAllLines(output).Length);
     }
 
+    [UnixFact]
+    public async Task A_dry_run_leaves_a_hard_linked_file_alone_as_the_real_run_does()
+    {
+        var library = FakeLibrary.Listing(() => new BaseItem[] { new Film { Path = HardLinkedFilm() } });
+
+        await TrackCleaner.RunAsync(library, new[] { Films }, string.Empty, new PluginConfiguration(), dryRun: true).WaitAsync(Limit);
+
+        var p = TrackCleaner.CurrentProgress();
+        Assert.True(p.Changed == 0 && p.Skipped == 1, "The dry run counted a hard-linked file as changed. Its notes: " + string.Join(" | ", p.Recent));
+    }
+
+    [UnixFact]
+    public void The_scan_counts_a_hard_linked_file_apart_from_the_files_that_would_change()
+    {
+        var library = FakeLibrary.Listing(() => new BaseItem[] { new Film { Path = HardLinkedFilm() } });
+
+        var scan = TrackCleaner.Scan(library, new[] { Films }, new PluginConfiguration());
+
+        Assert.Equal(0, scan.FilesWouldChange);
+        Assert.Empty(scan.Changing);
+        Assert.Equal(1, scan.FilesLinked);
+    }
+
+    [Fact]
+    public void The_scan_counts_files_that_only_get_a_language_label_apart_from_files_that_free_space()
+    {
+        string folder = Directory.CreateDirectory(Path.Combine(_root, "Films")).FullName;
+        string labelled = Path.Combine(folder, "Labelled.mkv");
+        File.WriteAllText(labelled, "a film with English and untagged audio");
+        string stripped = Path.Combine(folder, "Stripped.mkv");
+        File.WriteAllText(stripped, "a film with English and French audio");
+        TrackLanguages.Set(labelled, 2, "eng");
+        try
+        {
+            var library = FakeLibrary.Listing(() => new BaseItem[]
+            {
+                new UntaggedFilm { Path = labelled, Size = 3000 },
+                new Film { Path = stripped, Size = 5000 }
+            });
+
+            var scan = TrackCleaner.Scan(library, new[] { Films }, new PluginConfiguration());
+
+            Assert.Equal(2, scan.FilesWouldChange);
+            Assert.Equal(1, scan.FilesLabelOnly);
+            Assert.Equal(3000, scan.LabelOnlyBytes);
+            Assert.True(scan.Changing.Single(f => f.Path == labelled).LabelOnly);
+            Assert.False(scan.Changing.Single(f => f.Path == stripped).LabelOnly);
+        }
+        finally
+        {
+            TrackLanguages.ClearFile(labelled);
+        }
+    }
+
     public void Dispose() => Directory.Delete(_root, recursive: true);
 
     private static ILibraryManager OneFilm(string path) => FakeLibrary.Listing(() => new BaseItem[] { new Film { Path = path } });
 
     private static bool OnPath(string tool) =>
         (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator).Any(d => d.Length > 0 && File.Exists(Path.Combine(d, tool)));
+
+    /// <summary>A film with a second hard link, as one a torrent client still seeds. Returns the film's path.</summary>
+    private string HardLinkedFilm()
+    {
+        string folder = Directory.CreateDirectory(Path.Combine(_root, "Films")).FullName;
+        string film = Path.Combine(folder, "Seeded.mkv");
+        File.WriteAllText(film, "a film with English and French audio");
+        using var ln = System.Diagnostics.Process.Start("ln", new[] { film, Path.Combine(_root, "seeding-copy.mkv") });
+        ln.WaitForExit();
+        Assert.Equal(0, ln.ExitCode);
+        return film;
+    }
 
     // One library, handed out once the gate opens, like a library that's slow to list.
     private static IEnumerable<LibraryFacts> LibrariesAfter(ManualResetEventSlim gate)
@@ -298,6 +364,17 @@ public sealed class TrackRunTests : IDisposable
         public override void ChangedExternally()
         {
         }
+    }
+
+    /// <summary>A film with an English and an untagged audio track, as Jellyfin lists them.</summary>
+    private sealed class UntaggedFilm : Movie
+    {
+        public override IReadOnlyList<MediaStream> GetMediaStreams() => new[]
+        {
+            new MediaStream { Index = 0, Type = MediaStreamType.Video },
+            new MediaStream { Index = 1, Type = MediaStreamType.Audio, Language = "eng" },
+            new MediaStream { Index = 2, Type = MediaStreamType.Audio }
+        };
     }
 }
 
