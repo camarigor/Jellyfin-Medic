@@ -74,6 +74,7 @@ public class PicksController : ControllerBase
 
         var config = Plugin.Instance!.Configuration;
         var picks = _store.Load(userId);
+        var visible = _engine.StillVisibleTo(userId);
         var dub = AudioLanguage.FromTmdb(config.TmdbLanguage, _localization.FindLanguageInfo);
         string requestMode = RequestMode(config);
 
@@ -96,8 +97,9 @@ public class PicksController : ControllerBase
             dubLanguage = dub.Name,
             dubLanguageCode = dub.TwoLetter,
             playlistName = config.CreatePlaylists && picks?.PlaylistId is not null ? config.PlaylistName : null,
-            inLibrary = picks?.InLibrary ?? new System.Collections.Generic.List<LibraryPick>(),
-            linked = picks?.Linked ?? new System.Collections.Generic.List<LibraryPick>(),
+            // Library picks too: a parental limit or a library taken away since the build applies straight away.
+            inLibrary = picks?.InLibrary.Where(visible).ToList() ?? new System.Collections.Generic.List<LibraryPick>(),
+            linked = picks?.Linked.Where(visible).ToList() ?? new System.Collections.Generic.List<LibraryPick>(),
             // Saved picks stay until the next build, so Discover being switched off since then is checked here.
             discover = picks is not null && DiscoverShownTo(config, userId) ? picks.Discover : new System.Collections.Generic.List<DiscoverPick>()
         };
