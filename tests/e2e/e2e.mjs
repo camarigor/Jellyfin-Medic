@@ -92,10 +92,10 @@ await check('library scanned', async () => {
     return `${ctx.films} films`;
 });
 
-await check('all three plugins loaded', async () => {
+await check('all four plugins loaded', async () => {
     const plugins = await ok('/Plugins');
     const names = plugins.map((p) => p.Name);
-    for (const want of ['Jellyfin Medic', 'Medic Picks', 'Medic Profiles']) {
+    for (const want of ['Jellyfin Medic', 'Medic Picks', 'Medic Profiles', 'Medic Posters']) {
         const p = plugins.find((x) => x.Name === want);
         expect(p, `${want} missing (have ${names.join(', ')})`);
         expect(p.Status === 'Active', `${want} is ${p.Status}`);
@@ -108,7 +108,7 @@ const medicGets = [
     '/JellyfinMedic/MedicSettings', '/JellyfinMedic/Plugins', '/JellyfinMedic/Usage', '/JellyfinMedic/TranscodeLog',
     '/JellyfinMedic/Weekly', '/JellyfinMedic/Cleanup', '/JellyfinMedic/JellyfinSettings',
     '/JellyfinMedic/Schedule/GetCalendar', '/JellyfinMedic/Schedule/GetRunHistory', '/JellyfinMedic/Schedule/PreviewScheduleDiff',
-    '/JellyfinMedic/Schedule/ListBackups', '/JellyfinMedic/Schedule/GetUntimedTasks', '/MedicPicks/Admin/Status', '/MedicProfiles/Status', '/MedicProfiles/History'
+    '/JellyfinMedic/Schedule/ListBackups', '/JellyfinMedic/Schedule/GetUntimedTasks', '/MedicPicks/Admin/Status', '/MedicProfiles/Status', '/MedicProfiles/History', '/MedicPosters/Status'
 ];
 for (const path of medicGets) {
     await check(`GET ${path}`, async () => { await ok(path); });
@@ -1092,6 +1092,104 @@ await check('exposure check says it tested from this server, and a failed TLS ha
     expect(!defaults.PublicIp, 'public IP looked up without being asked: ' + defaults.PublicIp);
 });
 
+const isGif = async (res) => Buffer.from(await res.arrayBuffer()).subarray(0, 6).toString('latin1') === 'GIF89a';
+
+await check('Medic Posters previews a poster without changing the film', async () => {
+    const preview = await api('POST', '/MedicPosters/Preview', {});
+    expect(preview.json?.ok, 'preview failed: ' + preview.text.slice(0, 300));
+    const img = await api('GET', '/MedicPosters/Preview/Image', undefined, true);
+    expect(img.status === 200 && await isGif(img), `preview image: ${img.status} ${img.headers.get('content-type')}`);
+    const film = await api('GET', `/Items/${preview.json.itemId}/Images/Primary`, undefined, true);
+    expect(film.status === 404, 'the previewed film was given a poster: ' + film.status);
+    return `${preview.json.title}, ${Math.round(preview.json.bytes / 1024)} KB`;
+});
+
+await check('Medic Posters makes an animated poster for each film, Jellyfin serves it still animated, and the originals come back', async () => {
+    const run = await api('POST', '/MedicPosters/Run');
+    expect(run.status === 202, 'Run returned ' + run.status + ' ' + run.text);
+    let s = null;
+    for (let i = 0; i < 150; i++) {
+        await sleep(2000);
+        s = (await api('GET', '/MedicPosters/Status')).json;
+        if (s && !s.running && s.lastRun?.finishedUtc) break;
+    }
+    expect(s && !s.running && s.lastRun?.finishedUtc, 'the run didn\'t finish: ' + JSON.stringify(s?.progress));
+    expect(s.made >= 12, `made ${s.made} of ${s.films}: ${JSON.stringify(s.failures).slice(0, 400)}`);
+    expect(s.failures.some((f) => /Stream Film/.test(f.title)), 'the .strm film wasn\'t listed as having no video file: ' + JSON.stringify(s.failures));
+
+    // Jellyfin is asked for a resized poster, as its apps do, and must still send the GIF.
+    const film = s.recent[0];
+    const served = await api('GET', `/Items/${film.itemId}/Images/Primary?fillHeight=300&fillWidth=200&quality=90`, undefined, true);
+    expect(served.status === 200 && await isGif(served), `Jellyfin sent ${served.status} ${served.headers.get('content-type')}`);
+
+    // A second run leaves the made ones alone.
+    await api('POST', '/MedicPosters/Run');
+    for (let i = 0; i < 60; i++) {
+        await sleep(1000);
+        const again = (await api('GET', '/MedicPosters/Status')).json;
+        if (!again.running && again.lastRun.startedUtc !== s.lastRun.startedUtc) { s.again = again.lastRun; break; }
+    }
+    expect(s.again && s.again.made === 0, 'a second run made posters again: ' + JSON.stringify(s.again));
+
+    const back = await api('POST', '/MedicPosters/RestoreAll');
+    expect(back.status === 200 && back.json.restored === s.made, 'RestoreAll: ' + back.text);
+    const gone = await api('GET', `/Items/${film.itemId}/Images/Primary`, undefined, true);
+    expect(gone.status === 404, 'the film still has a poster after putting the originals back: ' + gone.status);
+    return `${s.made} posters, about ${Math.round(s.averageBytes / 1024)} KB each`;
+});
+
+await check('Medic Posters keeps its poster when a refresh reads the film\'s own poster.jpg again, but not over a new upload', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const dir = '/media/movies/Poster Film (2003)';
+    const ff = (...args) => execFileSync('docker', ['exec', 'medic-e2e', '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
+    const image = async (id) => {
+        const r = await api('GET', `/Items/${id}/Images/Primary`, undefined, true);
+        if (r.status !== 200) return String(r.status);
+        return (await isGif(r)) ? 'gif' : 'still';
+    };
+    const settle = async (id, want) => {
+        let got = '';
+        for (let i = 0; i < 20; i++) { await sleep(1000); got = await image(id); if (got === want) break; }
+        return got;
+    };
+    execFileSync('docker', ['exec', 'medic-e2e', 'mkdir', '-p', dir]);
+    try {
+        // A film with its own poster.jpg beside it, and no locked metadata, so every refresh reads that poster again.
+        ff('-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=10:duration=6', '-c:v', 'libx264', '-preset', 'ultrafast', `${dir}/Poster Film (2003).mkv`);
+        ff('-f', 'lavfi', '-i', 'color=c=red:s=300x450', '-frames:v', '1', `${dir}/poster.jpg`);
+        await api('POST', '/Library/Refresh');
+        let id = null;
+        for (let i = 0; i < 60 && !id; i++) {
+            await sleep(2000);
+            const r = await api('GET', '/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Poster%20Film');
+            id = r.json?.Items?.find((x) => x.Name.startsWith('Poster Film'))?.Id || null;
+        }
+        expect(id, 'the new film wasn\'t found');
+        expect(await settle(id, 'still') === 'still', 'the film\'s own poster wasn\'t picked up');
+
+        await api('POST', '/MedicPosters/Run');
+        expect(await settle(id, 'gif') === 'gif', 'no animated poster was made');
+
+        await api('POST', `/Items/${id}/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=FullRefresh&replaceAllMetadata=true`);
+        await sleep(3000);
+        expect(await settle(id, 'gif') === 'gif', 'a refresh left the film\'s own poster in place of the animated one');
+
+        // A poster uploaded under Edit Images is someone's choice, and stays.
+        const png = execFileSync('docker', ['exec', 'medic-e2e', '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=200x300', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', '-']);
+        const up = await fetch(`${JF}/Items/${id}/Images/Primary`, { method: 'POST', headers: { Authorization: AUTH + `, Token="${token}"`, 'Content-Type': 'image/png' }, body: png.toString('base64') });
+        expect(up.status === 204, 'upload returned ' + up.status);
+        await sleep(4000);
+        expect(await image(id) === 'still', 'the uploaded poster was replaced');
+        const s = (await api('GET', '/MedicPosters/Status')).json;
+        return `${s.made} posters`;
+    } finally {
+        await api('POST', '/MedicPosters/RestoreAll');
+        execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-rf', dir]);
+        await api('POST', '/Library/Refresh');
+        await sleep(3000);
+    }
+});
+
 // ---------- Pages in a real browser ----------
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
@@ -1144,6 +1242,20 @@ await check('Jellyfin Medic page is styled by its stylesheet', async () => {
     return 'top bar laid out as a row';
 });
 await openPage('Medic Profiles', '/configurationpage?name=MedicProfiles', '#MedicProfilesPage .mp-tab', '.mp-tab');
+await openPage('Medic Posters', '/configurationpage?name=MedicPosters', '#MedicPostersPage #po-run');
+
+await check('Medic Posters page shows a preview poster', async () => {
+    errors.length = 0;
+    await page.goto(JF + '/web/index.html#/configurationpage?name=MedicPosters');
+    await page.waitForSelector('#MedicPostersPage #po-preview', { timeout: 30000 });
+    await page.click('#MedicPostersPage #po-preview');
+    await page.waitForSelector('#MedicPostersPage #po-preview-img:not([hidden])', { timeout: 60000 });
+    const width = await page.locator('#MedicPostersPage #po-preview-img').evaluate((img) => img.naturalWidth);
+    expect(width === 240, 'preview is ' + width + ' px wide');
+    const ours = errors.filter((e) => !/ResizeObserver|^CancelledError/i.test(e));
+    expect(ours.length === 0, ours.join(' | '));
+    return await page.locator('#MedicPostersPage #po-preview-info').textContent();
+});
 await openPage('Medic Picks settings', '/configurationpage?name=Medic%20Picks', '#MedicPicksConfigForm');
 
 await check('Medic Picks settings: the user boxes show, and a key that isn\'t saved says so', async () => {
