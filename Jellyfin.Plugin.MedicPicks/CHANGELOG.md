@@ -3,7 +3,7 @@
 All notable changes to Medic Picks are recorded here. The newest version is at the top.
 Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
-## [1.2.5] – 2026-10-16
+## [1.2.5] – 2026-10-17
 
 ### Fixed
 - **The saved Seerr key stays with its server.** Changing the Seerr address kept the saved key, and the next request, test or list sent it to the new address. When the address now points at a different server (another scheme, host or port), the saved key is removed and has to be pasted again, as Medic Profiles already does with its keys; a new path on the same server keeps it. The settings page now saves a key typed next to the new address after the address, so the new key is the one kept.
