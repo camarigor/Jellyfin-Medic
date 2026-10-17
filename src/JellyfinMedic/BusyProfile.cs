@@ -75,6 +75,20 @@ public sealed class BusyProfile
     public static int AvoidEndMinute(PluginConfiguration settings) =>
         (Math.Clamp(settings.AvoidEndMinute ?? settings.AvoidEndHour * 60, 0, 1440) % 1440) / SlotMinutes * SlotMinutes;
 
+    /// <summary>Whether this time of day is in the hours Medic keeps free; they run past midnight when they end before they start.</summary>
+    internal static bool InAvoidedHours(TimeSpan timeOfDay, PluginConfiguration? settings)
+    {
+        if (settings is not { AvoidEnabled: true })
+        {
+            return false;
+        }
+
+        int from = AvoidStartMinute(settings);
+        int to = AvoidEndMinute(settings);
+        int minute = (int)timeOfDay.TotalMinutes;
+        return from <= to ? minute >= from && minute < to : minute >= from || minute < to;
+    }
+
     public static BusyProfile Create(UsageSummary usage, PluginConfiguration? settings, HostLoadSummary? server = null)
     {
         var profile = new BusyProfile();

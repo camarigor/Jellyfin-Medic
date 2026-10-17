@@ -92,11 +92,11 @@ public sealed class LoadGuardServerMemoryTests
         var evening = new PluginConfiguration { AvoidEnabled = true, AvoidStartMinute = 18 * 60, AvoidEndMinute = 23 * 60 };
         var night = new PluginConfiguration { AvoidEnabled = true, AvoidStartMinute = 22 * 60, AvoidEndMinute = 2 * 60 };
 
-        Assert.True(LoadGuard.InAvoidedHours(new TimeSpan(18, 30, 0), evening));
-        Assert.False(LoadGuard.InAvoidedHours(new TimeSpan(23, 0, 0), evening));
-        Assert.True(LoadGuard.InAvoidedHours(new TimeSpan(1, 0, 0), night));
-        Assert.False(LoadGuard.InAvoidedHours(new TimeSpan(3, 0, 0), night));
-        Assert.False(LoadGuard.InAvoidedHours(new TimeSpan(18, 30, 0), new PluginConfiguration { AvoidStartMinute = 18 * 60, AvoidEndMinute = 23 * 60 }));
+        Assert.True(BusyProfile.InAvoidedHours(new TimeSpan(18, 30, 0), evening));
+        Assert.False(BusyProfile.InAvoidedHours(new TimeSpan(23, 0, 0), evening));
+        Assert.True(BusyProfile.InAvoidedHours(new TimeSpan(1, 0, 0), night));
+        Assert.False(BusyProfile.InAvoidedHours(new TimeSpan(3, 0, 0), night));
+        Assert.False(BusyProfile.InAvoidedHours(new TimeSpan(18, 30, 0), new PluginConfiguration { AvoidStartMinute = 18 * 60, AvoidEndMinute = 23 * 60 }));
     }
 
     [Fact]

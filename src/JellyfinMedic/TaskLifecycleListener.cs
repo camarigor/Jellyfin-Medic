@@ -257,21 +257,7 @@ public sealed class TaskLifecycleListener : IHostedService
         }
 
         var shifted = triggers.Select(Shift).ToArray();
-        return shifted.Any(t => t.TimeOfDayTicks is { } ticks && InAvoidedHours(ticks, settings)) ? null : shifted;
-    }
-
-    // The hours to avoid run past midnight when they end before they start, 22:00 to 02:00 say.
-    private static bool InAvoidedHours(long timeOfDayTicks, PluginConfiguration? settings)
-    {
-        if (settings is not { AvoidEnabled: true })
-        {
-            return false;
-        }
-
-        int from = BusyProfile.AvoidStartMinute(settings);
-        int to = BusyProfile.AvoidEndMinute(settings);
-        int minute = (int)TimeSpan.FromTicks(timeOfDayTicks).TotalMinutes;
-        return from <= to ? minute >= from && minute < to : minute >= from || minute < to;
+        return shifted.Any(t => t.TimeOfDayTicks is { } ticks && BusyProfile.InAvoidedHours(TimeSpan.FromTicks(ticks), settings)) ? null : shifted;
     }
 
     // The same triggers, in any order.

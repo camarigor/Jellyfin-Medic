@@ -264,7 +264,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
             // Memory allows it, nothing heavy is running, and it's a time a scheduled run could have: restart one deferred task.
             bool settled = now - _lastActionUtc > TimeSpan.FromMinutes(2);
             if (_deferred.Count > 0 && settled
-                && CanRestart(usedPercent, serverPercent, usualServer, highMark, clearMark, heavyRunning.Count, now - _deferred[0].StoppedUtc, InAvoidedHours(DateTime.Now.TimeOfDay, settings), Watching()))
+                && CanRestart(usedPercent, serverPercent, usualServer, highMark, clearMark, heavyRunning.Count, now - _deferred[0].StoppedUtc, BusyProfile.InAvoidedHours(DateTime.Now.TimeOfDay, settings), Watching()))
             {
                 string id = _deferred[0].TaskId;
                 var worker = _tasks.ScheduledTasks.FirstOrDefault(t => t.Id.ToString() == id);
@@ -333,20 +333,6 @@ public sealed class LoadGuard : IHostedService, IDisposable
             ? jellyfinPercent < highMark
             : jellyfinPercent <= clearMark
               && (serverPercent is not { } server || server <= clearMark || (usualServer is { } usual && server < usual + RisePoints)));
-
-    /// <summary>Whether this time of day is in the hours Medic keeps free; they run past midnight when they end before they start.</summary>
-    internal static bool InAvoidedHours(TimeSpan timeOfDay, PluginConfiguration settings)
-    {
-        if (!settings.AvoidEnabled)
-        {
-            return false;
-        }
-
-        int from = BusyProfile.AvoidStartMinute(settings);
-        int to = BusyProfile.AvoidEndMinute(settings);
-        int minute = (int)timeOfDay.TotalMinutes;
-        return from <= to ? minute >= from && minute < to : minute >= from || minute < to;
-    }
 
     /// <summary>
     /// Whether a run was started by the task's schedule: at one of its daily or weekly times, once its interval has
