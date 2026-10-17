@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end tests: builds the five plugins, starts a real Jellyfin in Docker with them
+# End-to-end tests: builds the four plugins, starts a real Jellyfin in Docker with them
 # installed and some sample films, then runs e2e.mjs against it.
 #
 #   tests/e2e/run.sh            build, start, test, stop
@@ -29,7 +29,6 @@ build() { # project, folder, dll
 build src/JellyfinMedic/JellyfinMedic.csproj JellyfinMedic JellyfinMedic.dll
 build Jellyfin.Plugin.MedicPicks/Jellyfin.Plugin.MedicPicks.csproj MedicPicks Jellyfin.Plugin.MedicPicks.dll
 build Jellyfin.Plugin.MedicProfiles/Jellyfin.Plugin.MedicProfiles.csproj MedicProfiles Jellyfin.Plugin.MedicProfiles.dll
-build Jellyfin.Plugin.AnimatedPosters/Jellyfin.Plugin.AnimatedPosters.csproj AnimatedPosters Jellyfin.Plugin.AnimatedPosters.dll
 build Jellyfin.Plugin.MedicPosters/Jellyfin.Plugin.MedicPosters.csproj MedicPosters Jellyfin.Plugin.MedicPosters.dll
 
 echo "== Making sample films"

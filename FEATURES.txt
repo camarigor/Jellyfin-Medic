@@ -2,7 +2,7 @@
          JELLYFIN MEDIC, MEDIC PICKS, MEDIC PROFILES AND THE POSTER PLUGINS
 ===============================================================================
 
-This repository contains five Jellyfin plugins:
+This repository contains four Jellyfin plugins:
 
   1. JELLYFIN MEDIC
      For the person who runs the server. Health checks, performance tests,
@@ -19,11 +19,7 @@ This repository contains five Jellyfin plugins:
      dashboard: downloads, fixes, and quality profile advice.
      Needs Jellyfin 12.0 or later. Administrators only.
 
-  4. ANIMATED POSTERS
-     Library cards on the home screen that fade between artwork from each
-     library, in the browser and desktop apps. See its section in README.md.
-
-  5. MEDIC POSTERS
+  4. MEDIC POSTERS
      For everyone who uses the server, set up by the person who runs it.
      Animated posters for every film, cut from moments of the film.
      Needs Jellyfin 12.0 or later. Settings are for administrators only.
@@ -32,7 +28,7 @@ Each plugin's current version and what changed are in its changelog (CHANGELOG.m
 Jellyfin.Plugin.MedicPicks/CHANGELOG.md, Jellyfin.Plugin.MedicProfiles/CHANGELOG.md,
 Jellyfin.Plugin.MedicPosters/CHANGELOG.md).
 
-All five are installed from the same plugin repository:
+All four are installed from the same plugin repository:
   https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/manifest.json
 
 
@@ -761,7 +757,7 @@ press a button. Tabs: Downloads, Blocked, Indexers, Profiles, History, Settings.
 
 
 ===============================================================================
-PART 4: MEDIC POSTERS (PLUGIN 5)
+PART 4: MEDIC POSTERS (PLUGIN 4)
 ===============================================================================
 
 Found under Plugins -> Medic Posters. Settings are for administrators only.
