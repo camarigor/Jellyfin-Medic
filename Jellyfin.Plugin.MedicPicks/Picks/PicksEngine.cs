@@ -925,24 +925,42 @@ public class PicksEngine
         }
     }
 
+    // People with a playlist refresh waiting to start. A hide made while one waits is covered by it, because the
+    // waiting refresh reads the picks only after it leaves this set.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> PendingRefreshes = new();
+
+    /// <summary>How long a playlist refresh waits before it starts, so hides made meanwhile share it.</summary>
+    internal TimeSpan PlaylistRefreshDelay { get; init; } = TimeSpan.FromSeconds(2);
+
     /// <summary>
     /// Puts the person's saved library picks in their playlist again, without a build: after they hide a title, so it
-    /// leaves the playlist straight away rather than at the next build.
+    /// leaves the playlist within seconds rather than at the next build. The refresh starts after
+    /// <see cref="PlaylistRefreshDelay"/>, and one that is still waiting covers any hides made before it starts, so
+    /// several quick hides cost one playlist update.
     /// </summary>
     public async Task RefreshPlaylistAsync(Guid userId)
     {
-        var config = Plugin.Instance!.Configuration;
-        var user = _userManager.GetUserById(userId);
-        var picks = _store.Load(userId);
-        if (user is null || picks is null || !(config.EnableLibraryPicks && config.CreatePlaylists))
+        if (!PendingRefreshes.TryAdd(userId, 0))
         {
             return;
         }
 
+        await Task.Delay(PlaylistRefreshDelay).ConfigureAwait(false);
         var gate = UserLocks.GetOrAdd(userId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync().ConfigureAwait(false);
         try
         {
+            // Read only now: a build that held the gate has saved its picks and playlist, and a hide from here on
+            // starts a refresh of its own.
+            PendingRefreshes.TryRemove(userId, out _);
+            var config = Plugin.Instance!.Configuration;
+            var user = _userManager.GetUserById(userId);
+            var picks = _store.Load(userId);
+            if (user is null || picks is null || !(config.EnableLibraryPicks && config.CreatePlaylists))
+            {
+                return;
+            }
+
             Func<InternalItemsQuery> userQuery = () => new InternalItemsQuery(user);
             var items = picks.InLibrary.Select(p => GetPlayableId(userQuery, p)).OfType<Guid>().ToList();
             Guid? before = picks.PlaylistId;

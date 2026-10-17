@@ -201,7 +201,7 @@ public class PicksController : ControllerBase
         // one included, leaves hidden titles out when it saves.
         RebuildAgainIfRunning(userId);
 
-        // The playlist follows straight away, rather than at the next build.
+        // The playlist follows within seconds rather than at the next build; quick hides share one refresh.
         if (request.ItemId is not null && !IsRebuilding(userId))
         {
             var engine = _engine;

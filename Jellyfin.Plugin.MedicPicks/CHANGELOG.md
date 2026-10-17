@@ -19,6 +19,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 - **Blocked and allowed tags count as parental controls on the server too.** The settings page marked an account with only tag rules as having parental controls, but when serving picks and taking requests the server looked for those tags in a way Jellyfin's user accounts don't offer, so it found none and gave the account Discover even when it wasn't ticked. An account with blocked or allowed tags now gets Discover, and requests from the picks page, only once you tick it, as one with a maximum rating already did.
 
 Thanks @camarigor for reporting the Seerr key redirect (#206).
+- **Hiding a title while the picks are being built keeps the new playlist.** A hide during a build, the nightly one included, then put the picks from before the build back into the playlist, and when the build had replaced the playlist it made a second one and saved the old picks over the new ones. The playlist now follows a hide with the picks saved last, after any build under way ends. Hides within 2 seconds of each other also share one playlist update instead of one each.
 
 ## [1.2.5] – 2026-10-17
 
