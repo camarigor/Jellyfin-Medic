@@ -42,3 +42,24 @@ public sealed class RunHistoryTests : IDisposable
         Directory.Delete(_paths.Root, recursive: true);
     }
 }
+
+public sealed class DamagedProfileTests : IDisposable
+{
+    private readonly FakeApplicationPaths _paths = new();
+
+    [Fact]
+    public void A_damaged_usage_profile_is_kept_as_bad_and_a_new_one_started()
+    {
+        string path = JellyfinMedic.Services.UsageStore.FilePath(_paths);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "{ not json");
+
+        var profile = JellyfinMedic.Services.UsageStore.Load(_paths);
+
+        Assert.Equal(0, profile.TotalSamples);
+        Assert.Equal("{ not json", File.ReadAllText(path + ".bad"));
+        Assert.False(File.Exists(path));
+    }
+
+    public void Dispose() => Directory.Delete(_paths.Root, recursive: true);
+}

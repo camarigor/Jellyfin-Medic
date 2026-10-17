@@ -94,20 +94,26 @@ public static class ScheduleStorage
         }
         catch (JsonException ex)
         {
-            // Set it aside: the next write would otherwise replace it, and everything in it would be lost.
-            // If it can't be moved, the error goes up and nothing writes over it.
-            string aside = path + ".bad";
-            try
-            {
-                File.Move(path, aside, overwrite: true);
-                Logger?.LogWarning(ex, "Jellyfin Medic: {File} couldn't be read, so it was kept as {Aside} and a new one started", Path.GetFileName(path), Path.GetFileName(aside));
-            }
-            catch (FileNotFoundException)
-            {
-                // Another reader set it aside first.
-            }
-
+            SetAside(path, ex);
             return new List<T>();
+        }
+    }
+
+    /// <summary>
+    /// Keeps a file that couldn't be read as name.bad: the next write would otherwise replace it, and everything in
+    /// it would be lost. If it can't be moved, the error goes up and nothing writes over it.
+    /// </summary>
+    public static void SetAside(string path, Exception why)
+    {
+        string aside = path + ".bad";
+        try
+        {
+            File.Move(path, aside, overwrite: true);
+            Logger?.LogWarning(why, "Jellyfin Medic: {File} couldn't be read, so it was kept as {Aside} and a new one started", Path.GetFileName(path), Path.GetFileName(aside));
+        }
+        catch (FileNotFoundException)
+        {
+            // Another reader set it aside first.
         }
     }
 
