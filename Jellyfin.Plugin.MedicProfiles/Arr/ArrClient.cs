@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using MediaBrowser.Common.Net;
 using Medic.Shared;
 using Microsoft.Extensions.Logging;
 
@@ -28,7 +27,7 @@ public sealed class ArrResult : IDisposable
 
     public string Message { get; init; } = string.Empty;
 
-    /// <summary>Where the request ended up, when a redirect took it somewhere other than the address asked.</summary>
+    /// <summary>Where the saved address sent the request on to. It isn't followed, so the call failed.</summary>
     public Uri? RedirectedTo { get; init; }
 
     public void Dispose() => Json?.Dispose();
@@ -67,7 +66,7 @@ public class ArrClient
 
     /// <summary>
     /// The settings' Test: passes only when the app itself answered at the saved address. A proxy's sign-in page
-    /// answers 200 too, and a redirect may have carried the call to another app.
+    /// answers 200 too; a redirect isn't followed, so it fails the call before this.
     /// </summary>
     public async Task<(bool Ok, string Message)> StatusAsync(ArrApp app, CancellationToken ct)
     {
@@ -75,11 +74,6 @@ public class ArrClient
         if (!result.Ok)
         {
             return (false, result.Message);
-        }
-
-        if (result.RedirectedTo is { } to)
-        {
-            return (false, $"{BaseUrl(app)} sent the test on to {to}, so it may not have reached {Name(app)}. Enter the address {Name(app)} answers at directly, with its URL base (/{Name(app).ToLowerInvariant()}, say).");
         }
 
         // A status with a version but no appName still counts, so a build that leaves the name out isn't refused.
@@ -122,27 +116,13 @@ public class ArrClient
                 request.Content = new StringContent(json, Encoding.UTF8, "application/json");
             }
 
-            // Following a redirect changes this request in place, so keep what was asked.
-            Uri asked = request.RequestUri!;
-            using var client = _httpClientFactory.CreateClient(NamedClient.Default);
+            using var client = _httpClientFactory.CreateClient(ServiceHttp.KeyClient);
             using var response = await ServiceHttp.SendAsync(client, request, CallTimeout, Name(app), ct).ConfigureAwait(false);
-            Uri? reached = response.RequestMessage?.RequestUri;
-            Uri? redirectedTo = reached is not null && reached != asked ? reached : null;
-            if (response.RequestMessage is { } sent && sent.Method != method)
-            {
-                // A 301 or 302 turns a POST or DELETE into a GET, which reads the list instead of changing it.
-                return new ArrResult
-                {
-                    RedirectedTo = redirectedTo,
-                    Message = $"{baseUrl} sent the request on to {reached}, which turned it into a different request, so {Name(app)} didn't act on it. Enter the address {Name(app)} answers at directly, with its URL base (/{Name(app).ToLowerInvariant()}, say), on the Settings tab."
-                };
-            }
-
             string text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             int status = (int)response.StatusCode;
             if (response.IsSuccessStatusCode)
             {
-                return new ArrResult { Ok = true, Status = status, RedirectedTo = redirectedTo, Json = text.Length == 0 ? null : TryParse(text) };
+                return new ArrResult { Ok = true, Status = status, Json = text.Length == 0 ? null : TryParse(text) };
             }
 
             string message = status switch
@@ -153,7 +133,18 @@ public class ArrClient
                 404 => NotTheApp(app, baseUrl),
                 _ => ServiceHttp.ErrorMessage(text) is { } err ? $"{Name(app)} says: {err}" : $"{Name(app)} answered with {status}."
             };
-            return new ArrResult { Status = status, RedirectedTo = redirectedTo, Message = message };
+            return new ArrResult { Status = status, Message = message };
+        }
+        catch (RedirectedException ex)
+        {
+            // Not followed, so the key only goes to the saved address. Sonarr and Radarr send base-less calls on with
+            // a 307 when they have a URL base, so the address to save may well be the one named here.
+            _logger.LogWarning("Medic Profiles: {App} at {Url} redirected to {Target}", Name(app), baseUrl, ex.Target);
+            return new ArrResult
+            {
+                RedirectedTo = ex.Target,
+                Message = $"{baseUrl} sent the request on to {ex.Target}. Medic Profiles doesn't follow that, so the API key only goes to the address saved. Enter the address {Name(app)} answers at directly, with its URL base (/{Name(app).ToLowerInvariant()}, say), on the Settings tab."
+            };
         }
         catch (HttpRequestException ex) when (ex.InnerException is OperationCanceledException && !ct.IsCancellationRequested)
         {

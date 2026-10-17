@@ -31,6 +31,8 @@ import time
 import urllib.error
 import urllib.request
 
+import github_http
+
 PICKS = "Jellyfin.Plugin.MedicPicks/"
 PROFILES = "Jellyfin.Plugin.MedicProfiles/"
 FILM_POSTERS = "Jellyfin.Plugin.MedicPosters/"
@@ -127,7 +129,7 @@ def github(path: str) -> object:
     })
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with github_http.urlopen(request, timeout=30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as e:
             if e.code == 404:

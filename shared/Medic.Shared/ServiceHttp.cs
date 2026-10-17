@@ -1,8 +1,10 @@
 using System;
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Medic.Shared;
 
@@ -12,22 +14,64 @@ namespace Medic.Shared;
 internal static class ServiceHttp
 {
     /// <summary>
+    /// The named client for calls that carry an API key. It doesn't follow redirects: .NET drops Authorization
+    /// on a redirect but resends X-Api-Key, and a 307 or 308 resends the body too, so the key would reach
+    /// whatever address the saved one points at.
+    /// </summary>
+    public const string KeyClient = "Medic.KeyClient";
+
+    /// <summary>Registers <see cref="KeyClient"/>. Medic Picks and Medic Profiles each call this; registering it twice is harmless.</summary>
+    public static void AddKeyClient(IServiceCollection services) =>
+        services.AddHttpClient(KeyClient).ConfigurePrimaryHttpMessageHandler(() => NoRedirects());
+
+    /// <summary>A handler as Jellyfin's default one, but that hands redirects back instead of following them.</summary>
+    public static HttpClientHandler NoRedirects() => new() { AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.All };
+
+    /// <summary>
+    /// Where an answer sends the request on to, or null when it doesn't. That's a 3xx with a Location, made absolute
+    /// against the address asked, or an answer from another address than the one asked (a client that followed it).
+    /// </summary>
+    public static Uri? RedirectTarget(HttpResponseMessage response, Uri asked)
+    {
+        int status = (int)response.StatusCode;
+        if (status is >= 300 and < 400 && status != 304 && response.Headers.Location is { } location)
+        {
+            return location.IsAbsoluteUri ? location : new Uri(asked, location);
+        }
+
+        Uri? reached = response.RequestMessage?.RequestUri;
+        return reached is not null && reached != asked ? reached : null;
+    }
+
+    /// <summary>
     /// Sends a request that gives up after <paramref name="limit"/>. Running out of time fails like a service that
     /// can't be reached (<see cref="HttpRequestException"/>), so a service that hangs can't hold a page or a task;
-    /// a cancelled caller still comes through as cancelled.
+    /// a cancelled caller still comes through as cancelled. An answer that sends the request on elsewhere throws
+    /// <see cref="RedirectedException"/>: the request isn't sent again, so its key stays with the saved address.
     /// </summary>
     public static async Task<HttpResponseMessage> SendAsync(HttpClient client, HttpRequestMessage request, TimeSpan limit, string service, CancellationToken ct)
     {
+        // Following a redirect changes the request in place, so keep what was asked.
+        Uri asked = request.RequestUri!;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(limit);
+        HttpResponseMessage response;
         try
         {
-            return await client.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            response = await client.SendAsync(request, timeout.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
         {
             throw new HttpRequestException($"{service} didn't answer within {limit.TotalSeconds:0} seconds", ex);
         }
+
+        if (RedirectTarget(response, asked) is { } target)
+        {
+            response.Dispose();
+            throw new RedirectedException(service, target);
+        }
+
+        return response;
     }
 
     /// <summary>
@@ -49,4 +93,16 @@ internal static class ServiceHttp
             return null;
         }
     }
+}
+
+/// <summary>The saved address sent a call on to <see cref="Target"/>, which wasn't followed.</summary>
+internal sealed class RedirectedException : HttpRequestException
+{
+    public RedirectedException(string service, Uri target)
+        : base($"{service}'s address sent the request on to {target}, which wasn't followed")
+    {
+        Target = target;
+    }
+
+    public Uri Target { get; }
 }

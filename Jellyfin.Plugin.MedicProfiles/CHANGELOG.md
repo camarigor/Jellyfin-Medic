@@ -6,6 +6,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 ## Unreleased
 
 ### Fixed
+- **API keys and the qBittorrent password only go to the addresses you saved.** When the Sonarr, Radarr or qBittorrent address answered with a redirect to another address, the call followed it, sending the API key along, and for a 307 or 308 the qBittorrent sign-in posted the user name and password again to the new address. Redirects are no longer followed for these calls. The call fails with a message naming where the address points, so you can save that address instead.
 - **Import by hand leaves rejected files unticked.** Every matched file started ticked, including ones Sonarr or Radarr had rejected (as "not an upgrade", say), and a manual import doesn't check them again, so pressing Import could replace a better copy in the library. Rejected files now start unticked, with the reason shown, and can still be ticked to import them anyway.
 - **"HEVC plays fine here" needs real playback.** The tip took an empty transcode log as proof that HEVC plays everywhere, so it showed a few minutes after installing. It now waits until the log holds at least 20 transcodes, and no longer lists 4K profiles, where nearly every release is HEVC.
 - **Advice follows its evidence.** Any transcode for bitrate led to "untick Remux"; now only transcodes of Remux-sized files (25 Mbps or more) do. The DTS and TrueHD advice no longer reaches profiles that only allow Remux, since a Remux always keeps the disc's own audio.
@@ -15,7 +16,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 - **Changing the qBittorrent address forgets what was added to the old one.** The record of which exclusions Medic Profiles added was kept when the address changed, so Stop blocking on the new qBittorrent could remove entries its owner had added there.
 - **An empty library search no longer fails.** Clearing the search box and searching answered with an error.
 
-Thanks @camarigor for reporting these (#159).
+Thanks @camarigor for reporting these (#159, #206).
 
 ## [1.1.4] – 2026-10-17
 

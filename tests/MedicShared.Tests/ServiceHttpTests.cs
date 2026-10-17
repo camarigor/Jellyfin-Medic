@@ -1,4 +1,7 @@
 using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace MedicShared.Tests;
 
@@ -47,6 +50,120 @@ public sealed class ServiceHttpTests
     [InlineData("", null)]
     public void The_service_s_own_words_are_read_from_an_error_answer(string body, string? expected) =>
         Assert.Equal(expected, ServiceHttp.ErrorMessage(body));
+
+    [Theory]
+    [InlineData(302)]
+    [InlineData(307)]
+    [InlineData(308)]
+    public async Task The_key_client_sends_the_key_and_body_only_to_the_address_asked(int status)
+    {
+        // A real server and the client Medic Picks and Medic Profiles register, as .NET follows a redirect to the
+        // same host just as it does to another one, X-Api-Key and (for a 307 or 308) the body included.
+        using var server = new Recorder(status);
+        var services = new ServiceCollection();
+        ServiceHttp.AddKeyClient(services);
+        using var provider = services.BuildServiceProvider();
+        using var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient(ServiceHttp.KeyClient);
+        using var request = new HttpRequestMessage(HttpMethod.Post, server.Address + "from") { Content = new StringContent("password=hunter2") };
+        request.Headers.Add("X-Api-Key", "secret-key");
+
+        var ex = await Assert.ThrowsAsync<RedirectedException>(() => ServiceHttp.SendAsync(client, request, TimeSpan.FromSeconds(10), "Sonarr", CancellationToken.None));
+
+        Assert.Equal(new Uri(server.Address + "to"), ex.Target);
+        Assert.Equal(new[] { "/from secret-key password=hunter2" }, server.Received);
+    }
+
+    [Theory]
+    [InlineData("http://auth.example/login?rd=sonarr", "http://auth.example/login?rd=sonarr")]
+    [InlineData("/sonarr/api/v3/queue", "http://sonarr:8989/sonarr/api/v3/queue")]
+    public void A_redirect_names_where_it_points(string location, string expected)
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect);
+        response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+
+        Assert.Equal(new Uri(expected), ServiceHttp.RedirectTarget(response, new Uri("http://sonarr:8989/api/v3/queue")));
+    }
+
+    [Fact]
+    public void An_answer_that_isnt_a_redirect_names_nothing()
+    {
+        var asked = new Uri("http://sonarr:8989/api/v3/queue");
+        using var notModified = new HttpResponseMessage(HttpStatusCode.NotModified);
+        notModified.Headers.Location = new Uri("http://elsewhere/");
+        using var noLocation = new HttpResponseMessage(HttpStatusCode.Found);
+        using var ok = new HttpResponseMessage(HttpStatusCode.OK) { RequestMessage = new HttpRequestMessage(HttpMethod.Get, asked) };
+
+        Assert.Null(ServiceHttp.RedirectTarget(notModified, asked));
+        Assert.Null(ServiceHttp.RedirectTarget(noLocation, asked));
+        Assert.Null(ServiceHttp.RedirectTarget(ok, asked));
+    }
+
+    [Fact]
+    public void An_answer_from_another_address_counts_as_a_redirect()
+    {
+        // From a client that followed the redirect itself: the key has gone, but the call still fails.
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { RequestMessage = new HttpRequestMessage(HttpMethod.Get, "http://auth.example/login") };
+
+        Assert.Equal(new Uri("http://auth.example/login"), ServiceHttp.RedirectTarget(response, new Uri("http://sonarr:8989/api/v3/queue")));
+    }
+
+    /// <summary>Answers /from with a redirect to /to on itself, and remembers each path, X-Api-Key and body it gets.</summary>
+    private sealed class Recorder : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly int _status;
+
+        public Recorder(int status)
+        {
+            _status = status;
+            using (var free = new TcpListener(IPAddress.Loopback, 0))
+            {
+                free.Start();
+                Address = $"http://127.0.0.1:{((IPEndPoint)free.LocalEndpoint).Port}/";
+            }
+
+            _listener.Prefixes.Add(Address);
+            _listener.Start();
+            _ = ServeAsync();
+        }
+
+        public string Address { get; }
+
+        public List<string> Received { get; } = new();
+
+        public void Dispose() => _listener.Close();
+
+        private async Task ServeAsync()
+        {
+            while (_listener.IsListening)
+            {
+                HttpListenerContext context;
+                try
+                {
+                    context = await _listener.GetContextAsync();
+                }
+                catch (Exception ex) when (ex is HttpListenerException or ObjectDisposedException)
+                {
+                    return;
+                }
+
+                using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
+                string body = await reader.ReadToEndAsync();
+                lock (Received)
+                {
+                    Received.Add($"{context.Request.Url!.AbsolutePath} {context.Request.Headers["X-Api-Key"]} {body}");
+                }
+
+                context.Response.StatusCode = context.Request.Url.AbsolutePath == "/from" ? _status : 200;
+                if (context.Request.Url.AbsolutePath == "/from")
+                {
+                    context.Response.RedirectLocation = Address + "to";
+                }
+
+                context.Response.Close();
+            }
+        }
+    }
 
     private sealed class NeverAnswers : HttpMessageHandler
     {
