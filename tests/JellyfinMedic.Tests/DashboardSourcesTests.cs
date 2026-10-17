@@ -1,7 +1,12 @@
 using System.Globalization;
 using System.Text.Json;
+using Jellyfin.Data.Events;
+using Jellyfin.Data.Queries;
+using Jellyfin.Database.Implementations.Entities;
 using JellyfinMedic.Api;
 using JellyfinMedic.Services;
+using MediaBrowser.Model.Activity;
+using MediaBrowser.Model.Querying;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace JellyfinMedic.Tests;
@@ -154,6 +159,171 @@ public sealed class SignInTests
         public string UserId { get; init; } = string.Empty;
     }
 
+    // Jellyfin's activity log, answering as Jellyfin 12.2 does: from MinDate, newest first, Skip then Limit (100 when unset).
+    private sealed class FakeActivityLog : IActivityManager
+    {
+        private readonly List<ActivityLogEntry> _entries;
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public FakeActivityLog(IEnumerable<ActivityLogEntry> entries) => _entries = entries.ToList();
+
+        // Every reading fails with this when it's set.
+        public Exception? Failure { get; init; }
+
+        // Something new is logged after each page is read, as on a busy server, so older entries move down a place.
+        public bool LogsWhileRead { get; init; }
+
+        // Answers wait for Release, as a busy database's would.
+        public bool Held { get; init; }
+
+        // How many pages were asked for.
+        public int Calls => Volatile.Read(ref _calls);
+
+        public event EventHandler<GenericEventArgs<ActivityLogEntry>> EntryCreated
+        {
+            add { }
+            remove { }
+        }
+
+        public void Release() => _released.TrySetResult();
+
+        // Public rather than an explicit interface member: Medic looks the method up on the object's own type.
+        public Task<QueryResult<ActivityLogEntry>> GetPagedResultAsync(ActivityLogQuery query)
+        {
+            Interlocked.Increment(ref _calls);
+            if (Failure is not null)
+            {
+                return Task.FromException<QueryResult<ActivityLogEntry>>(Failure);
+            }
+
+            var matching = _entries.Where(e => query.MinDate is null || e.Date >= query.MinDate).OrderByDescending(e => e.Date).ToList();
+            var page = matching.Skip(query.Skip ?? 0).Take(query.Limit ?? 100).ToList();
+            if (LogsWhileRead)
+            {
+                _entries.Add(Playback(_entries.Max(e => e.Id) + 1, _entries.Max(e => e.Date).AddSeconds(1)));
+            }
+
+            var result = new QueryResult<ActivityLogEntry>(query.Skip, matching.Count, page);
+            return Held ? AfterRelease(result) : Task.FromResult(result);
+        }
+
+        public Task CreateAsync(ActivityLog entry) => throw new NotSupportedException();
+
+        public Task CleanAsync(DateTime startDate) => throw new NotSupportedException();
+
+        private async Task<QueryResult<ActivityLogEntry>> AfterRelease(QueryResult<ActivityLogEntry> result)
+        {
+            await _released.Task;
+            return result;
+        }
+    }
+
+    // A clock the test moves by hand. WaitAsync's time limit runs on its timers, which go off once it passes their time.
+    private sealed class ManualClock : TimeProvider
+    {
+        private readonly object _gate = new();
+        private readonly List<ManualTimer> _timers = new();
+        private DateTimeOffset _now = new(2026, 10, 16, 12, 0, 0, TimeSpan.Zero);
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_gate)
+            {
+                return _now;
+            }
+        }
+
+        public override long GetTimestamp() => GetUtcNow().UtcTicks;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state);
+            timer.Change(dueTime, period);
+            return timer;
+        }
+
+        public void Advance(TimeSpan by)
+        {
+            List<ManualTimer> due;
+            lock (_gate)
+            {
+                _now += by;
+                due = _timers.Where(t => t.Due <= _now).ToList();
+                _timers.RemoveAll(t => t.Due <= _now);
+            }
+
+            foreach (var timer in due)
+            {
+                timer.Fire();
+            }
+        }
+
+        // Goes off once: WaitAsync never asks for a repeating timer.
+        private sealed class ManualTimer : ITimer
+        {
+            private readonly ManualClock _clock;
+            private readonly TimerCallback _callback;
+            private readonly object? _state;
+
+            public ManualTimer(ManualClock clock, TimerCallback callback, object? state)
+            {
+                _clock = clock;
+                _callback = callback;
+                _state = state;
+            }
+
+            public DateTimeOffset Due { get; private set; }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (_clock._gate)
+                {
+                    _clock._timers.Remove(this);
+                    if (dueTime != Timeout.InfiniteTimeSpan)
+                    {
+                        Due = _clock._now + dueTime;
+                        _clock._timers.Add(this);
+                    }
+                }
+
+                return true;
+            }
+
+            public void Fire() => _callback(_state);
+
+            public void Dispose()
+            {
+                lock (_clock._gate)
+                {
+                    _clock._timers.Remove(this);
+                }
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
+    private static ActivityLogEntry Playback(long id, DateTime date) =>
+        new("roamer is playing a film", "VideoPlayback", Guid.Empty) { Id = id, Date = date };
+
+    private static ActivityLogEntry FailedSignIn(long id, DateTime date) =>
+        new("Failed sign-in from roamer", "AuthenticationFailed", Guid.Empty) { Id = id, Date = date, ShortOverview = "IP address: 198.51.100.7" };
+
+    // The checks as the Report runs them, with no accounts; the library check has no user manager and is skipped.
+    private static Task<List<Finding>> ReportAsync(object? log) =>
+        SecurityAuditor.AuditAsync(log, null!, new List<object>(), CancellationToken.None);
+
+    // The roaming list as the Dashboard reads it, with no accounts.
+    private static Task<List<RoamingAccount>?> DashboardAsync(object? log) =>
+        SecurityAuditor.RoamingAccountsAsync(log, new List<object>(), CancellationToken.None);
+
     [Fact]
     public void An_account_is_counted_by_network_and_failed_sign_ins_apart()
     {
@@ -175,9 +345,211 @@ public sealed class SignInTests
     }
 
     [Fact]
-    public void With_no_activity_log_no_account_is_roaming()
+    public void Every_address_inside_the_home_network_counts_as_one_place()
     {
-        Assert.Empty(SecurityAuditor.RoamingAccounts(null, new List<object>())!);
+        // A TV, a phone and a laptop at home, and the same person over Tailscale, are one place; a public address is another.
+        string id = Guid.NewGuid().ToString("N");
+        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [id] = "family" };
+        var entries = new List<object>
+        {
+            new Entry { UserId = id, ShortOverview = "IP address: 192.168.1.10" },
+            new Entry { UserId = id, ShortOverview = "IP address: 192.168.1.11" },
+            new Entry { UserId = id, ShortOverview = "IP address: 192.168.1.12" },
+            new Entry { UserId = id, ShortOverview = "IP address: 100.64.1.1" },
+            new Entry { UserId = id, ShortOverview = "IP address: 203.0.113.10" }
+        };
+
+        var (_, networks) = SecurityAuditor.SignIns(entries, names);
+
+        Assert.Equal(2, networks["family"].Count);
+    }
+
+    [Fact]
+    public async Task Without_an_activity_log_sign_ins_couldnt_be_checked()
+    {
+        Assert.Null(await DashboardAsync(null));
+        var finding = Assert.Single(await ReportAsync(null));
+        Assert.Equal("Sign-ins couldn't be checked this time", finding.Title);
+        Assert.Equal("Jellyfin's activity log isn't available to Medic", finding.Current);
+    }
+
+    [Fact]
+    public async Task A_reading_that_fails_says_sign_ins_couldnt_be_checked()
+    {
+        var log = new FakeActivityLog(Array.Empty<ActivityLogEntry>()) { Failure = new InvalidOperationException("database is locked") };
+
+        Assert.Null(await DashboardAsync(log));
+        var finding = Assert.Single(await ReportAsync(log));
+        Assert.Equal("Sign-ins couldn't be checked this time", finding.Title);
+        Assert.Equal("Reading the activity log failed (InvalidOperationException)", finding.Current);
+    }
+
+    [Fact]
+    public async Task Failed_sign_ins_behind_the_newest_500_entries_are_found()
+    {
+        var now = DateTime.UtcNow;
+        var log = new FakeActivityLog(
+            Enumerable.Range(1, 520).Select(i => Playback(i, now.AddMinutes(-i)))
+                .Concat(Enumerable.Range(1, 12).Select(i => FailedSignIn(1000 + i, now.AddDays(-3).AddMinutes(-i)))));
+
+        var finding = Assert.Single(await ReportAsync(log));
+
+        Assert.Equal("A lot of failed sign-ins", finding.Title);
+        Assert.Equal("12 failed sign-ins in the last 7 days; most from 198.51.100.7 (12)", finding.Current);
+    }
+
+    [Fact]
+    public async Task An_entry_pushed_onto_the_next_page_while_reading_counts_once()
+    {
+        // The first page ends with a failed sign-in; what's logged after that page pushes it onto the second as well.
+        var now = DateTime.UtcNow;
+        var log = new FakeActivityLog(
+            Enumerable.Range(1, 499).Select(i => Playback(i, now.AddMinutes(-i)))
+                .Concat(Enumerable.Range(1, 12).Select(i => FailedSignIn(1000 + i, now.AddHours(-12).AddMinutes(-i)))))
+        {
+            LogsWhileRead = true
+        };
+
+        var finding = Assert.Single(await ReportAsync(log));
+
+        Assert.Equal("12 failed sign-ins in the last 7 days; most from 198.51.100.7 (12)", finding.Current);
+    }
+
+    [Fact]
+    public async Task A_capped_week_with_failed_sign_ins_says_so_on_that_finding_and_adds_no_tip()
+    {
+        var now = DateTime.UtcNow;
+        var log = new FakeActivityLog(
+            Enumerable.Range(1, 12).Select(i => FailedSignIn(i, now.AddMinutes(-i)))
+                .Concat(Enumerable.Range(1, 10_000).Select(i => Playback(100 + i, now.AddHours(-1).AddSeconds(-i)))));
+
+        // Single: the failed sign-ins carry the note, so there's no Tip saying it again.
+        var finding = Assert.Single(await ReportAsync(log));
+
+        Assert.Equal(
+            $"12 failed sign-ins in the last 7 days; most from 198.51.100.7 (12); only the newest {10_000:N0} entries of the activity log were read",
+            finding.Current);
+    }
+
+    [Fact]
+    public async Task A_capped_week_with_nothing_found_says_older_sign_ins_werent_checked()
+    {
+        // Two failed sign-ins aren't a finding, so nothing else would say the oldest part of the week went unread.
+        var now = DateTime.UtcNow;
+        var log = new FakeActivityLog(
+            Enumerable.Range(1, 2).Select(i => FailedSignIn(i, now.AddMinutes(-i)))
+                .Concat(Enumerable.Range(1, 10_000).Select(i => Playback(100 + i, now.AddHours(-1).AddSeconds(-i)))));
+
+        var finding = Assert.Single(await ReportAsync(log));
+
+        Assert.Equal(Sev.Tip, finding.Severity);
+        Assert.Equal("Sign-ins were only partly checked", finding.Title);
+        Assert.Equal(
+            $"Only the newest {10_000:N0} entries of the activity log were read, so older sign-ins in the week weren't checked",
+            finding.Current);
+    }
+
+    [Fact]
+    public async Task Reading_the_log_returns_at_once_and_finishes_when_the_log_answers()
+    {
+        var log = new FakeActivityLog(Array.Empty<ActivityLogEntry>()) { Held = true };
+
+        var roaming = DashboardAsync(log);
+        Assert.False(roaming.IsCompleted);
+
+        log.Release();
+        Assert.Empty((await roaming)!);
+    }
+
+    [Fact]
+    public async Task A_reading_under_way_is_shared_by_the_report_and_the_dashboard()
+    {
+        // A page visit asks for both at once.
+        var log = new FakeActivityLog(Array.Empty<ActivityLogEntry>()) { Held = true };
+
+        var dashboard = DashboardAsync(log);
+        var report = ReportAsync(log);
+        log.Release();
+        await Task.WhenAll(dashboard, report);
+
+        Assert.Equal(1, log.Calls);
+    }
+
+    [Fact]
+    public async Task The_dashboard_reuses_a_good_reading_for_a_minute()
+    {
+        var clock = new ManualClock();
+        var reader = new SecurityAuditor.ActivityLogReader(clock);
+        var log = new FakeActivityLog(Array.Empty<ActivityLogEntry>());
+
+        await reader.ReadAsync(log, reuse: true, CancellationToken.None);
+        clock.Advance(TimeSpan.FromSeconds(59));
+        await reader.ReadAsync(log, reuse: true, CancellationToken.None);
+        Assert.Equal(1, log.Calls);
+
+        clock.Advance(TimeSpan.FromSeconds(2));
+        await reader.ReadAsync(log, reuse: true, CancellationToken.None);
+        Assert.Equal(2, log.Calls);
+    }
+
+    [Fact]
+    public async Task The_report_reads_afresh_and_the_dashboard_uses_its_reading()
+    {
+        var log = new FakeActivityLog(Array.Empty<ActivityLogEntry>());
+
+        await ReportAsync(log);
+        await DashboardAsync(log);
+        Assert.Equal(1, log.Calls);
+
+        await ReportAsync(log);
+        Assert.Equal(2, log.Calls);
+    }
+
+    [Fact]
+    public async Task A_failed_reading_is_not_reused()
+    {
+        // "Open Medic again later" has to mean a new reading, even within the minute.
+        var log = new FakeActivityLog(Array.Empty<ActivityLogEntry>()) { Failure = new InvalidOperationException("database is locked") };
+
+        Assert.Null(await DashboardAsync(log));
+        Assert.Null(await DashboardAsync(log));
+
+        Assert.Equal(2, log.Calls);
+    }
+
+    [Fact]
+    public async Task A_log_that_doesnt_answer_within_15_seconds_is_reported()
+    {
+        var clock = new ManualClock();
+        var reader = new SecurityAuditor.ActivityLogReader(clock);
+        var log = new FakeActivityLog(Array.Empty<ActivityLogEntry>()) { Held = true };
+
+        var reading = reader.ReadAsync(log, reuse: true, CancellationToken.None);
+        clock.Advance(TimeSpan.FromSeconds(14));
+        Assert.False(reading.IsCompleted);
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // Bounded so that a time limit that no longer works fails here instead of hanging the run; never reached otherwise.
+        var result = await reading.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Null(result.Entries);
+        Assert.Equal("The activity log didn't answer within 15 seconds", result.Reason);
+    }
+
+    [Fact]
+    public async Task A_caller_that_gives_up_leaves_the_reading_to_the_others()
+    {
+        var reader = new SecurityAuditor.ActivityLogReader(new ManualClock());
+        var log = new FakeActivityLog(Array.Empty<ActivityLogEntry>()) { Held = true };
+        using var leaving = new CancellationTokenSource();
+
+        var gaveUp = reader.ReadAsync(log, reuse: true, leaving.Token);
+        var waits = reader.ReadAsync(log, reuse: true, CancellationToken.None);
+        leaving.Cancel();
+        Assert.True(gaveUp.IsCanceled);
+
+        log.Release();
+        Assert.NotNull((await waits).Entries);
+        Assert.Equal(1, log.Calls);
     }
 }
 
