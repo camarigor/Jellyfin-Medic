@@ -16,6 +16,7 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 - **The Play link in My requests checks library access.** It checked parental limits only, so a title that arrived in a library the person can't open still got a Play link. It now checks the library too.
 - **My requests loads faster when Seerr is slow.** Titles were looked up one after another, up to 30 at 10 seconds each, and a title Seerr couldn't give was asked for again on every visit. Up to 4 are now looked up at once, a failed one isn't asked for again for 5 minutes, and titles are kept per Seerr server.
 - **Builds read the library less.** "On your server" and Linked picks each read the films and series they choose from; they now share one reading per build, and without Discover the library isn't read for the TMDb ids only Discover uses. Linked picks also match names through a list made once per build instead of comparing every title watched with every title in the library.
+- **Blocked and allowed tags count as parental controls on the server too.** The settings page marked an account with only tag rules as having parental controls, but when serving picks and taking requests the server looked for those tags in a way Jellyfin's user accounts don't offer, so it found none and gave the account Discover even when it wasn't ticked. An account with blocked or allowed tags now gets Discover, and requests from the picks page, only once you tick it, as one with a maximum rating already did.
 
 Thanks @camarigor for reporting the Seerr key redirect (#206).
 
