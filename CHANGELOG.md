@@ -7,6 +7,11 @@ Z changes for fixes, Y for new features, X for changes that break compatibility.
 
 Medic Picks has its own changelog: Jellyfin.Plugin.MedicPicks/CHANGELOG.md.
 
+## Unreleased
+
+### Fixed
+- **The schedule plan no longer ranks quiet hours by memory noise.** On a server where other services keep memory high all day (say 85 to 89%), memory counted in every hour of the server load profile at a level higher than the CPU or the drives, so the plan picked night hours by a few points of memory instead of by when the drives are actually quiet, for example while downloads write to them. Memory now counts only when it rises above the server's usual level, so CPU and drive activity decide again, and a real memory peak still keeps tasks away.
+
 ## [1.0.24] - 2026-10-17
 
 ### Fixed

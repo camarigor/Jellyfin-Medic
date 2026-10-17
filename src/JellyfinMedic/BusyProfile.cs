@@ -10,8 +10,9 @@ namespace JellyfinMedic.Services;
 ///
 /// Once Medic has a few days of readings of how busy the whole server is (CPU, memory and disk
 /// for the machine as a whole, see HostLoadSampler), that counts too: a server flat out costs as
-/// much as two people watching. It covers work from other programs on the same machine, such as
-/// downloads or backups, without Medic knowing what they are.
+/// much as two people watching. Memory counts only above the server's usual level, so services
+/// that keep it high all week don't drown out the CPU and drives. It covers work from other
+/// programs on the same machine, such as downloads or backups, without Medic knowing what they are.
 ///
 /// Viewing is recorded per hour and per quarter hour. Each quarter hour starts from a smooth curve
 /// through the hourly averages, and leans on its own samples as they build up. Without that the
@@ -198,7 +199,7 @@ public sealed class BusyProfile
         }
 
         FromServerLoad = true;
-        Summary += " Also uses how busy the whole server usually is (CPU, memory and disk), learned over "
+        Summary += " Also uses how busy the whole server usually is (CPU, disk, and memory above its usual level), learned over "
             + $"{Math.Max(1, (int)Math.Round(server.HoursCollected / 24))} days, without looking at what uses it.";
     }
 
