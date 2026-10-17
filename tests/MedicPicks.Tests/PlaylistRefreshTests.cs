@@ -164,6 +164,9 @@ public sealed class PlaylistRefreshTests : IDisposable
                     Items.TryRemove(((BaseItem)args![0]!).Id, out _);
                     OnDelete?.Invoke();
                     return null;
+                case var name when name.StartsWith("add_", StringComparison.Ordinal) || name.StartsWith("remove_", StringComparison.Ordinal):
+                    // The engine listens for library changes; these tests never raise one.
+                    return null;
                 default:
                     throw new NotSupportedException(targetMethod.Name);
             }
