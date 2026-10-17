@@ -120,6 +120,18 @@ public sealed class DriveSpaceTests : IDisposable
     }
 
     [Fact]
+    public void Two_mount_points_bound_from_one_disk_are_the_same_drive()
+    {
+        // /config and /cache bind-mounted from one disk: two mount points, one device, so one low-space warning.
+        string? Device(string mount) => mount switch { "/config" => "253:0", "/cache" => "253:0", "/media" => "8:17", _ => null };
+
+        Assert.True(DiagnosticsEngine.SameDrive("/cache", "/config", Device));
+        Assert.False(DiagnosticsEngine.SameDrive("/cache", "/media", Device));
+        Assert.False(DiagnosticsEngine.SameDrive("/cache", "/elsewhere", Device));
+        Assert.True(DiagnosticsEngine.SameDrive("/", "/", _ => null));
+    }
+
+    [Fact]
     public void Without_mount_points_the_cache_on_another_volume_is_another_drive()
     {
         var roots = new Lazy<List<string>>(() => new List<string> { @"C:\", @"D:\" });

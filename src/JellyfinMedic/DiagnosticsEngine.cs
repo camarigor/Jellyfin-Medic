@@ -859,7 +859,7 @@ public sealed class DiagnosticsEngine
                 WhereDocker);
         }
 
-        if (!SameDrive(StorageWatch.DriveOf(_paths.CachePath), StorageWatch.DriveOf(_paths.DataPath)) && SystemProbe.Space(_paths.CachePath) is { } cache && cache.FreeGb < 10)
+        if (!SameDrive(StorageWatch.DriveOf(_paths.CachePath), StorageWatch.DriveOf(_paths.DataPath), mount => StorageWatch.DeviceOf(mount, HostPlatform.Lines("/proc/self/mountinfo"))) && SystemProbe.Space(_paths.CachePath) is { } cache && cache.FreeGb < 10)
         {
             Add(AreaStorage, Sev.Improve, "Low space on the cache drive", $"{SystemProbe.Gb(cache.FreeGb)} free", "At least 10 GB free",
                 "Images and metadata are cached here; when it's full, artwork stops loading.", WhereDocker);
@@ -1801,6 +1801,11 @@ public sealed class DiagnosticsEngine
 
     // A drive that can't be named counts as another drive: one warning too many beats none.
     internal static bool SameDrive(string? driveA, string? driveB) => driveA is not null && driveA == driveB;
+
+    // Two mount points bound from one disk are one drive too.
+    internal static bool SameDrive(string? driveA, string? driveB, Func<string, string?> deviceOf) =>
+        SameDrive(driveA, driveB)
+        || (driveA is not null && driveB is not null && deviceOf(driveA) is { } device && device == deviceOf(driveB));
 
     private static string? Nice(string? hwType) => hwType?.ToLowerInvariant() switch
     {
