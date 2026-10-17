@@ -176,7 +176,7 @@ internal sealed class DashboardBuilder
     {
         lock (ScheduleStorage.SyncRoot)
         {
-            return ScheduleStorage.ReadList<RunRecord>(ScheduleStorage.RunHistoryPath(_paths));
+            return ScheduleStorage.ReadRuns(_paths);
         }
     }
 

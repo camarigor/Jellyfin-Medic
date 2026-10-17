@@ -43,6 +43,7 @@ public sealed class TaskLifecycleListener : IHostedService
     {
         _taskManager.TaskCompleted -= OnTaskCompleted;
         _taskManager.TaskExecuting -= OnTaskExecuting;
+        ScheduleStorage.FlushRuns(_appPaths);
         return Task.CompletedTask;
     }
 

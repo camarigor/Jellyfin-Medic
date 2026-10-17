@@ -28,6 +28,10 @@ public sealed class LoadGuard : IHostedService, IDisposable
     // A heavy task that starts while the whole server is short of memory waits this long at most.
     internal static readonly TimeSpan MaxWait = TimeSpan.FromHours(2);
 
+    // A stopped task still waiting after a restart is started again only if it was stopped this recently; an older
+    // one will have had its next scheduled run by then.
+    internal static readonly TimeSpan KeepAcrossRestart = TimeSpan.FromHours(24);
+
     // A task counts as just started for three checks.
     private static readonly TimeSpan JustStarted = TimeSpan.FromSeconds(60);
     // Jellyfin's own heavy tasks by key (their names are translated into the server's language),
@@ -51,7 +55,8 @@ public sealed class LoadGuard : IHostedService, IDisposable
     private Timer? _timer;
     private int _busy;
 
-    // Tasks we stopped and intend to restart once there's headroom, oldest first.
+    // Tasks we stopped and intend to restart once there's headroom, oldest first. Saved to disk on every change, so a
+    // restart of Jellyfin (Medic's own restart tasks included) doesn't forget them.
     private readonly List<PausedTask> _deferred = new();
     private DateTime _lastActionUtc = DateTime.MinValue;
 
@@ -76,8 +81,30 @@ public sealed class LoadGuard : IHostedService, IDisposable
     /// <summary>Tasks LoadGuard stopped and will restart once memory recovers, oldest first.</summary>
     internal static IReadOnlyList<PausedTask> Paused => Volatile.Read(ref _paused);
 
+    private string DeferredPath => Path.Combine(ScheduleStorage.DataDir(_paths), "loadguard_deferred.json");
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        try
+        {
+            List<PausedTask> saved;
+            lock (ScheduleStorage.SyncRoot)
+            {
+                saved = ScheduleStorage.ReadList<PausedTask>(DeferredPath);
+            }
+
+            _deferred.AddRange(Restore(saved, DateTime.UtcNow));
+            Volatile.Write(ref _paused, _deferred.ToArray());
+            if (_deferred.Count != saved.Count)
+            {
+                SaveDeferred();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Jellyfin Medic: couldn't read the tasks LoadGuard was holding back before the restart.");
+        }
+
         _tasks.TaskExecuting += OnTaskExecuting;
         _timer = new Timer(_ => Tick(), null, CheckEvery, CheckEvery);
         return Task.CompletedTask;
@@ -110,8 +137,22 @@ public sealed class LoadGuard : IHostedService, IDisposable
         try
         {
             var settings = Plugin.Instance?.Configuration;
-            if (settings is null || !settings.LoadGuardEnabled)
+            if (settings is null)
             {
+                return;
+            }
+
+            if (!settings.LoadGuardEnabled)
+            {
+                // Switched off: let go of what it held, rather than start stale tasks if it's switched on days later.
+                if (_deferred.Count > 0)
+                {
+                    _logger.LogInformation("Jellyfin Medic: LoadGuard is off, so the {Count} task(s) it stopped will run at their next scheduled time.", _deferred.Count);
+                    _deferred.Clear();
+                    Volatile.Write(ref _paused, Array.Empty<PausedTask>());
+                    SaveDeferred();
+                }
+
                 return;
             }
 
@@ -248,6 +289,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
         {
             _deferred.Add(new PausedTask { TaskId = id, TaskName = worker.Name, StoppedUtc = DateTime.UtcNow });
             Volatile.Write(ref _paused, _deferred.ToArray());
+            SaveDeferred();
         }
     }
 
@@ -256,6 +298,30 @@ public sealed class LoadGuard : IHostedService, IDisposable
     {
         _deferred.RemoveAt(0);
         Volatile.Write(ref _paused, _deferred.ToArray());
+        SaveDeferred();
+    }
+
+    /// <summary>The saved list as it's taken back after a restart: each task once, and none stopped over a day ago.</summary>
+    internal static List<PausedTask> Restore(IEnumerable<PausedTask> saved, DateTime nowUtc) =>
+        saved.Where(p => p.TaskId.Length > 0 && nowUtc - p.StoppedUtc < KeepAcrossRestart)
+            .GroupBy(p => p.TaskId, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .OrderBy(p => p.StoppedUtc)
+            .ToList();
+
+    private void SaveDeferred()
+    {
+        try
+        {
+            lock (ScheduleStorage.SyncRoot)
+            {
+                ScheduleStorage.WriteJson(DeferredPath, _deferred);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Jellyfin Medic: couldn't save the tasks LoadGuard is holding back; a restart now would forget them.");
+        }
     }
 
     /// <summary>

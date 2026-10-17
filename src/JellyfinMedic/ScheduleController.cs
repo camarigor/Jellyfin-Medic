@@ -92,7 +92,7 @@ public class ScheduleController : ControllerBase
         List<RunRecord> recorded;
         lock (ScheduleStorage.SyncRoot)
         {
-            recorded = ScheduleStorage.ReadList<RunRecord>(ScheduleStorage.RunHistoryPath(_appPaths));
+            recorded = ScheduleStorage.ReadRuns(_appPaths);
         }
 
         var workers = VisibleTasks();
