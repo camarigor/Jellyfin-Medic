@@ -6,8 +6,8 @@ changelog credit contributors without anyone having to remember:
 
   python3 scripts/release_credits.py v1.0.20 [--changes CHANGES.md]
 
-It finds the pull requests merged after the previous release of the same plugin (v*, picks-v* or
-profiles-v*) was published and up to this one, that change that plugin's files. Whoever opened one, other than the
+It finds the pull requests merged after the previous release of the same plugin (v*, picks-v*,
+profiles-v*, posters-v* or film-posters-v*) was published and up to this one, that change that plugin's files. Whoever opened one, other than the
 repository owner and bots, is thanked with their pull requests:
 
   Thanks @someone (#117, #121) for their work on this release.
@@ -33,16 +33,19 @@ import urllib.request
 
 PICKS = "Jellyfin.Plugin.MedicPicks/"
 PROFILES = "Jellyfin.Plugin.MedicProfiles/"
+ANIMATED = "Jellyfin.Plugin.AnimatedPosters/"
+FILM_POSTERS = "Jellyfin.Plugin.MedicPosters/"
 PICKS_TESTS = "tests/MedicPicks.Tests/"
+FILM_POSTERS_TESTS = "tests/MedicPosters.Tests/"
 # Files the release workflows write to main for every plugin, which say nothing about who did the work.
 SHARED = {"manifest.json"}
 
 
 def plugin_prefix(tag: str) -> str:
-    for prefix in ("picks-v", "profiles-v", "v"):
+    for prefix in ("picks-v", "profiles-v", "posters-v", "film-posters-v", "v"):
         if tag.startswith(prefix) and re.fullmatch(r"[0-9]+(\.[0-9]+)*", tag[len(prefix):]):
             return prefix
-    raise ValueError(f"{tag} isn't a release tag (v1.2.3, picks-v1.2.3 or profiles-v1.2.3)")
+    raise ValueError(f"{tag} isn't a release tag (v1.2.3, picks-v1.2.3, profiles-v1.2.3, posters-v1.2.3 or film-posters-v1.2.3)")
 
 
 def belongs_to(prefix: str, path: str) -> bool:
@@ -53,8 +56,12 @@ def belongs_to(prefix: str, path: str) -> bool:
         return path.startswith((PICKS, PICKS_TESTS))
     if prefix == "profiles-v":
         return path.startswith(PROFILES)
+    if prefix == "posters-v":
+        return path.startswith(ANIMATED)
+    if prefix == "film-posters-v":
+        return path.startswith((FILM_POSTERS, FILM_POSTERS_TESTS))
     # Jellyfin Medic is everything else: its code, tests, docs and the build.
-    return not path.startswith((PICKS, PICKS_TESTS, PROFILES))
+    return not path.startswith((PICKS, PICKS_TESTS, PROFILES, ANIMATED, FILM_POSTERS, FILM_POSTERS_TESTS))
 
 
 def version_key(version: str):
@@ -160,8 +167,22 @@ def published(repo: str, tag: str) -> str | None:
 def fetch_pulls(tag: str, repo: str, owner: str) -> list[dict]:
     """Other people's pull requests merged for this release that change its plugin."""
     prefix = plugin_prefix(tag)
-    previous = previous_tag(tag, git("tag", "--list").split())
+    tags = git("tag", "--list").split()
+    previous = previous_tag(tag, tags)
     after = published(repo, previous) if previous else None
+    # A tag without a release (it failed or was deleted) thanked nobody, so count from the release before it.
+    skipped = []
+    while previous and not after:
+        skipped.append(previous)
+        previous = previous_tag(previous, tags)
+        after = published(repo, previous) if previous else None
+    if skipped:
+        names = ", ".join(skipped)
+        if previous:
+            note = f"No release for {names}: the credits start at {previous}'s release ({after})"
+        else:
+            note = f"No release for {names} or earlier: every merged pull request counts"
+        print(note, file=sys.stderr)
     # While the release is being made it isn't published yet, so everything merged until now counts.
     until = published(repo, tag) or "9999"
 

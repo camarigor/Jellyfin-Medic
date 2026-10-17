@@ -255,6 +255,96 @@ public sealed class TodayTests
 
         Assert.Equal(new[] { "ran", "ran" }, today.Planned.Select(p => p.Status));
     }
+
+    [Theory]
+    [InlineData("Cancelled")]
+    [InlineData("Aborted")]
+    public void A_planned_run_whose_only_run_was_cancelled_or_aborted_is_cancelled(string status)
+    {
+        // Stopped five minutes in, by LoadGuard or "Stop running tasks" say, and not run again.
+        var today = At(new[] { Planned("a", "Scan", 180) }, new[] { Dash.Run("a", "Scan", Dash.Utc(2026, 10, 14, 3, 0), minutes: 5, status: status) });
+
+        Assert.Equal("cancelled", Assert.Single(today.Planned).Status);
+    }
+
+    [Fact]
+    public void A_failed_run_still_counts_as_ran()
+    {
+        var today = At(new[] { Planned("a", "Scan", 180) }, new[] { Dash.Run("a", "Scan", Dash.Utc(2026, 10, 14, 3, 0), status: "Failed") });
+
+        Assert.Equal("ran", Assert.Single(today.Planned).Status);
+    }
+
+    [Fact]
+    public void A_rerun_after_a_cancelled_run_takes_its_planned_run_and_is_late_by_its_own_start()
+    {
+        // Both were cancelled at their planned time. Scan ran again at 03:10, Trickplay only at 04:45.
+        var today = At(
+            new[] { Planned("a", "Scan", 180), Planned("b", "Trickplay", 240) },
+            new[]
+            {
+                Dash.Run("a", "Scan", Dash.Utc(2026, 10, 14, 3, 0), minutes: 5, status: "Cancelled"),
+                Dash.Run("a", "Scan", Dash.Utc(2026, 10, 14, 3, 10)),
+                Dash.Run("b", "Trickplay", Dash.Utc(2026, 10, 14, 4, 0), minutes: 5, status: "Cancelled"),
+                Dash.Run("b", "Trickplay", Dash.Utc(2026, 10, 14, 4, 45))
+            });
+
+        Assert.Equal(new[] { "ran", "late" }, today.Planned.Select(p => p.Status));
+    }
+
+    [Fact]
+    public void A_cancelled_run_and_its_rerun_count_for_one_planned_run_only()
+    {
+        // Each task is planned twice, 15 minutes apart. Scan was cancelled at 03:00 and ran again at 03:05;
+        // Trickplay was cancelled at 04:00 and didn't run again.
+        var today = At(
+            new[] { Planned("a", "Scan", 180), Planned("a", "Scan", 195), Planned("b", "Trickplay", 240), Planned("b", "Trickplay", 255) },
+            new[]
+            {
+                Dash.Run("a", "Scan", Dash.Utc(2026, 10, 14, 3, 0), minutes: 2, status: "Cancelled"),
+                Dash.Run("a", "Scan", Dash.Utc(2026, 10, 14, 3, 5)),
+                Dash.Run("b", "Trickplay", Dash.Utc(2026, 10, 14, 4, 0), minutes: 2, status: "Cancelled")
+            });
+
+        Assert.Equal(new[] { "ran", "not run", "cancelled", "not run" }, today.Planned.Select(p => p.Status));
+    }
+
+    [Fact]
+    public void A_run_still_going_at_midnight_stays_in_today_from_minute_0_and_counts_for_its_planned_run()
+    {
+        // At UTC-3 it's 00:10 on 15 October. Scan has been running since 23:50, Refresh ran from 23:30 to 00:05
+        // and Cleanup from 00:02 to 00:05; Trickplay ended at 23:40, before midnight.
+        var runs = new[]
+        {
+            Dash.Run("b", "Refresh", Dash.Utc(2026, 10, 15, 2, 30), minutes: 35),
+            Dash.Run("c", "Trickplay", Dash.Utc(2026, 10, 15, 2, 0), minutes: 40),
+            Dash.Run("d", "Cleanup", Dash.Utc(2026, 10, 15, 3, 2), minutes: 3)
+        };
+        var running = new[] { (TaskId: "a", TaskName: "Scan", StartUtc: Dash.Utc(2026, 10, 15, 2, 50)) };
+
+        var today = DashboardCorrelations.Today(Dash.Utc(2026, 10, 15, 3, 10), Dash.Zone(-3), new[] { Planned("a", "Scan", 0) }, runs, running, Array.Empty<ResourceEvent>(), Array.Empty<LoadGuardEvent>());
+
+        Assert.Equal("2026-10-15", today.Date);
+        Assert.Equal(new[] { "Refresh", "Scan", "Cleanup" }, today.Actual.Select(r => r.TaskName));
+        Assert.Equal(new[] { true, true, false }, today.Actual.Select(r => r.StartedBeforeToday));
+        Assert.Equal(new[] { 0, 0, 2 }, today.Actual.Select(r => r.StartMinutes));
+        Assert.Equal(new[] { 5, 10, 5 }, today.Actual.Select(r => r.EndMinutes));
+        Assert.Equal("ran", Assert.Single(today.Planned).Status);
+        Assert.Equal(1, today.Summary.Running);
+    }
+
+    [Fact]
+    public void A_run_from_before_midnight_counts_for_a_planned_run_by_its_real_start()
+    {
+        // At UTC+14 it's 00:15 on 15 October. Scan has been running since 23:50: 20 minutes before its 00:10
+        // planned run, too early to be that run.
+        var running = new[] { (TaskId: "a", TaskName: "Scan", StartUtc: Dash.Utc(2026, 10, 14, 9, 50)) };
+
+        var today = DashboardCorrelations.Today(Dash.Utc(2026, 10, 14, 10, 15), Dash.Zone(14), new[] { Planned("a", "Scan", 10) }, Array.Empty<RunRecord>(), running, Array.Empty<ResourceEvent>(), Array.Empty<LoadGuardEvent>());
+
+        Assert.Equal("waiting", Assert.Single(today.Planned).Status);
+        Assert.True(Assert.Single(today.Actual).StartedBeforeToday);
+    }
 }
 
 public sealed class TranscodeReasonsTests
