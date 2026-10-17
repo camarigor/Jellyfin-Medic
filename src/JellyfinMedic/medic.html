@@ -2575,7 +2575,8 @@
                         const apply = el('button', 'so-btn so-btn-accent', 'Apply these changes');
                         apply.type = 'button';
                         apply.disabled = !pick(plan, 'Changing');
-                        apply.addEventListener('click', applyPlan);
+                        // Apply only what this preview shows: the server refuses if the plan has changed since.
+                        apply.addEventListener('click', function () { applyPlan(pick(plan, 'PlanHash')); });
                         headRow.appendChild(apply);
                         box.appendChild(headRow);
                         box.appendChild(el('p', 'so-muted so-small', pick(plan, 'BusySummary') || ''));
@@ -2639,19 +2640,24 @@
                     }
                 }
 
-                async function applyPlan() {
+                async function applyPlan(planHash) {
                     if (!window.confirm('Apply the recommended schedule? Your current schedule is backed up first, so you can restore it.')) return;
                     try {
-                        const result = await postJson('/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
+                        const result = await postJson('/JellyfinMedic/Schedule/ApplyRecommendedSchedule', planHash ? { planHash: planHash } : undefined);
                         showStatus(pick(result, 'Message') || 'Schedule applied.', pick(result, 'Success') === false ? 'error' : 'info');
                         $('md-preview-box').hidden = true;
                         await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
                     } catch (err) {
+                        if (err && err.status === 409) {
+                            await showError(err, 'Nothing was changed.');
+                            showPreview(true);
+                            return;
+                        }
                         showError(err, 'Couldn\'t apply the schedule.', 'Check the Jellyfin log for Jellyfin Medic errors.');
                     }
                 }
 
-                $('md-apply').addEventListener('click', applyPlan);
+                $('md-apply').addEventListener('click', function () { applyPlan(); });
 
                 $('md-backup').addEventListener('click', async function () {
                     try {

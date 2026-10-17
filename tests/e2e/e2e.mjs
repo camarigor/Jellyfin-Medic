@@ -1737,6 +1737,40 @@ await check('schedule Preview: choosing per task updates the plan', async () => 
     expect(ours.length === 0, ours.join(' | '));
 });
 
+await check('schedule Apply refuses a plan that changed since the preview, and shows the new one', async () => {
+    const triggers = async () => JSON.stringify((await ok('/ScheduledTasks'))
+        .map((t) => [t.Id, t.Triggers])
+        .sort((a, b) => a[0].localeCompare(b[0])));
+    const scan = (await ok('/ScheduledTasks')).find((t) => t.Key === 'RefreshLibrary');
+    const same = (a, b) => a.replace(/-/g, '').toLowerCase() === b.replace(/-/g, '').toLowerCase();
+    const was = (await ok('/JellyfinMedic/Schedule/PreviewScheduleDiff')).SchedulePlan.find((p) => same(p.TaskId, scan.Id)).Choice;
+    const to = was === 'off' ? 'keep' : 'off';
+    await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+    await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+    const gotIt = page.locator('#md-whatsnew-close');
+    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+    await page.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
+    await page.click('#md-preview');
+    const scanChoice = page.locator('#md-preview-box tbody tr', { hasText: scan.Name }).locator('select');
+    await scanChoice.waitFor({ timeout: 30000 });
+    const before = await triggers();
+    const accept = (dialog) => dialog.accept();
+    page.on('dialog', accept);
+    try {
+        // Another tab changes a choice after this preview was shown.
+        expect((await api('POST', `/JellyfinMedic/Schedule/SetChoice?taskId=${scan.Id}&choice=${to}`)).status === 200, 'SetChoice failed');
+        await page.click('#md-preview-box button:has-text("Apply these changes")');
+        await page.waitForFunction(() => /Preview again/.test(document.querySelector('#JellyfinMedicPage .so-status')?.textContent || ''), null, { timeout: 30000 });
+        await page.waitForFunction(([n, v]) => Array.from(document.querySelectorAll('#md-preview-box tbody tr'))
+            .some((tr) => tr.cells[0].textContent === n && tr.querySelector('select').value === v), [scan.Name, to], { timeout: 30000 });
+        expect(await triggers() === before, 'triggers changed although the plan was stale');
+    } finally {
+        page.off('dialog', accept);
+        await api('POST', `/JellyfinMedic/Schedule/SetChoice?taskId=${scan.Id}&choice=${was}`);
+    }
+    return 'nothing applied, and the preview shows the new plan';
+});
+
 await check('schedule lists the tasks with no time set, with what each does and a recommendation', async () => {
     const list = await ok('/JellyfinMedic/Schedule/GetUntimedTasks');
     const row = (name) => list.find((t) => t.TaskName === name);
