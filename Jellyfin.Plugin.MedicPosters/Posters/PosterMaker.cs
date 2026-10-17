@@ -12,9 +12,10 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicPosters.Posters;
 
-/// <summary>What one poster looks like. Built from the settings, plus the film's own title and length.</summary>
+/// <summary>What one poster or library cover looks like, built from the settings.</summary>
 public sealed record PosterSpec(
     int Width,
+    int Height,
     int Moments,
     double MomentSeconds,
     int FramesPerSecond,
@@ -22,11 +23,23 @@ public sealed record PosterSpec(
     bool ShowTitle,
     bool ShowFrame)
 {
-    public int Height => Width * 3 / 2;
+    /// <summary>The settings as a 2:3 poster spec, with every value kept in a range that makes a sensible GIF.</summary>
+    public static PosterSpec From(Configuration.PluginConfiguration c)
+    {
+        int width = Math.Clamp(c.Width / 2 * 2, 120, 600);
+        return Make(c, width, width * 3 / 2);
+    }
 
-    /// <summary>The settings as a poster spec, with every value kept in a range that makes a sensible GIF.</summary>
-    public static PosterSpec From(Configuration.PluginConfiguration c) => new(
-        Math.Clamp(c.Width / 2 * 2, 120, 600),
+    /// <summary>The settings as a 16:9 library cover spec, the shape of Jellyfin's library cards.</summary>
+    public static PosterSpec CoverFrom(Configuration.PluginConfiguration c)
+    {
+        int width = Math.Clamp(c.CoverWidth / 2 * 2, 240, 960);
+        return Make(c, width, width * 9 / 16 / 2 * 2);
+    }
+
+    private static PosterSpec Make(Configuration.PluginConfiguration c, int width, int height) => new(
+        width,
+        height,
         Math.Clamp(c.Moments, 1, 6),
         Math.Clamp(c.MomentTenths, 5, 30) / 10.0,
         Math.Clamp(c.FramesPerSecond, 4, 15),
@@ -34,6 +47,9 @@ public sealed record PosterSpec(
         c.ShowTitle,
         c.ShowFrame);
 }
+
+/// <summary>One moment of a poster: which video, where in it to start, and whether it's HDR.</summary>
+public sealed record Clip(string Path, double Start, bool Hdr);
 
 /// <summary>
 /// Makes an animated GIF poster with Jellyfin's own FFmpeg: a short clip from a few moments of the
@@ -58,10 +74,14 @@ public class PosterMaker
     }
 
     /// <summary>
-    /// Makes a poster for a film and writes it to <paramref name="output"/>. Returns null when it worked,
-    /// otherwise a short reason, which is shown on the settings page.
+    /// Makes a poster from moments of one video and writes it to <paramref name="output"/>. Returns null when it
+    /// worked, otherwise a short reason, which is shown on the settings page.
     /// </summary>
-    public async Task<string?> MakeAsync(string videoPath, string title, double? runtimeSeconds, bool hdr, PosterSpec spec, string output, CancellationToken ct)
+    public Task<string?> MakeAsync(string videoPath, string title, double? runtimeSeconds, bool hdr, PosterSpec spec, string output, CancellationToken ct) =>
+        MakeAsync(MomentStarts(runtimeSeconds, spec.Moments, spec.MomentSeconds).Select(s => new Clip(videoPath, s, hdr)).ToList(), title, spec, output, ct);
+
+    /// <summary>Makes a poster or cover from the given moments, which may come from different videos.</summary>
+    public async Task<string?> MakeAsync(IReadOnlyList<Clip> clips, string title, PosterSpec spec, string output, CancellationToken ct)
     {
         string? ffmpeg = _mediaEncoder.EncoderPath;
         if (string.IsNullOrEmpty(ffmpeg) || !File.Exists(ffmpeg))
@@ -78,20 +98,19 @@ public class PosterMaker
             await File.WriteAllTextAsync(Path.Combine(work, "poster.ass"), BuildAss(spec, title), new UTF8Encoding(false), ct).ConfigureAwait(false);
             await WriteFontAsync(Path.Combine(work, "fonts", FontFile), ct).ConfigureAwait(false);
             string temp = Path.Combine(work, "poster.gif");
-            var starts = MomentStarts(runtimeSeconds, spec.Moments, spec.MomentSeconds);
 
-            var (exit, error) = await RunAsync(ffmpeg, work, BuildArgs(videoPath, starts, spec, hdr, temp), ct).ConfigureAwait(false);
-            if (exit != 0 && hdr)
+            var (exit, error) = await RunAsync(ffmpeg, work, BuildArgs(clips, spec, temp), ct).ConfigureAwait(false);
+            if (exit != 0 && clips.Any(c => c.Hdr))
             {
                 // An FFmpeg without HDR conversion: a washed-out poster beats no poster.
-                _logger.LogInformation("Medic Posters: HDR conversion failed for {Path}, trying without it", videoPath);
-                (exit, error) = await RunAsync(ffmpeg, work, BuildArgs(videoPath, starts, spec, false, temp), ct).ConfigureAwait(false);
+                _logger.LogInformation("Medic Posters: HDR conversion failed for {Title}, trying without it", title);
+                (exit, error) = await RunAsync(ffmpeg, work, BuildArgs(clips.Select(c => c with { Hdr = false }).ToList(), spec, temp), ct).ConfigureAwait(false);
             }
 
             if (exit != 0 || !File.Exists(temp) || new FileInfo(temp).Length == 0)
             {
-                _logger.LogWarning("Medic Posters: FFmpeg couldn't make a poster for {Path} (exit {Exit}): {Error}", videoPath, exit, error);
-                return exit == -1 ? "FFmpeg took too long and was stopped." : "FFmpeg couldn't read this film: " + LastLine(error);
+                _logger.LogWarning("Medic Posters: FFmpeg couldn't make a poster for {Title} from {Paths} (exit {Exit}): {Error}", title, string.Join(", ", clips.Select(c => c.Path).Distinct()), exit, error);
+                return exit == -1 ? "FFmpeg took too long and was stopped." : "FFmpeg couldn't read the video: " + LastLine(error);
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(output)!);
@@ -136,30 +155,49 @@ public class PosterMaker
         return starts;
     }
 
-    /// <summary>FFmpeg's arguments: one fast seek per moment, each cropped to the poster, joined, drawn on, and turned into a GIF.</summary>
-    public static IReadOnlyList<string> BuildArgs(string videoPath, IReadOnlyList<double> starts, PosterSpec spec, bool hdr, string output)
+    /// <summary>
+    /// A random moment between 15% and 75% of a video, for posters and covers that take one moment from each of
+    /// several videos. A video of unknown length, or too short, starts at its beginning.
+    /// </summary>
+    public static double RandomStart(double? runtimeSeconds, double momentSeconds, Random random)
     {
-        var args = new List<string> { "-hide_banner", "-nostdin", "-loglevel", "error", "-y" };
-        foreach (var start in starts)
+        double length = runtimeSeconds is > 0 ? runtimeSeconds.Value : 0;
+        if (length <= momentSeconds * 3)
         {
-            args.AddRange(new[] { "-ss", Num(start), "-t", Num(spec.MomentSeconds), "-i", videoPath });
+            return 0;
         }
 
-        string toSdr = hdr
-            ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,"
-            : string.Empty;
-        var graph = new StringBuilder();
-        for (int i = 0; i < starts.Count; i++)
+        return Math.Round(Math.Min(length * (0.15 + (0.6 * random.NextDouble())), length - momentSeconds), 2);
+    }
+
+    /// <summary>FFmpeg's arguments for moments of one video.</summary>
+    public static IReadOnlyList<string> BuildArgs(string videoPath, IReadOnlyList<double> starts, PosterSpec spec, bool hdr, string output) =>
+        BuildArgs(starts.Select(s => new Clip(videoPath, s, hdr)).ToList(), spec, output);
+
+    /// <summary>FFmpeg's arguments: one fast seek per moment, each cropped to the poster, joined, drawn on, and turned into a GIF.</summary>
+    public static IReadOnlyList<string> BuildArgs(IReadOnlyList<Clip> clips, PosterSpec spec, string output)
+    {
+        var args = new List<string> { "-hide_banner", "-nostdin", "-loglevel", "error", "-y" };
+        foreach (var clip in clips)
         {
+            args.AddRange(new[] { "-ss", Num(clip.Start), "-t", Num(spec.MomentSeconds), "-i", clip.Path });
+        }
+
+        var graph = new StringBuilder();
+        for (int i = 0; i < clips.Count; i++)
+        {
+            string toSdr = clips[i].Hdr
+                ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,"
+                : string.Empty;
             graph.Append(CultureInfo.InvariantCulture, $"[{i}:v:0]{toSdr}fps={spec.FramesPerSecond},scale={spec.Width}:{spec.Height}:force_original_aspect_ratio=increase,crop={spec.Width}:{spec.Height},setsar=1,format=yuv420p[m{i}];");
         }
 
-        for (int i = 0; i < starts.Count; i++)
+        for (int i = 0; i < clips.Count; i++)
         {
             graph.Append(CultureInfo.InvariantCulture, $"[m{i}]");
         }
 
-        graph.Append(CultureInfo.InvariantCulture, $"concat=n={starts.Count}:v=1:a=0,");
+        graph.Append(CultureInfo.InvariantCulture, $"concat=n={clips.Count}:v=1:a=0,");
         graph.Append("ass=filename=poster.ass:fontsdir=fonts,");
         graph.Append(CultureInfo.InvariantCulture, $"split[a][b];[a]palettegen=max_colors={spec.Colours}:stats_mode=full[p];[b][p]paletteuse=dither=bayer:bayer_scale=3");
 
@@ -180,12 +218,14 @@ public class PosterMaker
         ass.Append("ScaledBorderAndShadow: yes\nWrapStyle: 0\n\n");
 
         string text = AssText(title);
-        int size = TitleSize(w, text.Length);
-        int margin = (int)Math.Round(w * 0.09);
+        // Sized by the shorter side, so a wide library cover's title fits its height like a poster's fits its width.
+        int side = Math.Min(w, h);
+        int size = TitleSize(side, text.Length);
+        int margin = (int)Math.Round(side * 0.09);
         int marginBottom = (int)Math.Round(h * 0.1);
         ass.Append("[V4+ Styles]\n");
         ass.Append("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
-        ass.Append(CultureInfo.InvariantCulture, $"Style: Title,{FontName},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,1,0,1,0,{Num(Math.Max(1, w / 160.0))},2,{margin},{margin},{marginBottom},1\n");
+        ass.Append(CultureInfo.InvariantCulture, $"Style: Title,{FontName},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,1,0,1,0,{Num(Math.Max(1, side / 160.0))},2,{margin},{margin},{marginBottom},1\n");
         ass.Append("Style: Draw,Arial,10,&H00FFFFFF,&H00FFFFFF,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n\n");
 
         ass.Append("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
@@ -193,13 +233,13 @@ public class PosterMaker
         if (spec.ShowTitle && text.Length > 0)
         {
             // Darkens the lower part so white text reads on any picture; the blur gives it a soft top edge.
-            int top = (int)Math.Round(h * 0.62), blur = Math.Max(4, w / 14);
+            int top = (int)Math.Round(h * 0.62), blur = Math.Max(4, side / 14);
             ass.Append(CultureInfo.InvariantCulture, $"Dialogue: 0,{Always},Draw,,0,0,0,,{{\\pos(0,0)\\an7\\bord0\\shad0\\1c&H000000&\\1a&H50&\\blur{blur}\\p1}}m {-2 * blur} {top} l {w + (2 * blur)} {top} {w + (2 * blur)} {h + (2 * blur)} {-2 * blur} {h + (2 * blur)}{{\\p0}}\n");
         }
 
         if (spec.ShowFrame)
         {
-            double pad = Math.Round(w * 0.035, 1), radius = Math.Round(w * 0.045, 1), line = Math.Max(2, Math.Round(w / 80.0, 1));
+            double pad = Math.Round(side * 0.035, 1), radius = Math.Round(side * 0.045, 1), line = Math.Max(2, Math.Round(side / 80.0, 1));
             string outer = RoundedRect(pad, pad, w - pad, h - pad, radius, clockwise: true);
             string inner = RoundedRect(pad + line, pad + line, w - pad - line, h - pad - line, Math.Max(1, radius - line), clockwise: false);
             ass.Append(CultureInfo.InvariantCulture, $"Dialogue: 1,{Always},Draw,,0,0,0,,{{\\pos(0,0)\\an7\\bord0\\shad1\\4a&HA0&\\1c&HFFFFFF&\\p1}}{outer} {inner}{{\\p0}}\n");

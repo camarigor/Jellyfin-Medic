@@ -30,8 +30,8 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public override Guid Id => Guid.Parse(PluginGuid);
 
     public override string Description =>
-        "Animated posters for your films, made from moments of each film with its title on top. "
-        + "Your own posters are kept and can be put back at any time.";
+        "Animated posters for your films and series, and animated covers for your libraries, made from moments of your videos with the title on top. "
+        + "Your own pictures are kept and can be put back at any time.";
 
     public IEnumerable<PluginPageInfo> GetPages()
     {

@@ -28,8 +28,8 @@ env:
   NAME: 'Medic Posters'
   OWNER: 'P1zzm1ssile'
   TARGET_ABI: '12.0.0.0'   # built against Jellyfin 12.0, so it loads on 12.0 and 12.1
-  DESCRIPTION: "An animated poster for every film, made from moments of the film."
-  OVERVIEW: "A small animated GIF poster for every film, cut from a few moments of it with its title in a big serif font and a rounded white frame. Each film's own poster is kept and can be put back."
+  DESCRIPTION: "Animated posters for films and series, and animated library covers, made from moments of your videos."
+  OVERVIEW: "Small animated GIF posters for films and series, and wide animated covers for libraries, cut from moments of your videos with the title in a big serif font and a rounded white frame. Each item's own picture is kept and can be put back."
   IMAGE: 'https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicPosters/thumb.png'
 
 jobs:

@@ -767,8 +767,12 @@ Found under Plugins -> Medic Posters. Settings are for administrators only.
 4.1  THE POSTERS
 -------------------------------------------------------------------------------
 
-  - A short animated GIF for each film: a few moments of the film (spread
-    from 15% to 75% of the way through), cropped to a 2:3 poster.
+  - A short animated GIF for each film, series, home video and music video:
+    a few moments of the film (spread from 15% to 75% of the way through),
+    or one from each of a few episodes of a series, cropped to a 2:3 poster.
+  - A wide 16:9 animated cover for each library, the shape of Jellyfin's
+    library cards, cut from moments of a few random things in it, with the
+    library's name. Can be turned off; four sizes, 320 x 180 to 640 x 360.
   - The title in capitals in Bodoni Moda over a soft dark band, and a
     rounded white frame. Either can be turned off.
   - GIF because Jellyfin never resizes a GIF, so the poster reaches apps
@@ -787,8 +791,8 @@ Found under Plugins -> Medic Posters. Settings are for administrators only.
     with progress while it runs.
   - Posters changed by hand (or by a metadata refresh that replaces images)
     are left alone, unless you press Make them all again.
-  - Preview: a poster for a random film with the current settings, and its
-    size, without changing the film.
+  - Preview: a poster for a random film or series, or a cover for a random
+    library, with the current settings, and its size, without changing it.
   - Films without a poster are listed with the reason (a stream, a disc
     folder, a missing file, or one FFmpeg can't read).
 
@@ -797,7 +801,8 @@ Found under Plugins -> Medic Posters. Settings are for administrators only.
 4.3  SETTINGS
 -------------------------------------------------------------------------------
 
-  - Which film libraries (all of them if none are ticked).
+  - Which libraries: films, TV, home videos, music videos and mixed (all of
+    them if none are ticked).
   - Size: 160 x 240, 200 x 300, 240 x 360 or 300 x 450.
   - How many moments (1 to 6) and how long each plays (0.5 to 3 seconds).
   - Frames per second (6 to 15) and colours (48 to 256).

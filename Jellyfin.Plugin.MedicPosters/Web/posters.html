@@ -6,7 +6,7 @@
                 <h2 class="po-title"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#7cc0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2.5" width="14" height="19" rx="2.5"></rect><path d="M10 9.5l4.5 2.5-4.5 2.5z"></path></svg>Medic Posters</h2>
                 <button id="po-refresh" type="button" class="po-btn po-btn-plain">Refresh</button>
             </div>
-            <p class="po-muted po-intro">Animated posters for your films, cut from moments of each film with its title on top. Each film's own poster is kept, and <strong>Put back the original posters</strong> brings them all back.</p>
+            <p class="po-muted po-intro">Animated posters for your films and series, and animated covers for your libraries, cut from moments of what's in them with the title on top. Their own pictures are kept, and <strong>Put back the original posters</strong> brings them all back.</p>
             <div id="po-errors"></div>
 
             <!-- Summary and actions -->
@@ -24,24 +24,27 @@
                     <button type="button" id="po-restore-all" class="po-btn po-btn-danger">Put back the original posters</button>
                 </div>
                 <div id="po-confirm" class="po-confirm" hidden>
-                    <p>Put every film's own poster back and delete the animated ones? Films whose poster you changed yourself since are left as they are.</p>
+                    <p>Put every film's, series' and library's own picture back and delete the animated ones? Ones you changed yourself since are left as they are.</p>
                     <div class="po-row">
                         <button type="button" id="po-confirm-yes" class="po-btn po-btn-danger">Put them back</button>
                         <button type="button" id="po-confirm-no" class="po-btn po-btn-plain">Cancel</button>
                     </div>
                 </div>
                 <p id="po-note" class="po-note" aria-live="polite"></p>
-                <p class="po-muted po-small">New films get a poster each night from the <strong>Make animated posters</strong> scheduled task. A poster you change yourself (or a metadata refresh that replaces images) is left alone; <strong>Make them all again</strong> replaces those too.</p>
+                <p class="po-muted po-small">New films and series get a poster each night from the <strong>Make animated posters</strong> scheduled task. A poster you change yourself (or a metadata refresh that replaces images) is left alone; <strong>Make them all again</strong> replaces those too.</p>
             </section>
 
             <!-- Preview -->
             <section class="po-card">
                 <h3 class="po-h3">Preview</h3>
-                <p class="po-muted po-small">Makes a poster for a random film with the saved settings, without changing the film.</p>
+                <p class="po-muted po-small">Makes a poster for a random film or series, or a cover for a random library, with the saved settings, without changing anything.</p>
                 <div class="po-preview">
-                    <div class="po-preview-frame"><img id="po-preview-img" alt="" hidden><span id="po-preview-empty" class="po-muted po-small">No preview yet</span></div>
+                    <div id="po-preview-frame" class="po-preview-frame"><img id="po-preview-img" alt="" hidden><span id="po-preview-empty" class="po-muted po-small">No preview yet</span></div>
                     <div>
-                        <button type="button" id="po-preview" class="po-btn po-btn-accent">Make a preview</button>
+                        <div class="po-row po-row-tight">
+                            <button type="button" id="po-preview" class="po-btn po-btn-accent">Preview a poster</button>
+                            <button type="button" id="po-preview-cover" class="po-btn po-btn-plain">Preview a library cover</button>
+                        </div>
                         <p id="po-preview-info" class="po-small" aria-live="polite"></p>
                     </div>
                 </div>
@@ -52,13 +55,25 @@
                 <h3 class="po-h3">Settings</h3>
                 <fieldset>
                     <legend>Libraries</legend>
-                    <p class="po-muted po-small">Leave them all unticked to make posters for every film library.</p>
+                    <p class="po-muted po-small">Leave them all unticked for every library with videos in it: films, TV, home videos and music videos.</p>
                     <div id="po-libraries"></div>
                 </fieldset>
                 <fieldset>
                     <legend>Look</legend>
-                    <label class="po-check"><input type="checkbox" id="po-title"> The film's title</label>
+                    <label class="po-check"><input type="checkbox" id="po-title"> The title (the library's name on a cover)</label>
                     <label class="po-check"><input type="checkbox" id="po-frame"> A rounded white frame</label>
+                </fieldset>
+                <fieldset>
+                    <legend>Library covers</legend>
+                    <label class="po-check"><input type="checkbox" id="po-covers"> Give each library an animated cover too, cut from moments of a few random things in it</label>
+                    <label class="po-field"><span>Cover size</span>
+                        <select id="po-cover-width" class="po-input">
+                            <option value="320">Small (320 × 180)</option>
+                            <option value="400">Medium (400 × 224)</option>
+                            <option value="480">Large (480 × 270)</option>
+                            <option value="640">Extra large (640 × 360)</option>
+                        </select>
+                    </label>
                 </fieldset>
                 <fieldset>
                     <legend>Size and length</legend>
@@ -112,7 +127,7 @@
 
             <!-- Failures -->
             <section class="po-card" id="po-failures-card" hidden>
-                <h3 class="po-h3">Films without a poster</h3>
+                <h3 class="po-h3">Without an animated poster</h3>
                 <ul id="po-failures" class="po-list"></ul>
             </section>
         </div>
@@ -147,6 +162,8 @@
         #MedicPostersPage .po-note.ok { color: #7fe0b5; }
         #MedicPostersPage .po-note.bad { color: #ff9a9e; }
         #MedicPostersPage .po-preview { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
+        #MedicPostersPage .po-row-tight { margin-top: 0; }
+        #MedicPostersPage .po-preview-frame.po-wide { width: 320px; aspect-ratio: 16 / 9; }
         #MedicPostersPage .po-preview-frame { width: 160px; aspect-ratio: 2 / 3; background: #111; border-radius: 6px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         #MedicPostersPage .po-preview-frame img { width: 100%; height: 100%; object-fit: cover; }
         #MedicPostersPage .po-form fieldset { border: 1px solid #2e3138; border-radius: 6px; padding: 10px 14px; margin: 0 0 12px; }
@@ -160,6 +177,8 @@
         #MedicPostersPage .po-grid { list-style: none; margin: 8px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
         #MedicPostersPage .po-grid li { display: grid; gap: 4px; align-content: start; }
         #MedicPostersPage .po-grid img { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 4px; background: #111; }
+        #MedicPostersPage .po-grid li.po-wide { grid-column: span 2; }
+        #MedicPostersPage .po-grid li.po-wide img { aspect-ratio: 16 / 9; }
         #MedicPostersPage .po-grid .po-name { font-size: 0.82em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         #MedicPostersPage .po-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
         #MedicPostersPage .po-list li { font-size: 0.9em; }
@@ -237,13 +256,15 @@
                     setSelect('po-moment-length', s.momentTenths);
                     setSelect('po-fps', s.framesPerSecond);
                     setSelect('po-colours', s.colours);
+                    $('po-covers').checked = !!s.makeLibraryCovers;
+                    setSelect('po-cover-width', s.coverWidth);
                 }
 
                 function fillLibraries(libraries, chosen) {
                     const box = $('po-libraries');
                     box.textContent = '';
                     if (!libraries.length) {
-                        box.appendChild(el('p', 'po-muted po-small', 'This server has no film libraries.'));
+                        box.appendChild(el('p', 'po-muted po-small', 'This server has no libraries with videos in them.'));
                         return;
                     }
                     libraries.forEach(function (lib) {
@@ -259,9 +280,10 @@
                 }
 
                 function render(s, firstLoad) {
-                    $('po-summary').textContent = s.films === 0
-                        ? 'No films in the chosen libraries yet.'
-                        : s.made + ' of ' + s.films + ' films have an animated poster' + (s.made ? ' (about ' + kb(s.averageBytes) + ' each).' : '.');
+                    $('po-summary').textContent = (s.films === 0
+                        ? 'No films or series in the chosen libraries yet.'
+                        : s.made + ' of ' + s.films + ' films and series have an animated poster' + (s.made ? ' (about ' + kb(s.averageBytes) + ' each).' : '.'))
+                        + (s.coverLibraries ? ' ' + s.coversMade + ' of ' + s.coverLibraries + ' librar' + (s.coverLibraries === 1 ? 'y has' : 'ies have') + ' an animated cover.' : '');
                     const last = s.lastRun;
                     $('po-lastrun').textContent = last && last.finishedUtc
                         ? 'Last run ' + when(last.finishedUtc) + ': ' + last.made + ' made, ' + last.failed + ' couldn’t be made, ' + last.leftAlone + ' left alone' + (last.cancelled ? ' (stopped)' : '') + '.'
@@ -271,11 +293,11 @@
                     $('po-stop').hidden = !s.running;
                     $('po-run').disabled = s.running;
                     $('po-redo').disabled = s.running;
-                    $('po-restore-all').disabled = s.running || s.made === 0;
+                    $('po-restore-all').disabled = s.running || (s.made === 0 && !s.coversMade);
                     if (s.running) {
                         const p = s.progress;
                         const pct = p && p.total ? Math.round(100 * p.done / p.total) : 0;
-                        $('po-progress-text').textContent = p ? 'Making posters: ' + p.done + ' of ' + p.total + (p.current ? ' (' + p.current + ')' : '') : 'Starting…';
+                        $('po-progress-text').textContent = p ? 'Making posters and covers: ' + p.done + ' of ' + p.total + (p.current ? ' (' + p.current + ')' : '') : 'Starting…';
                         $('po-progress-bar').style.width = pct + '%';
                     }
 
@@ -288,17 +310,18 @@
                     grid.textContent = '';
                     $('po-recent-empty').hidden = s.recent.length > 0;
                     s.recent.forEach(function (p) {
-                        const li = el('li');
+                        const cover = p.kind === 'cover';
+                        const li = el('li', cover ? 'po-wide' : null);
                         const img = el('img');
                         img.loading = 'lazy';
-                        img.alt = 'Poster for ' + p.title;
+                        img.alt = (cover ? 'Cover for the library ' : 'Poster for ') + p.title;
                         img.src = ApiClient.getUrl('Items/' + p.itemId + '/Images/Primary', { v: new Date(p.madeUtc).getTime() });
                         li.appendChild(img);
                         li.appendChild(el('span', 'po-name', p.title)).title = p.title;
                         li.appendChild(el('span', 'po-muted po-small', kb(p.bytes)));
                         const back = el('button', 'po-btn po-btn-plain po-btn-small', 'Put back');
                         back.type = 'button';
-                        back.title = 'Put back the own poster of ' + p.title;
+                        back.title = 'Put back the own ' + (cover ? 'picture' : 'poster') + ' of ' + p.title;
                         back.addEventListener('click', function () {
                             back.disabled = true;
                             post('Restore/' + p.itemId).then(function () { load(); }).catch(function () {
@@ -335,7 +358,7 @@
                 function run(redoAll) {
                     note('');
                     post('Run' + (redoAll ? '?redoAll=true' : '')).then(function () {
-                        note(redoAll ? 'Making every poster again.' : 'Making posters for films that don’t have one.', true);
+                        note(redoAll ? 'Making every poster and cover again.' : 'Making posters and covers for the ones that don’t have one.', true);
                         setTimeout(load, 1000);
                     }).catch(function () {
                         note('Posters are already being made, or the task couldn’t start.', false);
@@ -356,16 +379,17 @@
                     $('po-confirm').hidden = true;
                     note('Putting the original posters back…', true);
                     post('RestoreAll', {}, true).then(function (r) {
-                        note('Put back ' + r.restored + ' original poster' + (r.restored === 1 ? '' : 's') + '.', true);
+                        note('Put back ' + r.restored + ' original picture' + (r.restored === 1 ? '' : 's') + '.', true);
                         load();
                     }).catch(function () { note('The posters weren’t put back. Stop any run that’s going, then try again.', false); });
                 });
 
-                $('po-preview').addEventListener('click', function () {
-                    const button = $('po-preview');
-                    button.disabled = true;
-                    $('po-preview-info').textContent = 'Making a poster…';
-                    post('Preview', {}, true).then(function (r) {
+                function preview(kind) {
+                    const buttons = [$('po-preview'), $('po-preview-cover')];
+                    const cover = kind === 'cover';
+                    buttons.forEach(function (b) { b.disabled = true; });
+                    $('po-preview-info').textContent = cover ? 'Making a library cover…' : 'Making a poster…';
+                    post('Preview', { kind: kind }, true).then(function (r) {
                         if (!r.ok) {
                             $('po-preview-info').textContent = (r.title ? r.title + ': ' : '') + r.error;
                             return null;
@@ -383,15 +407,18 @@
                             previewUrl = URL.createObjectURL(blob);
                             const img = $('po-preview-img');
                             img.src = previewUrl;
-                            img.alt = 'Preview poster for ' + r.title;
+                            img.alt = (cover ? 'Preview cover for the library ' : 'Preview poster for ') + r.title;
                             img.hidden = false;
+                            $('po-preview-frame').classList.toggle('po-wide', cover);
                             $('po-preview-empty').hidden = true;
-                            button.textContent = 'Try another film';
                         });
                     }).catch(function () {
                         $('po-preview-info').textContent = 'The preview couldn’t be made. Try again.';
-                    }).then(function () { button.disabled = false; });
-                });
+                    }).then(function () { buttons.forEach(function (b) { b.disabled = false; }); });
+                }
+
+                $('po-preview').addEventListener('click', function () { preview('poster'); });
+                $('po-preview-cover').addEventListener('click', function () { preview('cover'); });
 
                 $('po-form').addEventListener('submit', function (e) {
                     e.preventDefault();
@@ -405,7 +432,9 @@
                         framesPerSecond: parseInt($('po-fps').value, 10),
                         colours: parseInt($('po-colours').value, 10),
                         showTitle: $('po-title').checked,
-                        showFrame: $('po-frame').checked
+                        showFrame: $('po-frame').checked,
+                        makeLibraryCovers: $('po-covers').checked,
+                        coverWidth: parseInt($('po-cover-width').value, 10)
                     };
                     const saved = $('po-saved');
                     post('Settings', body).then(function () {

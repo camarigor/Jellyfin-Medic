@@ -80,4 +80,49 @@ public class PosterMakerTests
         var spec = PosterSpec.From(new PluginConfiguration { Width = 5001, Moments = 0, MomentTenths = 1, FramesPerSecond = 100, Colours = 2 });
         Assert.Equal((600, 900, 1, 0.5, 15, 16), (spec.Width, spec.Height, spec.Moments, spec.MomentSeconds, spec.FramesPerSecond, spec.Colours));
     }
+
+    [Fact]
+    public void Library_covers_are_16_by_9_and_kept_to_sensible_sizes()
+    {
+        var cover = PosterSpec.CoverFrom(new PluginConfiguration());
+        Assert.Equal((480, 270), (cover.Width, cover.Height));
+        Assert.Equal((960, 540), (PosterSpec.CoverFrom(new PluginConfiguration { CoverWidth = 4000 }) is var big ? (big.Width, big.Height) : default));
+        Assert.Equal(0, PosterSpec.CoverFrom(new PluginConfiguration { CoverWidth = 401 }).Height % 2);
+    }
+
+    [Fact]
+    public void A_cover_title_is_sized_by_its_height_so_it_fits()
+    {
+        var cover = PosterSpec.CoverFrom(new PluginConfiguration());
+        var ass = PosterMaker.BuildAss(cover, "Movies");
+        Assert.Contains("PlayResX: 480\nPlayResY: 270", ass);
+        Assert.Contains("Style: Title,Bodoni Moda," + PosterMaker.TitleSize(270, "MOVIES".Length) + ",", ass);
+    }
+
+    [Fact]
+    public void Moments_from_several_videos_each_get_their_own_input_and_only_hdr_ones_are_tone_mapped()
+    {
+        var clips = new[] { new Clip("/tv/a.mkv", 100, false), new Clip("/tv/b.mkv", 200.5, true), new Clip("/tv/c.mkv", 0, false) };
+        var args = PosterMaker.BuildArgs(clips, Spec, "/tmp/out.gif").ToList();
+        Assert.Equal(new[] { "/tv/a.mkv", "/tv/b.mkv", "/tv/c.mkv" }, args.Select((a, i) => (a, i)).Where(x => x.i > 0 && args[x.i - 1] == "-i").Select(x => x.a));
+        var graph = args[args.IndexOf("-filter_complex") + 1];
+        Assert.Contains("concat=n=3:v=1:a=0", graph);
+        Assert.DoesNotContain("[0:v:0]zscale", graph);
+        Assert.Contains("[1:v:0]zscale", graph);
+        Assert.DoesNotContain("[2:v:0]zscale", graph);
+    }
+
+    [Fact]
+    public void A_random_moment_is_past_the_opening_and_before_the_credits()
+    {
+        var random = new Random(7);
+        for (int i = 0; i < 200; i++)
+        {
+            double at = PosterMaker.RandomStart(1000, 1, random);
+            Assert.InRange(at, 150, 750);
+        }
+
+        Assert.Equal(0, PosterMaker.RandomStart(null, 1, random));
+        Assert.Equal(0, PosterMaker.RandomStart(2, 1, random));
+    }
 }

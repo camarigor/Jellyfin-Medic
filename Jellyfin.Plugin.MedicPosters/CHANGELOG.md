@@ -3,6 +3,16 @@
 All notable changes to Medic Posters are recorded here. The newest version is at the top.
 Jellyfin Medic, Medic Picks and Medic Profiles have their own changelogs.
 
+## [1.1.0] – 2026-10-17
+
+### Added
+- **Every library with videos in it, not only films.** TV, home video, music video and mixed libraries are offered too. A series gets a poster cut from moments of a few of its episodes, and home videos and music videos get one like a film.
+- **Animated library covers.** Each library gets a wide 16:9 cover, the shape of Jellyfin's library cards, cut from moments of a few random things in it, with the library's name on it, like the Library Cover Maker's covers. It's a GIF too, so it stays animated on the home screen. Turn it off, or pick its size (320 × 180 up to 640 × 360), under **Library covers**. **Put back** and **Put back the original posters** bring back a library's own picture as well.
+- **Preview a library cover** next to **Preview a poster**.
+
+### Changed
+- Streams (such as IPTV films added as .strm files) still get no poster: cutting moments from one opens several connections to the provider at once, which many providers don't allow. They're listed with the reason, as before.
+
 ## [1.0.0] – 2026-10-17
 
 ### Added
