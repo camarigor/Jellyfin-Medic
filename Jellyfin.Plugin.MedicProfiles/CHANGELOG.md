@@ -17,6 +17,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 - **An empty library search no longer fails.** Clearing the search box and searching answered with an error.
 - **A failed save changes nothing.** When the keys were written but the new addresses then couldn't be saved (a full disk, say), a key typed for a new server stayed paired with the old address; when one key couldn't be written, the password or key written before it stayed saved, although the page was told nothing had changed. The keys and password written by that save are now put back as they were, the addresses stay, and the page shows what the server said went wrong instead of only "Couldn't save. Try again.".
 - **Choosing the film or series for a rejected file leaves its box as it was.** Picking a match in Change film or Change series marked the file for import while its box still showed it unticked, so Import sent a file the list said it wouldn't. Picking a match now changes only the match: a rejected file is imported only once its box is ticked, and the "Left unticked" note goes away once it's ticked.
+- **An empty library search doesn't fetch the library.** A search with nothing to match (blank, or only punctuation) still fetched Sonarr's or Radarr's whole film or series list (unless it had in the last 10 minutes) before answering with no results. It now answers at once.
 
 Thanks @camarigor for reporting these (#159, #206).
 

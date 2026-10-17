@@ -1655,6 +1655,50 @@ await check('Medic Profiles says so when one of its lists can\'t be loaded', asy
     }
 });
 
+await check('Medic Profiles leaves a file Sonarr rejected unticked when importing by hand, and says why', async () => {
+    fakeArr.stuckImport.on = true;
+    try {
+        await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
+        await page.reload();
+        await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
+        const card = page.locator('#mp-queue > li', { hasText: 'Fake.Show.S02E01.1080p' });
+        await card.getByRole('button', { name: 'Import manually' }).click({ timeout: 15000 });
+        const files = card.locator('.mp-file');
+        await files.nth(1).waitFor({ timeout: 15000 });
+        const seen = await files.evaluateAll((divs) => divs.map((d) => ({
+            name: d.querySelector('.mp-release').textContent, ticked: d.querySelector('input[type="checkbox"]').checked, text: d.textContent
+        })));
+        const fine = seen.find((f) => f.name === 'Fake.Show.S02E01.1080p.mkv');
+        const rejected = seen.find((f) => f.name === 'Fake.Show.S02E01.1080p.sample.mkv');
+        expect(fine?.ticked === true, 'the file Sonarr accepted: ' + JSON.stringify(fine));
+        // Sonarr matched it to the series, which used to tick it despite the rejection.
+        expect(rejected?.ticked === false, 'the rejected file: ' + JSON.stringify(rejected));
+        expect(rejected.text.includes('⚠ Sample') && rejected.text.includes('Left unticked because the app rejected it'), 'the rejected file says: ' + rejected.text);
+        return 'accepted file ticked, rejected file unticked with its reason';
+    } finally {
+        fakeArr.stuckImport.on = false;
+    }
+});
+
+await check('Medic Profiles Blocked tab says it shows only the newest 100 when Sonarr has more', async () => {
+    fakeArr.blocklist.total = 250;
+    try {
+        await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
+        await page.reload();
+        await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
+        await page.click('#MedicProfilesPage .mp-tab[data-tab="blocked"]');
+        const note = page.locator('#mp-blocked-notes');
+        await note.waitFor({ state: 'visible', timeout: 10000 });
+        const text = await note.textContent();
+        expect(text.includes('Sonarr has 250 blocked releases; this shows the newest 100.'), 'note: ' + text);
+        const shown = await page.locator('#mp-blocked > li').count();
+        expect(shown === 100, `${shown} blocked releases listed`);
+        return 'note shown, 100 listed';
+    } finally {
+        fakeArr.blocklist.total = 0;
+    }
+});
+
 await check('Medic Profiles settings: Try qBittorrent again shows after a refusal and spends one sign-in a click', async () => {
     const qbitServer = await fakeArr.startQbit(P(18080));
     Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });

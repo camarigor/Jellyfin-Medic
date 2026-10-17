@@ -600,6 +600,13 @@ public class DownloadsService
     /// <summary>Films or series in Sonarr or Radarr whose title matches, for when the match is wrong.</summary>
     public async Task<(List<MediaChoice>? Results, string? Error)> SearchLibraryAsync(ArrApp app, string query, CancellationToken ct)
     {
+        // Checked before the library is fetched: it can be thousands of entries, and nothing would match.
+        string q = Simplify(query);
+        if (q.Length == 0)
+        {
+            return (new List<MediaChoice>(), null);
+        }
+
         List<MediaChoice>? all = null;
         lock (_library)
         {
@@ -625,12 +632,6 @@ public class DownloadsService
             {
                 _library[app] = (all, DateTime.UtcNow);
             }
-        }
-
-        string q = Simplify(query);
-        if (q.Length == 0)
-        {
-            return (new List<MediaChoice>(), null);
         }
 
         return (all

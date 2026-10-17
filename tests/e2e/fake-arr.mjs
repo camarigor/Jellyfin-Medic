@@ -26,6 +26,47 @@ function queuePage(url) {
     return { page, pageSize: size, totalRecords: queue.total, records };
 }
 
+// A finished download Sonarr wouldn't import on its own, for the import-by-hand check: one file is fine,
+// the other Sonarr rejected. A check sets stuckImport.on and puts it back to false.
+export const stuckImport = { on: false };
+const STUCK_DOWNLOAD = 'download-stuck-import';
+
+function withStuckImport(page) {
+    if (!stuckImport.on || page.page !== 1) return page;
+    const stuck = {
+        id: 9001, downloadId: STUCK_DOWNLOAD, title: 'Fake.Show.S02E01.1080p', status: 'completed', trackedDownloadState: 'importBlocked',
+        size: 1000, sizeleft: 0, added: new Date().toISOString(), seriesId: 1, series: { title: 'Fake Show' },
+        episode: { seasonNumber: 2, episodeNumber: 1, title: 'Another Episode' },
+        statusMessages: [{ title: 'Fake.Show.S02E01.1080p', messages: ['One or more episodes expected in this release were not imported'] }]
+    };
+    return { ...page, totalRecords: page.totalRecords + 1, records: [...page.records, stuck] };
+}
+
+function manualImport(url) {
+    if (!stuckImport.on || url.searchParams.get('downloadId') !== STUCK_DOWNLOAD) return [];
+    const file = (name, rejections) => ({
+        path: '/downloads/Fake.Show.S02E01.1080p/' + name, relativePath: name, size: 500, seasonNumber: 2,
+        quality: { quality: { id: 9, name: 'HDTV-1080p' } }, languages: [{ id: 1, name: 'English' }],
+        series: { id: 1, title: 'Fake Show' }, episodes: [{ id: 201, seasonNumber: 2, episodeNumber: 1, title: 'Another Episode' }], rejections
+    });
+    return [file('Fake.Show.S02E01.1080p.mkv', []), file('Fake.Show.S02E01.1080p.sample.mkv', [{ reason: 'Sample', type: 'permanent' }])];
+}
+
+// How many releases the blocklist holds; a test sets it above 100 and puts it back to 0.
+export const blocklist = { total: 0 };
+
+function blocklistPage(url) {
+    const size = Number(url.searchParams.get('pageSize') || 20);
+    const records = [];
+    for (let i = 0; i < Math.min(blocklist.total, size); i++) {
+        records.push({
+            id: i + 1, seriesId: 1, series: { title: 'Fake Show' }, sourceTitle: `Fake.Show.S01E${String((i % 99) + 1).padStart(2, '0')}.720p`,
+            date: new Date(Date.now() - i * 60000).toISOString(), quality: { quality: { name: 'HDTV-720p' } }, indexer: 'Good Indexer', message: 'Manually blocked'
+        });
+    }
+    return { page: 1, pageSize: size, totalRecords: blocklist.total, records };
+}
+
 const indexers = [
     { id: 1, name: 'Good Indexer', protocol: 'torrent', enableRss: true, enableAutomaticSearch: true, enableInteractiveSearch: true },
     { id: 2, name: 'Broken Indexer', protocol: 'usenet', enableRss: true, enableAutomaticSearch: true, enableInteractiveSearch: true },
@@ -36,9 +77,10 @@ const routes = {
     '/api/v3/system/status': () => ({ appName: 'Sonarr', version: '4.0.9.2244' }),
     '/api/v3/indexer': () => indexers,
     '/api/v3/health': () => [{ source: 'IndexerStatusCheck', type: 'warning', message: 'Indexers unavailable due to failures: Broken Indexer' }],
-    '/api/v3/queue': queuePage,
+    '/api/v3/queue': (url) => withStuckImport(queuePage(url)),
     '/api/v3/queue/bulk': () => ({}),
-    '/api/v3/blocklist': () => ({ page: 1, pageSize: 100, totalRecords: 0, records: [] }),
+    '/api/v3/blocklist': blocklistPage,
+    '/api/v3/manualimport': manualImport,
     '/api/v3/qualityprofile': () => [],
     '/api/v3/customformat': () => [],
     '/api/v3/downloadclient': () => [{ id: 1, name: 'qBittorrent', implementation: 'QBittorrent', protocol: 'torrent', enable: true, fields: [{ name: 'host', value: 'qbit' }, { name: 'port', value: 8080 }] }]
