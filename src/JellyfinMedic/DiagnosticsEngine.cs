@@ -502,11 +502,15 @@ public sealed class DiagnosticsEngine
 
             // Trickplay images are made with the same FFmpeg, and can use the GPU too.
             // (Trickplay on the CPU altogether is checked under Server.)
-            if (SettingsReader.Bool(server, "TrickplayOptions.EnableHwAcceleration") != false
+            // Jellyfin only has a GPU JPEG encoder for QSV, VideoToolbox, Rockchip and VAAPI on Intel's iHD driver:
+            // on AMD and NVIDIA the switch changes nothing.
+            bool gpuJpegEncoder = hwType is "qsv" or "videotoolbox" or "rkmpp" || (hwType == "vaapi" && hw.GpuVendor == "intel");
+            if (gpuJpegEncoder
+                && SettingsReader.Bool(server, "TrickplayOptions.EnableHwAcceleration") != false
                 && SettingsReader.Bool(server, "TrickplayOptions.EnableHwEncoding") == false)
             {
                 findings.Add(NewFinding(AreaHardware, Sev.Tip, "Trickplay images are encoded on the CPU", "Hardware encoding for trickplay: off", "On (if your GPU supports MJPEG encoding)",
-                    "Intel and recent AMD GPUs can also encode the thumbnails, which takes the last part of the work off the CPU.", WhereTrickplay));
+                    "Your GPU can also encode the thumbnails, which takes the last part of the work off the CPU.", WhereTrickplay));
             }
         }
 

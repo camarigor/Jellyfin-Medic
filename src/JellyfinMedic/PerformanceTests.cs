@@ -219,6 +219,9 @@ public static class TranscodeLogReader
     private static readonly Regex VideoEncoder = new(@"-(?:codec|c):v(?::0)?\s+(\S+)", RegexOptions.Compiled);
     private static readonly Regex SpeedValue = new(@"speed=\s*([\d.]+)x", RegexOptions.Compiled);
 
+    // Jellyfin's Vulkan path (AMD with VAAPI) also runs libplacebo just to scale; only its tonemapping option means tone mapping.
+    private static readonly Regex LibplaceboToneMap = new(@"libplacebo=[^,\s""]*:tonemapping=", RegexOptions.Compiled);
+
     public static TranscodeLogResult Read(string logDir, DateTime sinceUtc, string? match, string configuredHw)
     {
         var result = new TranscodeLogResult { ConfiguredAcceleration = configuredHw };
@@ -265,6 +268,7 @@ public static class TranscodeLogReader
                            : text.Contains("tonemap_opencl", StringComparison.Ordinal) ? "GPU (OpenCL)"
                            : text.Contains("tonemap_vaapi", StringComparison.Ordinal) ? "GPU (VAAPI)"
                            : Regex.IsMatch(text, @"vpp_qsv=[^ ]*tonemap") ? "GPU (QSV)"
+                           : LibplaceboToneMap.IsMatch(text) ? "GPU (Vulkan)"
                            : text.Contains("tonemapx", StringComparison.Ordinal) ? "CPU (tonemapx)"
                            : text.Contains("zscale", StringComparison.Ordinal) && text.Contains("tonemap", StringComparison.Ordinal) ? "CPU"
                            : "Not used";
@@ -328,7 +332,7 @@ public static class SpeedTester
         {
             result.LatencyMs = await LatencyAsync(ct).ConfigureAwait(false);
             result.DownloadMbps = await DownloadAsync(ct).ConfigureAwait(false);
-            result.UploadMbps = await UploadAsync(ct).ConfigureAwait(false);
+            result.UploadMbps = await UploadAsync(Http, $"{Base}/__up", Window, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
@@ -395,72 +399,54 @@ public static class SpeedTester
         return Mbps(total, sw.Elapsed);
     }
 
-    private static async Task<double> UploadAsync(CancellationToken ct)
+    /// <summary>
+    /// Counts a piece only once its POST is answered, so bytes still waiting in the send buffers when
+    /// time is up aren't taken as sent. Pieces start small and double, so a slow uplink still finishes
+    /// some within the window; no new piece starts after it, and the last ones get as long again to finish.
+    /// </summary>
+    internal static async Task<double> UploadAsync(HttpClient http, string url, TimeSpan duration, CancellationToken ct)
     {
         const long maxTotal = 150L * 1024 * 1024;
-        const int chunk = 2 * 1024 * 1024;
-        var payload = new byte[chunk];
+        const int firstPiece = 64 * 1024;
+        const int largestPiece = 2 * 1024 * 1024;
+        var payload = new byte[largestPiece];
         Random.Shared.NextBytes(payload);
 
         long total = 0;
+        var lastAnswered = TimeSpan.Zero;
+        var gate = new object();
         var sw = Stopwatch.StartNew();
-        using var window = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        window.CancelAfter(Window);
+        using var finish = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        finish.CancelAfter(duration * 2);
 
         async Task Worker()
         {
+            int piece = firstPiece;
             try
             {
-                while (!window.IsCancellationRequested && Interlocked.Read(ref total) < maxTotal)
+                while (sw.Elapsed < duration && Interlocked.Read(ref total) < maxTotal)
                 {
-                    using var content = new CountingContent(payload, sent => Interlocked.Add(ref total, sent));
-                    using var response = await Http.PostAsync($"{Base}/__up", content, window.Token).ConfigureAwait(false);
+                    using var content = new ByteArrayContent(payload, 0, piece);
+                    content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                    using var response = await http.PostAsync(url, content, finish.Token).ConfigureAwait(false);
                     response.EnsureSuccessStatusCode();
+                    Interlocked.Add(ref total, piece);
+                    lock (gate)
+                    {
+                        lastAnswered = sw.Elapsed;
+                    }
+
+                    piece = Math.Min(piece * 2, largestPiece);
                 }
             }
-            catch (OperationCanceledException) when (window.IsCancellationRequested && !ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (finish.IsCancellationRequested && !ct.IsCancellationRequested)
             {
-                // Time's up: what was sent so far counts, so a slow upload that can't finish a chunk still measures.
+                // A piece still unanswered at the end isn't counted: nothing says how much of it arrived.
             }
         }
 
         await Task.WhenAll(Enumerable.Range(0, Workers).Select(_ => Worker())).ConfigureAwait(false);
-        sw.Stop();
-        return Mbps(total, sw.Elapsed);
-    }
-
-    /// <summary>The upload body, written in small pieces and counted as each one is handed to the connection.</summary>
-    private sealed class CountingContent : HttpContent
-    {
-        private const int Piece = 64 * 1024;
-        private readonly byte[] _payload;
-        private readonly Action<int> _sent;
-
-        public CountingContent(byte[] payload, Action<int> sent)
-        {
-            _payload = payload;
-            _sent = sent;
-            Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        }
-
-        protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) =>
-            SerializeToStreamAsync(stream, context, CancellationToken.None);
-
-        protected override async Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context, CancellationToken cancellationToken)
-        {
-            for (int offset = 0; offset < _payload.Length; offset += Piece)
-            {
-                int length = Math.Min(Piece, _payload.Length - offset);
-                await stream.WriteAsync(_payload.AsMemory(offset, length), cancellationToken).ConfigureAwait(false);
-                _sent(length);
-            }
-        }
-
-        protected override bool TryComputeLength(out long length)
-        {
-            length = _payload.Length;
-            return true;
-        }
+        return Mbps(total, lastAnswered);
     }
 
     private static double Mbps(long bytes, TimeSpan elapsed) =>
