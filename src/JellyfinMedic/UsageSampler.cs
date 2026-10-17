@@ -51,10 +51,7 @@ public sealed class UsageSampler : IHostedService, IDisposable
                 .Where(s => SettingsReader.Get(s, "NowPlayingItem") is not null)
                 .ToList();
 
-            int streams = playing.Count;
-            int transcodes = playing.Count(s =>
-                string.Equals(SettingsReader.Text(s, "PlayState.PlayMethod"), "Transcode", StringComparison.OrdinalIgnoreCase));
-
+            var (streams, transcodes) = Count(playing);
             UsageStore.Record(_paths, DateTime.Now, streams, transcodes);
             TranscodeLog.Record(_paths, playing);
             ServerNow.Record();
@@ -64,6 +61,23 @@ public sealed class UsageSampler : IHostedService, IDisposable
         {
             _logger.LogDebug(ex, "Jellyfin Medic: couldn't record usage this time.");
         }
+    }
+
+    /// <summary>
+    /// How many streams, and how many transcodes, these sessions with something playing make up. A paused session is
+    /// neither, and only a transcode that converts video counts: converting just the audio, or music, is light work
+    /// that hardware acceleration doesn't help with, and the share of transcodes is what tells you to turn it on.
+    /// </summary>
+    internal static (int Streams, int Transcodes) Count(IEnumerable<object> playing)
+    {
+        var streams = playing.Where(s => SettingsReader.Bool(s, "PlayState.IsPaused") != true).ToList();
+        int transcodes = streams.Count(s =>
+            string.Equals(SettingsReader.Text(s, "PlayState.PlayMethod"), "Transcode", StringComparison.OrdinalIgnoreCase)
+            // Music has no video, yet reports it as not copied.
+            && string.Equals(SettingsReader.Text(s, "NowPlayingItem.MediaType"), "Video", StringComparison.OrdinalIgnoreCase)
+            // TranscodingInfo is null until FFmpeg first reports progress, so a transcode counts until it says the video is copied.
+            && SettingsReader.Bool(s, "TranscodingInfo.IsVideoDirect") != true);
+        return (streams.Count, transcodes);
     }
 }
 
