@@ -3402,6 +3402,150 @@ async function settledStatus(p) {
     });
 }
 
+// ---------- Medic page reads: what the page shows when a read is late, fails or is long ----------
+
+const problemJson = (status, detail) => ({ status, contentType: 'application/problem+json', body: JSON.stringify({ title: 'Error', status, detail }) });
+
+await check('Medic page reads: "This week" counts what the latest checks found, as the Health tile does, and follows Ignore', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await pageWithFindings(ctx, [
+            fixtureFinding('e2e-w1', 'Fixture Week'), fixtureFinding('e2e-w2', 'Fixture Week', { Severity: 'Improve' }),
+            fixtureFinding('e2e-w3', 'Fixture Week', { Severity: 'Tip' }), fixtureFinding('e2e-w4', 'Fixture Week', { Severity: 'Tip' })]);
+        // The ledger's snapshot from the last time checks ran, days ago: its counts must not be shown as "Now".
+        const weeklyAsked = [];
+        let reportDone = 0;
+        p.on('requestfinished', (req) => { if (REPORT.test(req.url())) reportDone = Date.now(); });
+        await p.route('**/JellyfinMedic/Weekly', async (route) => {
+            weeklyAsked.push(Date.now());
+            const res = await route.fetch();
+            await route.fulfill({ response: res, json: { ...(await res.json()), NeedChanging: 5, CouldBeBetter: 9 } });
+        });
+        await medicTab('dashboard', false, p);
+        await p.waitForFunction(() => /^Last checked/.test(document.querySelector('#JellyfinMedicPage #md-checked')?.textContent || ''), null, { timeout: 60000 });
+        await p.waitForFunction(() => /Now:/.test(document.getElementById('md-week')?.textContent || ''), null, { timeout: 30000 });
+        await p.waitForTimeout(1000);
+        const health = await p.textContent('#md-health-big');
+        const now = (await p.textContent('#md-week')).match(/Now:[^.]*\./)?.[0];
+        expect(health === '2 things to fix', 'Health shows ' + health);
+        expect(now === 'Now: 2 things to fix, 2 tips.', 'This week shows ' + now);
+        expect(reportDone > 0 && weeklyAsked.some((t) => t >= reportDone), 'the week wasn\'t read again after the checks finished, which is when its snapshot is taken');
+        await p.click('#md-issues li[data-key="e2e-w1"] .md-ignore-toggle', { timeout: 30000 });
+        await p.waitForFunction(() => /Now: 1 thing to fix, 2 tips\./.test(document.getElementById('md-week')?.textContent || ''), null, { timeout: 15000 })
+            .catch(async () => { throw new Error('after Ignore, This week shows ' + (await p.textContent('#md-week')).match(/Now:[^.]*\./)?.[0]); });
+        return 'matches Health, before and after Ignore';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page reads: the plugin directory is asked again after a failed fetch, when the tab is opened again', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(ctx);
+        let asked = 0;
+        const base = { GeneratedUtc: new Date().toISOString(), Source: 'awesome-jellyfin', SourceUrl: 'https://github.com/awesome-jellyfin/awesome-jellyfin' };
+        await p.route(/\/JellyfinMedic\/Directory(\?|$)/, (route) => route.fulfill({
+            json: asked++ === 0
+                ? { ...base, Categories: [], Error: 'Couldn\'t reach the awesome-jellyfin list (e2e). Try again later.' }
+                : { ...base, Categories: [{ Name: 'E2E Category', Plugins: [{ Name: 'E2E Plugin', Url: 'https://example.invalid/', Description: 'A fixture.', Tags: [] }] }] }
+        }));
+        await medicTab('directory', false, p);
+        await p.waitForFunction(() => /Couldn't reach the awesome-jellyfin list \(e2e\)/.test(document.getElementById('md-directory')?.textContent || ''), null, { timeout: 30000 });
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="directory"]');
+        await p.waitForFunction(() => /E2E Plugin/.test(document.getElementById('md-directory')?.textContent || ''), null, { timeout: 15000 })
+            .catch(async () => { throw new Error(`asked ${asked} time(s); the tab shows: ` + (await p.textContent('#md-directory')).slice(0, 200)); });
+        return `asked ${asked} times, list shown`;
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page reads: a failed History read and a failed backup list say so, and Restore says why it can\'t', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(ctx);
+        await p.route('**/JellyfinMedic/Schedule/GetRunHistory**', (route) => route.fulfill(problemJson(500, 'The run history file is damaged (e2e).')));
+        await p.route('**/JellyfinMedic/Schedule/ListBackups**', (route) => route.fulfill(problemJson(500, 'The backup folder can\'t be read (e2e).')));
+        await medicTab('history', false, p);
+        const history = await settledStatus(p);
+        expect(history.error && /run history file is damaged \(e2e\)/.test(history.text), 'History shows: ' + JSON.stringify(history));
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
+        await p.waitForFunction(() => /backup folder can't be read \(e2e\)/.test(document.querySelector('#JellyfinMedicPage #so-status')?.textContent || ''), null, { timeout: 30000 })
+            .catch(async () => { throw new Error('Schedule shows: ' + JSON.stringify(await settledStatus(p))); });
+        await p.evaluate(() => { document.querySelector('#JellyfinMedicPage #so-status').hidden = true; });
+        await p.click('#md-restore');
+        await p.waitForTimeout(500);
+        const restore = await p.evaluate(() => {
+            const s = document.querySelector('#JellyfinMedicPage #so-status');
+            return s.hidden ? '' : s.textContent;
+        });
+        expect(/backups couldn't be loaded/i.test(restore), 'Restore with no list shows: ' + JSON.stringify(restore));
+        return 'all three explained';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page reads: the Tests tab and the exposure check show the server\'s reason when they fail', async () => {
+    const bc = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(bc);
+        const film = (await ok(`/Items?Recursive=true&IncludeItemTypes=Movie&searchTerm=Long&Fields=MediaSources,Path&UserId=${ctx.userId}`)).Items[0];
+        expect(film, 'Long Film not scanned');
+        await p.route(/\/Items\?.*MinWidth=1800/, (route) => route.fulfill({ json: { Items: [film], TotalRecordCount: 1 } }));
+        await p.route(/\/JellyfinMedic\/DecodeTest(\?|$)/, (route) => route.fulfill(problemJson(404, 'That film\'s file couldn\'t be found on the server.')));
+        await p.route(/\/JellyfinMedic\/SpeedTest(\?|$)/, (route) => (route.request().method() === 'POST' ? route.fulfill(problemJson(502, 'The speed test server didn\'t answer (e2e).')) : route.continue()));
+        await p.route(/\/JellyfinMedic\/Iptv(\?|$)/, (route) => (route.request().method() === 'POST' ? route.fulfill(problemJson(500, 'The IPTV library couldn\'t be read (e2e).')) : route.continue()));
+        await p.route(/\/JellyfinMedic\/ExposureCheck(\?|$)/, (route) => route.fulfill(problemJson(400, 'That isn\'t a valid port (e2e).')));
+        const failures = [];
+        const shows = async (selector, reason, label) => {
+            const seen = await p.waitForFunction(([s, r]) => new RegExp(r).test(document.querySelector(s)?.textContent || ''), [selector, reason], { timeout: 30000 }).then(() => true, () => false);
+            if (!seen) failures.push(label + ': ' + ((await p.textContent(selector)) || '').trim().slice(0, 160));
+        };
+        await medicTab('tests', false, p);
+        await p.click('#so-run-decode');
+        await shows('#so-decode-results', 'file couldn\'t be found on the server', 'image extraction');
+        await p.click('#so-run-speed');
+        await shows('#so-speed-results', 'speed test server didn\'t answer \\(e2e\\)', 'speed test');
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="iptv"]');
+        await p.click('#md-run-iptv');
+        await shows('#md-iptv', 'IPTV library couldn\'t be read \\(e2e\\)', 'IPTV analysis');
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+        await p.fill('#md-expose-host', 'e2e.invalid');
+        await p.click('#md-expose');
+        await shows('#md-expose-result', 'isn\'t a valid port \\(e2e\\)', 'exposure check');
+        expect(failures.length === 0, 'no reason shown in ' + failures.join(' | '));
+        return 'reason shown in all four';
+    } finally {
+        await bc.close();
+    }
+});
+
+await check('Medic page reads: the Schedule tab fits a phone screen with long backup names', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB', viewport: { width: 375, height: 812 } });
+    try {
+        const p = await adminPage(ctx);
+        const names = ['schedule_backup_20261017_093000_123.json', 'schedule_backup_20261016_031500_007.json'];
+        await p.route('**/JellyfinMedic/Schedule/ListBackups**', (route) => route.fulfill({
+            json: names.map((n, i) => ({ FileName: n, CreatedUtc: new Date(Date.UTC(2026, 9, 17 - i, 9, 30)).toISOString() }))
+        }));
+        await medicTab('schedule', false, p);
+        await p.waitForFunction(() => document.querySelectorAll('#md-backups option').length === 2, null, { timeout: 30000 });
+        await p.waitForTimeout(1000);
+        const sizes = await p.evaluate(() => {
+            const r = document.getElementById('md-backups').getBoundingClientRect();
+            return { page: document.documentElement.scrollWidth, view: document.documentElement.clientWidth, right: Math.round(r.right) };
+        });
+        expect(sizes.right <= sizes.view, 'the backup list ends at ' + sizes.right + ' px on a ' + sizes.view + ' px screen');
+        expect(sizes.page <= sizes.view, 'the page is ' + sizes.page + ' px wide on a ' + sizes.view + ' px screen');
+        return JSON.stringify(sizes);
+    } finally {
+        await ctx.close();
+    }
+});
+
 await check('Medic page actions: Ignore on the last finding of an area moves the keyboard to the next finding, and on the last one to the one before', async () => {
     const ctx = await browser.newContext({ locale: 'en-GB' });
     try {

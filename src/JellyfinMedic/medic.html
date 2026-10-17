@@ -262,7 +262,7 @@
                     <h3>Restore a backup</h3>
                     <p class="so-muted so-small">A backup is made before every Apply and every Restore, so any change can be undone.</p>
                     <div class="md-row md-wrap">
-                        <select id="md-backups" class="so-input" aria-label="Backup to restore"></select>
+                        <select id="md-backups" class="so-input" style="max-width:100%" aria-label="Backup to restore"></select>
                         <button type="button" id="md-restore" class="so-btn so-btn-plain">Restore</button>
                     </div>
                 </div>
@@ -1175,6 +1175,7 @@
                             }
                         });
                         if (report) { renderDashboard(); renderRecs(); }
+                        if (weekly) renderWeekly();
                         if (plugins) renderPlugins();
                         if (settings) renderSettings();
                         refocus();
@@ -1485,16 +1486,25 @@
                     b.addEventListener('click', function () { goto(b.getAttribute('data-goto')); });
                 });
 
+                // The report's open findings by severity. Health and This week both count from here, so they agree.
+                function findingCounts() {
+                    const counts = { Problem: 0, Improve: 0, Tip: 0 };
+                    (pick(report, 'Findings') || []).forEach(function (f) {
+                        if (!isIgnored(f) && counts[pick(f, 'Severity')] !== undefined) counts[pick(f, 'Severity')]++;
+                    });
+                    counts.toFix = counts.Problem + counts.Improve;
+                    return counts;
+                }
+
                 function renderDashboard() {
                     if (!report) return;
                     const all = pick(report, 'Findings') || [];
                     const active = all.filter(function (f) { return !isIgnored(f); });
-                    const counts = { Problem: 0, Improve: 0, Tip: 0 };
-                    active.forEach(function (f) { if (counts[pick(f, 'Severity')] !== undefined) counts[pick(f, 'Severity')]++; });
+                    const counts = findingCounts();
                     const ignoredCount = all.filter(isIgnored).length;
 
                     $('md-checked').textContent = 'Last checked ' + fmtDateTime(pick(report, 'GeneratedUtc'));
-                    const toFix = counts.Problem + counts.Improve;
+                    const toFix = counts.toFix;
                     $('md-health-big').textContent = toFix === 0 ? 'Nothing important to fix' : (toFix === 1 ? '1 thing to fix' : toFix + ' things to fix');
 
                     const box = $('so-counts');
@@ -2581,9 +2591,13 @@
                 $('md-prev').addEventListener('click', function () { if (calWeek > 0) { calWeek--; selKey = null; loadCalendar(); } });
                 $('md-next').addEventListener('click', function () { calWeek++; selKey = null; loadCalendar(); });
 
+                // True while the last read of the backup list failed, so Restore can say why it has nothing to restore.
+                let backupsFailed = false;
+
                 async function loadBackups() {
                     try {
                         const list = await getJson('/JellyfinMedic/Schedule/ListBackups');
+                        backupsFailed = false;
                         const select = $('md-backups');
                         select.innerHTML = '';
                         if (!list || list.length === 0) {
@@ -2596,7 +2610,12 @@
                             o.value = pick(b, 'FileName');
                             select.appendChild(o);
                         });
-                    } catch (e) { /* leave the list as it is */ }
+                    } catch (e) {
+                        // A list read earlier is kept: its backups were there a moment ago.
+                        backupsFailed = true;
+                        console.error('Jellyfin Medic: could not list schedule backups', e);
+                        showError(e, 'Couldn\'t load the schedule backups.', 'Check the Jellyfin log for Jellyfin Medic errors.');
+                    }
                 }
 
                 async function loadUntimed() {
@@ -2616,7 +2635,10 @@
                             body.appendChild(tr);
                         });
                         $('md-untimed').hidden = !rows || rows.length === 0;
-                    } catch (e) { /* leave the table as it is */ }
+                    } catch (e) {
+                        console.error('Jellyfin Medic: could not load the tasks with no time set', e);
+                        showError(e, 'Couldn\'t load the tasks with no time set.', 'Check the Jellyfin log for Jellyfin Medic errors.');
+                    }
                 }
 
                 async function loadAudit() {
@@ -2639,7 +2661,10 @@
                             tr.appendChild(td);
                             body.appendChild(tr);
                         }
-                    } catch (e) { /* leave the table as it is */ }
+                    } catch (e) {
+                        console.error('Jellyfin Medic: could not load the schedule changes', e);
+                        showError(e, 'Couldn\'t load the schedule changes.', 'Check the Jellyfin log for Jellyfin Medic errors.');
+                    }
                 }
 
                 $('md-preview').addEventListener('click', function () { showPreview(); });
@@ -2764,7 +2789,11 @@
 
                 $('md-restore').addEventListener('click', async function () {
                     const file = $('md-backups').value;
-                    if (!file) return;
+                    if (!file) {
+                        if (backupsFailed) showStatus('The backups couldn\'t be loaded, so there is nothing to restore. Open the Schedule tab again to retry.', 'error');
+                        else showStatus('There are no backups to restore yet. One is made before every Apply.', 'info');
+                        return;
+                    }
                     if (!window.confirm('Restore the schedule from this backup? Your current schedule is backed up first.')) return;
                     try {
                         const result = await postJson('/JellyfinMedic/Schedule/RestorePreviousSchedule', { backupFileName: file });
@@ -3119,7 +3148,7 @@
                     } catch (err) {
                         console.error('Jellyfin Medic: decode test failed', err);
                         box.innerHTML = '';
-                        box.appendChild(el('p', 'so-muted', 'The test couldn\'t run. If another test is running, wait for it to finish.'));
+                        box.appendChild(el('p', 'so-muted', 'The test couldn\'t run. ' + ((await reasonOf(err)) || 'If another test is running, wait for it to finish.')));
                     } finally {
                         setTesting(false);
                     }
@@ -3198,7 +3227,7 @@
                     } catch (err) {
                         console.error('Jellyfin Medic: speed test failed', err);
                         box.innerHTML = '';
-                        box.appendChild(el('p', 'so-muted', 'The speed test couldn\'t run. If another test is running, wait for it to finish.'));
+                        box.appendChild(el('p', 'so-muted', 'The speed test couldn\'t run. ' + ((await reasonOf(err)) || 'If another test is running, wait for it to finish.')));
                     } finally {
                         setTesting(false);
                     }
@@ -3217,9 +3246,16 @@
                 async function loadHistory() {
                     try {
                         history = await getJson('/JellyfinMedic/Schedule/GetRunHistory', { errorsOnly: $('md-errors-only').checked });
-                        renderHistory();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load run history', err);
+                        showError(err, 'Couldn\'t load the run history.', 'Check the Jellyfin log for Jellyfin Medic errors.');
+                        return;
+                    }
+                    // Kept apart from the request: a page bug must not read as the history failing to load.
+                    try {
+                        renderHistory();
+                    } catch (err) {
+                        console.error('Jellyfin Medic: could not show run history', err);
                     }
                 }
 
@@ -3379,7 +3415,7 @@
                     } catch (err) {
                         console.error('Jellyfin Medic: IPTV analysis failed', err);
                         $('md-iptv').innerHTML = '';
-                        $('md-iptv').appendChild(el('p', 'md-bad-text', 'The analysis couldn\'t run. If a test is running, wait for it to finish.'));
+                        $('md-iptv').appendChild(el('p', 'md-bad-text', 'The analysis couldn\'t run. ' + ((await reasonOf(err)) || 'If a test is running, wait for it to finish.')));
                     } finally {
                         btn.disabled = false;
                     }
@@ -3796,7 +3832,12 @@
                     const by = pick(w, 'FreedBy') || {};
                     Object.keys(by).forEach(function (k) { line(k + ': ' + tracksSize(by[k]) + ' freed.'); });
                     if (pick(w, 'Restarts')) line('Medic restarted Jellyfin ' + pick(w, 'Restarts') + ' time' + (pick(w, 'Restarts') === 1 ? '' : 's') + '.');
-                    line('Now: ' + (pick(w, 'NeedChanging') || 0) + ' need changing, ' + (pick(w, 'CouldBeBetter') || 0) + ' could be better.');
+                    // From the report on screen, not the ledger's snapshot, which may be from checks days ago.
+                    if (report) {
+                        const c = findingCounts();
+                        line('Now: ' + (c.toFix === 0 ? 'nothing important to fix' : c.toFix + (c.toFix === 1 ? ' thing' : ' things') + ' to fix')
+                            + ', ' + c.Tip + (c.Tip === 1 ? ' tip.' : ' tips.'));
+                    }
                     if (newList.length || fixedList.length || ignoredList.length) {
                         const d = el('details');
                         d.appendChild(el('summary', null, 'What changed'));
@@ -3905,7 +3946,8 @@
                         else if (fromHere) { out.textContent = 'Nothing answered at ' + where + ' when this server tried it. That doesn\'t prove it\'s closed to the internet: many routers can\'t reach their own public address from inside, and a domain can point elsewhere on your network.'; out.className = 'so-muted so-small'; }
                         else { out.textContent = 'Nothing answered at ' + where + ' from the internet. Only people on your network or VPN can reach it there (or your ISP uses CGNAT, which blocks this test).'; out.className = 'md-ok-text so-small'; }
                     } catch (e) {
-                        out.textContent = 'Couldn\'t run the check of ' + protocol + '://' + host + ':' + port + '.';
+                        const reason = await reasonOf(e);
+                        out.textContent = 'Couldn\'t run the check of ' + protocol + '://' + host + ':' + port + '.' + (reason ? ' ' + reason : '');
                     } finally {
                         btn.disabled = false;
                     }
@@ -4043,7 +4085,8 @@
                 }
 
                 async function loadDirectory() {
-                    if (directory) { renderDirectory(); return; }
+                    // A list the server couldn't fetch isn't kept: the server tries again after 2 minutes, so the next visit asks.
+                    if (directory && !pick(directory, 'Error')) { renderDirectory(); return; }
                     $('md-directory').innerHTML = '';
                     $('md-directory').appendChild(el('p', 'so-muted', 'Loading the community plugin list…'));
                     try {
@@ -4903,6 +4946,8 @@
                             renderDashboard();
                             renderRecs();
                             if (settings) renderSettings();
+                            // The report has just taken today's snapshot, which is what the week compares.
+                            loadWeekly();
                         } catch (err) {
                             console.error('Jellyfin Medic: showing the report failed', err);
                             showStatus('The checks ran, but the page couldn\'t show their results. The browser console has the details.', 'error');
