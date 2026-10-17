@@ -127,7 +127,7 @@ done
 status=0
 # The pretend Sonarr, qBittorrent and Seerr listen only where the container reaches this machine.
 # A time limit, so a check that hangs fails the run instead of holding it until the CI job is killed.
-JF="http://127.0.0.1:$PORT" WORK="$WORK" FAKE_HOST="${GATEWAY:-0.0.0.0}" timeout "${E2E_TIMEOUT:-1500}" node "$ROOT/tests/e2e/e2e.mjs" "$@" || status=$?
+JF="http://127.0.0.1:$PORT" WORK="$WORK" E2E_NAME="$NAME" FAKE_HOST="${GATEWAY:-0.0.0.0}" timeout "${E2E_TIMEOUT:-1500}" node "$ROOT/tests/e2e/e2e.mjs" "$@" || status=$?
 [ "$status" = 124 ] && echo "The checks didn't finish within ${E2E_TIMEOUT:-1500} seconds" >&2
 docker logs "$NAME" 2>&1 | grep -E "\[ERR\]|\[FTL\]" | grep -iE "medic|picks|profiles|posters" | head -20 || true
 exit $status

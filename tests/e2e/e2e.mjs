@@ -10,6 +10,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const JF = process.env.JF || 'http://127.0.0.1:8096';
 // The pretend Sonarr, Seerr and the rest listen on fixed ports, moved by FAKE_PORT_OFFSET so two runs can go side by side.
 const P = (port) => port + Number(process.env.FAKE_PORT_OFFSET || 0);
+// The Docker container run.sh started Jellyfin in.
+const CONTAINER = process.env.E2E_NAME || 'medic-e2e';
 const AUTH = 'MediaBrowser Client="e2e", Device="e2e", DeviceId="medic-e2e", Version="1.0"';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -171,7 +173,7 @@ await check('support export hides secrets in name/value pairs, tokens and dashle
   <ProxyAuth>Basic FAKEbasicDXNlcjpwYXNz</ProxyAuth>
   <LibraryId>3f2504e0-4f89-11d3-9a0c-0305e82c3301</LibraryId>
 </PluginConfiguration>`;
-    execFileSync('docker', ['exec', '-i', 'medic-e2e', 'sh', '-c', 'cat > "$1"', 'sh', file], { input: xml });
+    execFileSync('docker', ['exec', '-i', CONTAINER, 'sh', '-c', 'cat > "$1"', 'sh', file], { input: xml });
     try {
         const r = await api('GET', '/JellyfinMedic/Export');
         expect(r.status === 200, 'export ' + r.status);
@@ -182,7 +184,7 @@ await check('support export hides secrets in name/value pairs, tokens and dashle
         expect(part.includes('3f2504e0-4f89-11d3-9a0c-0305e82c3301'), 'a dashed id was hidden');
         return 'no secret left, labels and ids kept';
     } finally {
-        execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-f', file]);
+        execFileSync('docker', ['exec', CONTAINER, 'rm', '-f', file]);
     }
 });
 
@@ -488,18 +490,18 @@ const MEDIC_DATA = '/config/plugins/configurations/JellyfinMedic';
 // Medic's data files in the container (Jellyfin owns /config while it runs): read one (null when missing), write one, remove one.
 function readMedicFile(name) {
     try {
-        return execFileSync('docker', ['exec', 'medic-e2e', 'cat', `${MEDIC_DATA}/${name}`], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+        return execFileSync('docker', ['exec', CONTAINER, 'cat', `${MEDIC_DATA}/${name}`], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
     } catch {
         return null;
     }
 }
 
 function writeMedicFile(name, text) {
-    execFileSync('docker', ['exec', '-i', 'medic-e2e', 'sh', '-c', 'cat > "$1"', 'sh', `${MEDIC_DATA}/${name}`], { input: text });
+    execFileSync('docker', ['exec', '-i', CONTAINER, 'sh', '-c', 'cat > "$1"', 'sh', `${MEDIC_DATA}/${name}`], { input: text });
 }
 
 function removeMedicFile(name) {
-    execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-f', `${MEDIC_DATA}/${name}`]);
+    execFileSync('docker', ['exec', CONTAINER, 'rm', '-f', `${MEDIC_DATA}/${name}`]);
 }
 
 // The Dashboard's data is kept for a minute: waits for a build that started after `since` (a time in ms).
@@ -551,13 +553,13 @@ await check('schedule apply changes nothing when Medic can\'t save its schedule,
         .sort((a, b) => a[0].localeCompare(b[0])));
     const before = await triggers();
     // A folder where Medic first writes its schedule file makes that write fail, as a full disk would.
-    execFileSync('docker', ['exec', 'medic-e2e', 'mkdir', '-p', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
+    execFileSync('docker', ['exec', CONTAINER, 'mkdir', '-p', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
     try {
         const blocked = await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
         expect(blocked.json?.Success === false && /nothing was changed/.test(blocked.json.Message), `blocked apply: ${blocked.status} ${blocked.text.slice(0, 200)}`);
         expect(await triggers() === before, 'triggers changed although the apply failed');
     } finally {
-        execFileSync('docker', ['exec', 'medic-e2e', 'rmdir', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
+        execFileSync('docker', ['exec', CONTAINER, 'rmdir', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
     }
 
     const applied = (await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule')).json;
@@ -579,11 +581,11 @@ await check('schedule backups each get their own name, and the newest 50 are kep
 
 await check('a damaged Medic file is set aside instead of written over', async () => {
     const file = `${MEDIC_DATA}/task_choices.json`;
-    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{"damaged": true' > ${file}`]);
+    execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `echo '{"damaged": true' > ${file}`]);
     const scan = (await ok('/ScheduledTasks')).find((t) => t.Key === 'RefreshLibrary');
     const set = await api('POST', `/JellyfinMedic/Schedule/SetChoice?taskId=${scan.Id}&choice=medic`);
     expect(set.status === 200, 'SetChoice ' + set.status);
-    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `cat ${file}.bad 2>/dev/null || echo missing`]).toString();
+    const kept = execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `cat ${file}.bad 2>/dev/null || echo missing`]).toString();
     expect(kept.includes('"damaged"'), 'the damaged file was not kept: ' + kept.trim());
     return 'kept as task_choices.json.bad';
 });
@@ -800,13 +802,16 @@ await check('track cleanup keeps the original of a file replaced between runs', 
         expect(first.Changed === 1 && first.Failed === 0, 'first clean: ' + JSON.stringify(first.Recent));
         expect(first.BytesKept > 0, 'space held by the kept original not reported: ' + first.BytesKept);
         const changes = await ok('/JellyfinMedic/Tracks/Changes');
-        expect(changes.some((c) => c.Path === file && c.KeptOriginal === kept), 'the change was not recorded: ' + JSON.stringify(changes.slice(0, 3)));
+        // Paths as the server sees them, inside its container.
+        expect(changes.some((c) => c.Path.endsWith('/Upgraded (2021)/Upgraded (2021).mkv') && c.KeptOriginal?.endsWith('/Upgraded (2021)/.medic-originals/Upgraded (2021).mkv')), 'the change was not recorded: ' + JSON.stringify(changes.slice(0, 3)));
 
         const upgrade = `${process.env.WORK}/upgrade.mkv`;
         makeFilm(upgrade, ['eng', 'fre'], 6);
         fs.renameSync(upgrade, file);
         const size = fs.statSync(file).size;
-        await runTracks(); // left alone: Jellyfin's track list is out of date, and it's asked to read the file again
+        // Jellyfin still lists the cleaned file's one track, so nothing would plan it: have Jellyfin read it, as a scan would.
+        const id = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Upgraded')).Items[0].Id;
+        await api('POST', `/Items/${id}/Refresh?metadataRefreshMode=Default&imageRefreshMode=None&replaceAllMetadata=false`);
         let audio = 0;
         for (let i = 0; i < 30 && audio < 2; i++) {
             await sleep(2000);
@@ -1150,10 +1155,10 @@ await check('Medic Profiles never sends a saved key to a new server, and keeps a
 
     // A keys file that can't be read is set aside, not replaced by one holding only the new key.
     const dir = '/config/data/medic-profiles';
-    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{not json' > ${dir}/secrets.json`]);
+    execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `echo '{not json' > ${dir}/secrets.json`]);
     await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
     // It's kept beside it, named with the time it was set aside.
-    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `cat ${dir}/secrets.json.*.bad`]).toString();
+    const kept = execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `cat ${dir}/secrets.json.*.bad`]).toString();
     expect(kept.includes('{not json'), 'the damaged file was not kept: ' + kept);
     expect(await keySet(), 'the new key was not saved');
     return 'key dropped for a new server; damaged file kept beside it';
@@ -1400,8 +1405,8 @@ await check('Medic Posters makes an animated poster for each film, Jellyfin serv
 await check('Medic Posters makes a series poster from its episodes, and a cover for a TV library', async () => {
     const { execFileSync } = await import('node:child_process');
     const dir = '/media/tv/Sample Show/Season 1';
-    const ff = (...args) => execFileSync('docker', ['exec', 'medic-e2e', '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
-    execFileSync('docker', ['exec', 'medic-e2e', 'mkdir', '-p', dir]);
+    const ff = (...args) => execFileSync('docker', ['exec', CONTAINER, '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
+    execFileSync('docker', ['exec', CONTAINER, 'mkdir', '-p', dir]);
     try {
         for (const [n, c] of [[1, 'testsrc'], [2, 'smptebars'], [3, 'rgbtestsrc']]) {
             ff('-f', 'lavfi', '-i', `${c}=size=320x180:rate=10:duration=8`, '-c:v', 'libx264', '-preset', 'ultrafast', `${dir}/Sample Show S01E0${n}.mkv`);
@@ -1442,7 +1447,7 @@ await check('Medic Posters makes a series poster from its episodes, and a cover 
     } finally {
         await api('POST', '/MedicPosters/RestoreAll');
         await api('DELETE', '/Library/VirtualFolders?name=Shows&refreshLibrary=false');
-        execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-rf', '/media/tv']);
+        execFileSync('docker', ['exec', CONTAINER, 'rm', '-rf', '/media/tv']);
         await sleep(2000);
     }
 });
@@ -1450,7 +1455,7 @@ await check('Medic Posters makes a series poster from its episodes, and a cover 
 await check('Medic Posters keeps its poster when a refresh reads the film\'s own poster.jpg again, but not over a new upload', async () => {
     const { execFileSync } = await import('node:child_process');
     const dir = '/media/movies/Poster Film (2003)';
-    const ff = (...args) => execFileSync('docker', ['exec', 'medic-e2e', '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
+    const ff = (...args) => execFileSync('docker', ['exec', CONTAINER, '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
     const image = async (id) => {
         const r = await api('GET', `/Items/${id}/Images/Primary`, undefined, true);
         if (r.status !== 200) return String(r.status);
@@ -1461,7 +1466,7 @@ await check('Medic Posters keeps its poster when a refresh reads the film\'s own
         for (let i = 0; i < 20; i++) { await sleep(1000); got = await image(id); if (got === want) break; }
         return got;
     };
-    execFileSync('docker', ['exec', 'medic-e2e', 'mkdir', '-p', dir]);
+    execFileSync('docker', ['exec', CONTAINER, 'mkdir', '-p', dir]);
     try {
         // A film with its own poster.jpg beside it, and no locked metadata, so every refresh reads that poster again.
         ff('-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=10:duration=6', '-c:v', 'libx264', '-preset', 'ultrafast', `${dir}/Poster Film (2003).mkv`);
@@ -1484,7 +1489,7 @@ await check('Medic Posters keeps its poster when a refresh reads the film\'s own
         expect(await settle(id, 'gif') === 'gif', 'a refresh left the film\'s own poster in place of the animated one');
 
         // A poster uploaded under Edit Images is someone's choice, and stays.
-        const png = execFileSync('docker', ['exec', 'medic-e2e', '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=200x300', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', '-']);
+        const png = execFileSync('docker', ['exec', CONTAINER, '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=200x300', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', '-']);
         const up = await fetch(`${JF}/Items/${id}/Images/Primary`, { method: 'POST', headers: { Authorization: AUTH + `, Token="${token}"`, 'Content-Type': 'image/png' }, body: png.toString('base64') });
         expect(up.status === 204, 'upload returned ' + up.status);
         await sleep(4000);
@@ -1493,7 +1498,7 @@ await check('Medic Posters keeps its poster when a refresh reads the film\'s own
         return `${s.made} posters`;
     } finally {
         await api('POST', '/MedicPosters/RestoreAll');
-        execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-rf', dir]);
+        execFileSync('docker', ['exec', CONTAINER, 'rm', '-rf', dir]);
         await api('POST', '/Library/Refresh');
         await sleep(3000);
     }
@@ -1937,8 +1942,8 @@ await check('Medic report load: a report request the browser drops writes no err
     const cfg = await ok('/System/Configuration');
     const repo = { Name: 'E2E silent repository', Url: `http://host.docker.internal:${P(18981)}/manifest-${Date.now()}.json`, Enabled: true };
     await api('POST', '/System/Configuration', { ...cfg, PluginRepositories: [...(cfg.PluginRepositories || []), repo] });
-    const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
-    const from = Number(execFileSync('docker', ['exec', 'medic-e2e', 'stat', '-c', '%s', newest]).toString().trim());
+    const newest = execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
+    const from = Number(execFileSync('docker', ['exec', CONTAINER, 'stat', '-c', '%s', newest]).toString().trim());
     try {
         const leave = new AbortController();
         const asked = fetch(JF + '/JellyfinMedic/Report', { headers: { Authorization: `${AUTH}, Token="${token}"` }, signal: leave.signal }).catch((e) => e);
@@ -1947,7 +1952,7 @@ await check('Medic report load: a report request the browser drops writes no err
         leave.abort();
         await asked;
         await sleep(4000);
-        const added = execFileSync('docker', ['exec', 'medic-e2e', 'tail', '-c', `+${from + 1}`, newest]).toString();
+        const added = execFileSync('docker', ['exec', CONTAINER, 'tail', '-c', `+${from + 1}`, newest]).toString();
         const ours = added.split('\n').filter((l) => /\[ERR\]/.test(l) && /\/JellyfinMedic\/Report/.test(l));
         expect(ours.length === 0, 'logged: ' + ours.join(' | ').slice(0, 400));
         return 'nothing logged';
@@ -2769,7 +2774,7 @@ await check('"Remove duplicate files" says which titles it left and shows the se
 await check('admin banner on the home page for a serious error, and it can be dismissed', async () => {
     // Pretend the database reported damage, by adding the line to the newest log file.
     // Written from inside the container: the log belongs to Jellyfin's user, not the one running the tests.
-    const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
+    const newest = execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
     // "What's new" was seen on Medic's page above, so its home banner is gone too.
     expect(!((await api('GET', '/JellyfinMedic/Alerts')).json || []).some((a) => a.Kind === 'whatsnew'), '"What\'s new" banner still showing after seeing it in Medic');
@@ -2777,7 +2782,7 @@ await check('admin banner on the home page for a serious error, and it can be di
     // go in at once, so the result that shows the database error was read after the warning too.
     const warning = `[${now}.000 +00:00] [WRN] [28] MediaBrowser.Providers.Manager.ProviderManager: Could not cache an image, it will be fetched again later: No space left on device`;
     const line = `[${now}.000 +00:00] [ERR] [42] Microsoft.EntityFrameworkCore: SQLite Error 11: 'database disk image is malformed'.`;
-    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `printf '%s\\n%s\\n' "$1" "$2" >> "$3"`, 'sh', warning, line, newest]);
+    execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `printf '%s\\n%s\\n' "$1" "$2" >> "$3"`, 'sh', warning, line, newest]);
     let alerts = [];
     for (let i = 0; i < 70 && !alerts.some((a) => a.Kind === 'critical'); i++) {
         alerts = (await api('GET', '/JellyfinMedic/Alerts')).json || [];
