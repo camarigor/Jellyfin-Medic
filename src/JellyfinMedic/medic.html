@@ -4527,19 +4527,44 @@
 
                 // ---------- Loading ----------
 
+                // ApiClient rejects with the Response when the server answered with an error, and with fetch's
+                // TypeError or AbortError when no answer came, say because the page loaded twice in a moment.
+                function connectionDropped(err) {
+                    return err instanceof TypeError || (err instanceof DOMException && err.name === 'AbortError');
+                }
+
+                async function fetchReport() {
+                    try {
+                        return await getJson('/JellyfinMedic/Report');
+                    } catch (err) {
+                        if (!connectionDropped(err)) throw err;
+                        console.warn('Jellyfin Medic: the report request was dropped, asking once more', err);
+                        return getJson('/JellyfinMedic/Report');
+                    }
+                }
+
                 async function loadReport() {
                     $('so-rerun').disabled = true;
                     showStatus('Checking your setup…', 'info');
                     try {
-                        report = await getJson('/JellyfinMedic/Report');
-                        await ensurePluginPages();
-                        hideStatus();
-                        renderDashboard();
-                        renderRecs();
-                        if (settings) renderSettings();
-                    } catch (err) {
-                        console.error('Jellyfin Medic: report failed', err);
-                        showStatus('The checks couldn\'t run. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        try {
+                            report = await fetchReport();
+                        } catch (err) {
+                            console.error('Jellyfin Medic: report failed', err);
+                            showStatus('The checks couldn\'t run. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                            return;
+                        }
+                        // Kept apart from the request: a page bug must not read as the checks failing on the server.
+                        try {
+                            await ensurePluginPages();
+                            hideStatus();
+                            renderDashboard();
+                            renderRecs();
+                            if (settings) renderSettings();
+                        } catch (err) {
+                            console.error('Jellyfin Medic: showing the report failed', err);
+                            showStatus('The checks ran, but the page couldn\'t show their results. The browser console has the details.', 'error');
+                        }
                     } finally {
                         $('so-rerun').disabled = false;
                     }

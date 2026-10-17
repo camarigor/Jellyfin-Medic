@@ -1725,6 +1725,106 @@ async function adminPage(ctx) {
     return p;
 }
 
+const REPORT = /\/JellyfinMedic\/Report(\?|$)/;
+
+// Waits for Medic's page to finish loading the report, and returns what it shows.
+async function reportOutcome(p) {
+    await p.waitForFunction(() => {
+        const s = document.querySelector('#JellyfinMedicPage #so-status');
+        const checked = document.querySelector('#JellyfinMedicPage #md-checked');
+        if (!s) return false;
+        if (!s.hidden && s.classList.contains('error')) return true;
+        return s.hidden && /^Last checked/.test(checked?.textContent || '');
+    }, null, { timeout: 60000 });
+    return p.evaluate(() => {
+        const s = document.querySelector('#JellyfinMedicPage #so-status');
+        return { status: s.hidden ? '' : s.textContent, checked: document.querySelector('#JellyfinMedicPage #md-checked').textContent };
+    });
+}
+
+await check('Medic report load: a dropped connection is tried once more before an error shows', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(ctx);
+        let asked = 0;
+        // As when the browser drops the first request, say because the page loaded twice in a moment.
+        await p.route(REPORT, (route) => (asked++ === 0 ? route.abort('connectionreset') : route.continue()));
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        const shown = await reportOutcome(p);
+        expect(shown.status === '' && /^Last checked/.test(shown.checked), `after one dropped request: status "${shown.status}", "${shown.checked}"`);
+        expect(asked === 2, `the report was asked for ${asked} time(s)`);
+        return 'shown after asking once more';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic report load: a server error shows the error at once, without asking again', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(ctx);
+        let asked = 0;
+        await p.route(REPORT, (route) => { asked++; return route.fulfill({ status: 500, body: '' }); });
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        const shown = await reportOutcome(p);
+        expect(/checks couldn't run/.test(shown.status), 'after a server error: ' + JSON.stringify(shown));
+        await p.waitForTimeout(2000);
+        expect(asked === 1, `the report was asked for ${asked} times after a server error`);
+        return 'error shown, asked once';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic report load: a report the page can\'t draw says so, not that the checks couldn\'t run', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(ctx);
+        const logged = [];
+        p.on('console', (m) => { if (m.type() === 'error') logged.push(m.text()); });
+        const real = await ok('/JellyfinMedic/Report');
+        // Findings that aren't a list make the dashboard throw while drawing them.
+        await p.route(REPORT, (route) => route.fulfill({ json: { ...real, Findings: 'not a list' } }));
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        const shown = await reportOutcome(p);
+        expect(/couldn't show/.test(shown.status) && !/couldn't run/.test(shown.status), 'after a drawing error: ' + JSON.stringify(shown));
+        expect(logged.some((t) => /Jellyfin Medic/.test(t)), 'nothing in the browser console: ' + logged.join(' | '));
+        return shown.status;
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic report load: a report request the browser drops writes no error to the Jellyfin log', async () => {
+    // A plugin repository that never answers keeps the report waiting on its link check.
+    const http = await import('node:http');
+    let reached = 0;
+    const silent = http.createServer(() => { reached++; });
+    await new Promise((resolve) => silent.listen(18981, '0.0.0.0', resolve));
+    const cfg = await ok('/System/Configuration');
+    const repo = { Name: 'E2E silent repository', Url: `http://host.docker.internal:18981/manifest-${Date.now()}.json`, Enabled: true };
+    await api('POST', '/System/Configuration', { ...cfg, PluginRepositories: [...(cfg.PluginRepositories || []), repo] });
+    const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
+    const from = Number(execFileSync('docker', ['exec', 'medic-e2e', 'stat', '-c', '%s', newest]).toString().trim());
+    try {
+        const leave = new AbortController();
+        const asked = fetch(JF + '/JellyfinMedic/Report', { headers: { Authorization: `${AUTH}, Token="${token}"` }, signal: leave.signal }).catch((e) => e);
+        for (let i = 0; i < 100 && reached === 0; i++) await sleep(100);
+        expect(reached > 0, 'the report never reached the silent repository');
+        leave.abort();
+        await asked;
+        await sleep(4000);
+        const added = execFileSync('docker', ['exec', 'medic-e2e', 'tail', '-c', `+${from + 1}`, newest]).toString();
+        const ours = added.split('\n').filter((l) => /\[ERR\]/.test(l) && /\/JellyfinMedic\/Report/.test(l));
+        expect(ours.length === 0, 'logged: ' + ours.join(' | ').slice(0, 400));
+        return 'nothing logged';
+    } finally {
+        await api('POST', '/System/Configuration', cfg);
+        silent.closeAllConnections();
+        silent.close();
+    }
+});
+
 await check('Medic dashboard: every line of tiles reaches the right edge at 1920, 1280 and 390 px', async () => {
     // Tiles on the first line: four on a wide screen, two in the middle band, one on a phone.
     const perLine = { 1920: 4, 1280: 2, 390: 1 };
