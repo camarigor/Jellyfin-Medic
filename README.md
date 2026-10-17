@@ -6,7 +6,7 @@ Health checks, performance tests and usage-aware task scheduling for your Jellyf
 
 [![Build and Release](https://github.com/P1zzm1ssile/Jellyfin-Medic/actions/workflows/release.yml/badge.svg)](https://github.com/P1zzm1ssile/Jellyfin-Medic/actions/workflows/release.yml) [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE) ![Jellyfin 12.1+](https://img.shields.io/badge/Jellyfin-12.1%2B-00a4dc.svg)
 
-This repository has four plugins: **Jellyfin Medic**, for the person who runs the server; **[Medic Picks](#medic-picks)**, personal viewing suggestions for everyone who uses it; **[Medic Profiles](#medic-profiles)**, Sonarr and Radarr from your Jellyfin dashboard; and **[Animated Posters](#animated-posters)**, library cards on the home screen that cycle through artwork from each library.
+This repository has three plugins: **Jellyfin Medic**, for the person who runs the server; **[Medic Picks](#medic-picks)**, personal viewing suggestions for everyone who uses it; and **[Medic Profiles](#medic-profiles)**, Sonarr and Radarr from your Jellyfin dashboard.
 
 ---
 
@@ -67,7 +67,7 @@ Change Medic's own options, browse every Jellyfin setting with a red, yellow or 
 
 ## Requirements
 
-- **Jellyfin 12.1 or later** for Jellyfin Medic, **12.0 or later** for Medic Picks, Medic Profiles and Animated Posters.
+- **Jellyfin 12.1 or later** for Jellyfin Medic, **12.0 or later** for Medic Picks and Medic Profiles.
 - **Any server language.** Jellyfin's own tasks are recognised by their keys whatever language the server uses; tasks added by plugins are recognised by their names, which plugins rarely translate.
 - Runs wherever Jellyfin does: **Unraid, TrueNAS SCALE, Proxmox, Docker, Linux, Windows and macOS**. Medic works out which one it's on and words its advice and directions to match. A few checks depend on the platform: GPU device checks need Linux (containers included), and disk health uses Unraid's own disk data.
 - Developed and tested on **Unraid**, with both the **binhex-Jellyfin** and **linuxserver.io Jellyfin** containers. Reports from other platforms are very welcome. GPU checks cover NVIDIA, Intel and AMD.
@@ -80,7 +80,7 @@ Change Medic's own options, browse every Jellyfin setting with a red, yellow or 
 2. Enter:
    - **Name:** `Jellyfin Medic`
    - **URL:** `https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/manifest.json`
-3. Save, open the **Catalog** tab, install **Jellyfin Medic**, **Medic Picks**, **Medic Profiles** and/or **Animated Posters**, and restart Jellyfin.
+3. Save, open the **Catalog** tab, install **Jellyfin Medic**, **Medic Picks** and/or **Medic Profiles**, and restart Jellyfin.
 
 ### Manual install
 
@@ -89,7 +89,6 @@ Download the latest zip from [Releases](https://github.com/P1zzm1ssile/Jellyfin-
 - Jellyfin Medic: a `JellyfinMedic` folder containing `JellyfinMedic.dll`
 - Medic Picks: a `MedicPicks` folder containing `Jellyfin.Plugin.MedicPicks.dll`
 - Medic Profiles: a `MedicProfiles` folder containing `Jellyfin.Plugin.MedicProfiles.dll`
-- Animated Posters: an `AnimatedPosters` folder containing `Jellyfin.Plugin.AnimatedPosters.dll`
 
 Plugin images only appear when a plugin is installed from the repository.
 
@@ -155,24 +154,6 @@ The keys are kept on the server in their own file, only admins can use them, and
 
 ---
 
-## Animated Posters
-
-The library cards in **My Media** on the home screen, brought to life. Each card fades slowly between random backdrops from that library, with a gentle pan and zoom and the title's logo when it has one, and picks new ones every 30 minutes.
-
-- **Keep your own library art.** Show it every few slides, blend it over every image (great for neon art on a black background), or replace it completely.
-- **Hide the library names** under the cards, and **remove the card borders**, rounded corners and shadows.
-- **Leave some libraries alone**, such as Live TV, which has no backdrops to show.
-- Timing, how many items to pick from and the pan and zoom can all be changed. People who ask their device for less motion get the fades without the pan and zoom.
-
-### Setting it up
-
-1. Install **Animated Posters** from the catalogue and restart Jellyfin.
-2. Open **Plugins → Animated Posters**, choose your settings and press **Save**, then refresh the browser.
-
-It works in the web browser and the desktop apps, which load Jellyfin's web page. The TV and phone apps draw their own screens, so they keep the normal cards. The plugin adds its script to the page as Jellyfin sends it, and never changes Jellyfin's files. What's new in each version is in [Animated Posters' changelog](Jellyfin.Plugin.AnimatedPosters/CHANGELOG.md).
-
----
-
 ## Privacy
 
 - **Admin only.** Every part of Jellyfin Medic requires an administrator account.
@@ -193,20 +174,18 @@ Requires the .NET 10 SDK.
 dotnet publish src/JellyfinMedic/JellyfinMedic.csproj -c Release -o publish/JellyfinMedic
 dotnet publish Jellyfin.Plugin.MedicPicks/Jellyfin.Plugin.MedicPicks.csproj -c Release -o publish/MedicPicks
 dotnet publish Jellyfin.Plugin.MedicProfiles/Jellyfin.Plugin.MedicProfiles.csproj -c Release -o publish/MedicProfiles
-dotnet publish Jellyfin.Plugin.AnimatedPosters/Jellyfin.Plugin.AnimatedPosters.csproj -c Release -o publish/AnimatedPosters
 ```
 
-Medic Picks, Medic Profiles and Animated Posters can also be built for Jellyfin 10.11, where they target .NET 9 (the .NET 10 SDK builds that too). Releases are only built for Jellyfin 12, so a 10.11 server needs one built by hand:
+Medic Picks and Medic Profiles can also be built for Jellyfin 10.11, where they target .NET 9 (the .NET 10 SDK builds that too). Releases are only built for Jellyfin 12, so a 10.11 server needs one built by hand:
 
 ```
 dotnet publish Jellyfin.Plugin.MedicPicks/Jellyfin.Plugin.MedicPicks.csproj -c Release -o publish/MedicPicks-10.11 -p:JellyfinTarget=10.11
 dotnet publish Jellyfin.Plugin.MedicProfiles/Jellyfin.Plugin.MedicProfiles.csproj -c Release -o publish/MedicProfiles-10.11 -p:JellyfinTarget=10.11
-dotnet publish Jellyfin.Plugin.AnimatedPosters/Jellyfin.Plugin.AnimatedPosters.csproj -c Release -o publish/AnimatedPosters-10.11 -p:JellyfinTarget=10.11
 ```
 
-The end-to-end tests start a real Jellyfin in Docker with the four plugins and click through their pages: `tests/e2e/run.sh` (needs Docker, ffmpeg, and Node with Playwright; see the top of the script).
+The end-to-end tests start a real Jellyfin in Docker with the three plugins and click through their pages: `tests/e2e/run.sh` (needs Docker, ffmpeg, and Node with Playwright; see the top of the script).
 
-Releases are automatic: push a tag like `v1.0.6` for Jellyfin Medic, `picks-v1.0.1` for Medic Picks, `profiles-v1.0.0` for Medic Profiles, or `posters-v1.0.0` for Animated Posters, and GitHub Actions builds the plugin, creates the release, and adds it to `manifest.json`.
+Releases are automatic: push a tag like `v1.0.6` for Jellyfin Medic, `picks-v1.0.1` for Medic Picks, or `profiles-v1.0.0` for Medic Profiles, and GitHub Actions builds the plugin, creates the release, and adds it to `manifest.json`.
 
 ---
 
