@@ -20,12 +20,22 @@ let passed = 0;
 let failed = 0;
 const only = process.argv.slice(2);
 
+// The most one call to Jellyfin may take. Jellyfin gives up on a server that never answers after 100 s
+// (HttpClient's default), and the slowest call here waits about 10 s on a silent Seerr, so only a hung request reaches it.
+const REQUEST_TIMEOUT_MS = 120000;
+
 async function api(method, path, body, raw) {
     const headers = { Authorization: AUTH + (token ? `, Token="${token}"` : '') };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    const res = await fetch(JF + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    // One signal covers both the answer and reading its body, so a body that stops halfway also ends here.
+    const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const named = (e) => {
+        if (e.name !== 'TimeoutError') throw e;
+        throw new Error(`${method} ${path} got no answer within ${REQUEST_TIMEOUT_MS / 1000} s`);
+    };
+    const res = await fetch(JF + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal }).catch(named);
     if (raw) return res;
-    const text = await res.text();
+    const text = await res.text().catch(named);
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
     return { status: res.status, json, text };
@@ -1202,7 +1212,7 @@ await check('Medic Profiles says when the queue is cut short, and can remove a d
 });
 
 await check('Medic Profiles blocks program files in qBittorrent, keeping the owner\'s own entries', async () => {
-    const qbitServer = await fakeArr.startQbit(18080);
+    const qbitServer = await fakeArr.startQbit(P(18080));
     // The owner's own list, switched off on purpose, holding *.zip, which is also one of Medic Profiles' patterns.
     Object.assign(fakeArr.qbit.prefs, { excluded_file_names_enabled: false, excluded_file_names: '*.nfo\n*.zip' });
     try {
@@ -1298,7 +1308,7 @@ async function tryQbitAgain() {
 }
 
 await check('Medic Profiles signs in to qBittorrent 5.2, and tries a refused sign-in again only when asked', async () => {
-    const qbitServer = await fakeArr.startQbit(18080);
+    const qbitServer = await fakeArr.startQbit(P(18080));
     Object.assign(fakeArr.qbit, { v52: true, banned: true, logins: 0, failedLogins: 0 });
     try {
         const QB = ARR.replace(`:${P(18989)}`, `:${P(18080)}`);
@@ -1329,7 +1339,7 @@ await check('Medic Profiles signs in to qBittorrent 5.2, and tries a refused sig
 });
 
 await check('Medic Profiles spends no qBittorrent sign-in on save, Test or block after a refusal, and Try again spends one', async () => {
-    const qbitServer = await fakeArr.startQbit(18080);
+    const qbitServer = await fakeArr.startQbit(P(18080));
     Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
     try {
         const QB = ARR.replace(`:${P(18989)}`, `:${P(18080)}`);
@@ -1794,7 +1804,7 @@ await check('Medic Profiles says so when one of its lists can\'t be loaded', asy
 });
 
 await check('Medic Profiles settings: Try qBittorrent again shows after a refusal and spends one sign-in a click', async () => {
-    const qbitServer = await fakeArr.startQbit(18080);
+    const qbitServer = await fakeArr.startQbit(P(18080));
     Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
     try {
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: ARR.replace(`:${P(18989)}`, `:${P(18080)}`), QbitUser: 'admin', QbitPassword: 'wrong' });
