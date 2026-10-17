@@ -6,6 +6,7 @@ public enum HostKind
     TrueNas,
     ProxmoxLxc,
     Docker,
+    Kubernetes,
     Linux,
     Windows,
     MacOs
@@ -24,11 +25,21 @@ public static class HostPlatform
     /// <summary>Linux of any kind. GPU devices (/dev/dri, /dev/nvidia0) and /proc are only visible here.</summary>
     public static bool IsLinux => Kind is not (HostKind.Windows or HostKind.MacOs);
 
-    /// <summary>Running inside a container of any kind (Docker, Unraid, TrueNAS apps, Proxmox LXC).</summary>
-    public static bool IsContainer => Kind is HostKind.Unraid or HostKind.TrueNas or HostKind.Docker or HostKind.ProxmoxLxc;
+    /// <summary>Running inside a container of any kind (Docker, Unraid, TrueNAS apps, Kubernetes, Proxmox LXC).</summary>
+    public static bool IsContainer => IsContainerKind(Kind);
 
     /// <summary>A Docker-style container, where things like /dev/shm size and device flags apply.</summary>
-    public static bool IsDockerLike => Kind is HostKind.Unraid or HostKind.TrueNas or HostKind.Docker;
+    public static bool IsDockerLike => IsDockerLikeKind(Kind);
+
+    internal static bool IsContainerKind(HostKind kind) =>
+        kind is HostKind.Unraid or HostKind.TrueNas or HostKind.Docker or HostKind.Kubernetes or HostKind.ProxmoxLxc;
+
+    internal static bool IsDockerLikeKind(HostKind kind) => kind is HostKind.Unraid or HostKind.TrueNas or HostKind.Docker;
+
+    /// <summary>A container whose hostname is its random ID or pod name, so an unnamed server shows that in apps.</summary>
+    public static bool HostnameIsRandom => HostnameIsRandomKind(Kind);
+
+    internal static bool HostnameIsRandomKind(HostKind kind) => IsDockerLikeKind(kind) || kind == HostKind.Kubernetes;
 
     public static string Label => Kind switch
     {
@@ -36,6 +47,7 @@ public static class HostPlatform
         HostKind.TrueNas => "TrueNAS SCALE (app)",
         HostKind.ProxmoxLxc => "Proxmox (LXC container)",
         HostKind.Docker => "Docker",
+        HostKind.Kubernetes => "Kubernetes",
         HostKind.Windows => "Windows",
         HostKind.MacOs => "macOS",
         _ => "Linux"
@@ -48,6 +60,7 @@ public static class HostPlatform
         HostKind.TrueNas => "TrueNAS → Apps → Jellyfin → Edit",
         HostKind.ProxmoxLxc => "Proxmox → your Jellyfin container → Resources (or its .conf file), then restart it",
         HostKind.Docker => "Your Jellyfin container's settings (docker run or Compose file), then recreate it",
+        HostKind.Kubernetes => "Your Jellyfin pod's spec (its Deployment, StatefulSet or Helm values), then roll it out",
         HostKind.Windows => "Windows: Jellyfin's install folders and the Jellyfin Server service",
         HostKind.MacOs => "macOS: the Jellyfin Server app and its data folder",
         _ => "Your server's system settings (drives, /etc/fstab, the jellyfin service)"
@@ -60,6 +73,7 @@ public static class HostPlatform
         HostKind.TrueNas => "the app's config storage",
         HostKind.ProxmoxLxc => "the container's disk",
         HostKind.Docker => "the folder mapped to /config",
+        HostKind.Kubernetes => "the volume mounted at /config",
         HostKind.Windows => @"Jellyfin's data folder (usually C:\ProgramData\Jellyfin\Server)",
         HostKind.MacOs => "Jellyfin's data folder (~/Library/Application Support/jellyfin)",
         _ => "Jellyfin's data folder (usually /var/lib/jellyfin)"
@@ -72,6 +86,7 @@ public static class HostPlatform
         HostKind.TrueNas => "Edit the app's GPU Configuration and pass your GPU through",
         HostKind.ProxmoxLxc => "Pass /dev/dri (and the /dev/nvidia* devices for NVIDIA) through to the container: Resources → Add → Device Passthrough",
         HostKind.Docker => "Intel/AMD: --device /dev/dri. NVIDIA: install the NVIDIA Container Toolkit and add --gpus all",
+        HostKind.Kubernetes => "Install your GPU's device plugin on the node, then request the GPU in the pod's resources limits (for example nvidia.com/gpu, gpu.intel.com/i915 or amd.com/gpu)",
         HostKind.Windows => "Install your graphics card's latest driver, then choose NVENC (NVIDIA), QSV (Intel) or AMF (AMD) under Hardware acceleration",
         HostKind.MacOs => "Choose Apple VideoToolbox under Hardware acceleration",
         _ => "Install the GPU driver and add the jellyfin user to the render and video groups"
@@ -81,6 +96,7 @@ public static class HostPlatform
     public static string? RamTranscodeHow => Kind switch
     {
         HostKind.Unraid or HostKind.Docker => "Map a RAM folder (tmpfs, 4–8 GB) into the container and point the transcode path at it, with segment deletion on",
+        HostKind.Kubernetes => "Mount an in-memory emptyDir (medium: Memory, sizeLimit 4 to 8 GB) into the pod and point the transcode path at it, with segment deletion on. It counts against the pod's memory limit",
         HostKind.TrueNas => "Add a RAM (tmpfs) storage mount of 4–8 GB to the app and point the transcode path at it, with segment deletion on",
         HostKind.ProxmoxLxc => "Add a 4–8 GB tmpfs mount inside the container (for example in its /etc/fstab) and point the transcode path at it, with segment deletion on",
         HostKind.Linux => "Add a 4–8 GB tmpfs mount (for example in /etc/fstab) and point the transcode path at it, with segment deletion on",
@@ -92,6 +108,7 @@ public static class HostPlatform
     {
         HostKind.Unraid => "add --shm-size=4g to Extra Parameters, or map a larger tmpfs",
         HostKind.Docker => "--shm-size=4g (shm_size: 4gb in Compose), or a larger tmpfs mount",
+        HostKind.Kubernetes => "a larger sizeLimit on the in-memory emptyDir",
         _ => "a larger tmpfs mount"
     };
 
@@ -107,8 +124,14 @@ public static class HostPlatform
             return HostKind.MacOs;
         }
 
+        return DetectLinux(Lines, File.Exists, Environment.GetEnvironmentVariable);
+    }
+
+    /// <summary>Which kind of Linux host this is, from what the given readers report, so it can be worked out without the real host.</summary>
+    internal static HostKind DetectLinux(Func<string, string[]> lines, Func<string, bool> exists, Func<string, string?> env)
+    {
         bool unraid = false, trueNas = false;
-        foreach (var line in Lines("/proc/mounts"))
+        foreach (var line in lines("/proc/mounts"))
         {
             var parts = line.Split(' ');
             if (parts.Length < 3)
@@ -141,18 +164,29 @@ public static class HostPlatform
             return HostKind.TrueNas;
         }
 
+        // A pod is set up through its spec whatever runtime runs it, so Kubernetes wins over the Docker markers that the
+        // old Docker runtime also leaves. The kubelet sets KUBERNETES_SERVICE_HOST in every container; the token mount
+        // can be turned off (automountServiceAccountToken) and "kubepods" only shows under cgroup v1, so either of
+        // those alone is enough too. Plain containerd without Kubernetes leaves no reliable mark, so it stays Linux.
+        if (!string.IsNullOrWhiteSpace(env("KUBERNETES_SERVICE_HOST"))
+            || exists("/var/run/secrets/kubernetes.io/serviceaccount/token")
+            || lines("/proc/1/cgroup").Any(l => l.Contains("kubepods", StringComparison.Ordinal)))
+        {
+            return HostKind.Kubernetes;
+        }
+
         // Docker inside a Proxmox LXC is still set up through Docker, so Docker wins. Podman (/run/.containerenv)
         // takes the same device and volume options, so it gets the Docker advice. Under cgroup v2, /proc/1/cgroup
         // only says "0::/", so the marker files are what tells.
-        if (File.Exists("/.dockerenv") || File.Exists("/run/.containerenv")
-            || Lines("/proc/1/cgroup").Any(l => l.Contains("docker", StringComparison.OrdinalIgnoreCase)))
+        if (exists("/.dockerenv") || exists("/run/.containerenv")
+            || lines("/proc/1/cgroup").Any(l => l.Contains("docker", StringComparison.OrdinalIgnoreCase)))
         {
             return HostKind.Docker;
         }
 
-        string container = Lines("/run/systemd/container").FirstOrDefault()?.Trim() ?? string.Empty;
+        string container = lines("/run/systemd/container").FirstOrDefault()?.Trim() ?? string.Empty;
         if (container.Equals("lxc", StringComparison.OrdinalIgnoreCase)
-            || Lines("/proc/1/environ").Any(l => l.Contains("container=lxc", StringComparison.Ordinal)))
+            || lines("/proc/1/environ").Any(l => l.Contains("container=lxc", StringComparison.Ordinal)))
         {
             return HostKind.ProxmoxLxc;
         }

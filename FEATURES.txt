@@ -150,8 +150,8 @@ shows:
   - why it matters,
   - a "Where" link that opens the right Jellyfin page in a new tab (for
     plugin issues, that plugin's own settings page), with directions worded
-    for your platform (Unraid, TrueNAS SCALE, Proxmox, Docker, Linux, Windows
-    or macOS),
+    for your platform (Unraid, TrueNAS SCALE, Proxmox, Docker, Kubernetes,
+    Linux, Windows or macOS),
   - Ignore: drops it out of the counts. Findings come back on their own if
     the situation changes.
   - Long error messages can be expanded and scrolled in full.
@@ -442,7 +442,8 @@ Running it:
 -------------------------------------------------------------------------------
 
   - Detects where Jellyfin is running (Unraid, TrueNAS SCALE, Proxmox,
-    Docker, Linux, Windows or macOS) and words its advice to match.
+    Docker, Kubernetes, Linux, Windows or macOS) and words its advice to
+    match.
     GPU device checks need Linux (containers included); disk health uses
     Unraid's own disk data.
   - Developed and tested on Unraid with the binhex and linuxserver.io

@@ -69,7 +69,7 @@ Change Medic's own options, browse every Jellyfin setting with a red, yellow or 
 
 - **Jellyfin 12.1 or later** for Jellyfin Medic, **12.0 or later** for Medic Picks, Medic Profiles, Animated Posters and Medic Posters.
 - **Any server language.** Jellyfin's own tasks are recognised by their keys whatever language the server uses; tasks added by plugins are recognised by their names, which plugins rarely translate.
-- Runs wherever Jellyfin does: **Unraid, TrueNAS SCALE, Proxmox, Docker, Linux, Windows and macOS**. Medic works out which one it's on and words its advice and directions to match. A few checks depend on the platform: GPU device checks need Linux (containers included), and disk health uses Unraid's own disk data.
+- Runs wherever Jellyfin does: **Unraid, TrueNAS SCALE, Proxmox, Docker, Kubernetes, Linux, Windows and macOS**. Medic works out which one it's on and words its advice and directions to match. A few checks depend on the platform: GPU device checks need Linux (containers included), and disk health uses Unraid's own disk data.
 - Developed and tested on **Unraid**, with both the **binhex-Jellyfin** and **linuxserver.io Jellyfin** containers. Reports from other platforms are very welcome. GPU checks cover NVIDIA, Intel and AMD.
 
 ## Installation
