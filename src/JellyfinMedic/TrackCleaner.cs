@@ -1081,6 +1081,8 @@ public static class TrackCleaner
                         _lastScan.Stale = true;
                     }
                 }
+
+                KeptOriginalsWalk.Clear();
             }
         }
     }
@@ -1710,38 +1712,45 @@ public static class TrackCleaner
     {
         int deleted = 0;
         long freed = 0;
-        foreach (var dir in LibraryFolders(library, libraries))
+        try
         {
-            string folder = Path.Combine(dir, OriginalsFolder);
-            if (!Directory.Exists(folder))
+            foreach (var dir in LibraryFolders(library, libraries))
             {
-                continue;
-            }
-
-            foreach (var kept in SafeFiles(folder).Where(IsKeptOriginal))
-            {
-                // A swap cut short leaves the path empty too, and its original is the title's only untouched copy:
-                // the next run (or "Tidy copies") puts it back.
-                string twin = Path.Combine(dir, Path.GetFileName(kept));
-                if (File.Exists(TempPath(twin)) || (!orphans && !File.Exists(twin)))
+                string folder = Path.Combine(dir, OriginalsFolder);
+                if (!Directory.Exists(folder))
                 {
                     continue;
                 }
 
-                try
+                foreach (var kept in SafeFiles(folder).Where(IsKeptOriginal))
                 {
-                    long size = Size(kept);
-                    File.Delete(kept);
-                    freed += size;
-                    deleted++;
-                }
-                catch
-                {
-                    // Skip anything locked.
-                }
-            }
+                    // A swap cut short leaves the path empty too, and its original is the title's only untouched copy:
+                    // the next run (or "Tidy copies") puts it back.
+                    string twin = Path.Combine(dir, Path.GetFileName(kept));
+                    if (File.Exists(TempPath(twin)) || (!orphans && !File.Exists(twin)))
+                    {
+                        continue;
+                    }
 
-            RemoveIfEmpty(folder);
+                    try
+                    {
+                        long size = Size(kept);
+                        File.Delete(kept);
+                        freed += size;
+                        deleted++;
+                    }
+                    catch
+                    {
+                        // Skip anything locked.
+                    }
+                }
+
+                RemoveIfEmpty(folder);
+            }
+        }
+        finally
+        {
+            KeptOriginalsWalk.Clear();
         }
 
         return (deleted, freed);
@@ -1766,14 +1775,22 @@ public static class TrackCleaner
         int titles = 0, deletedCopies = 0;
         var left = new List<TidyLeft>();
         long freed = 0;
-        foreach (var dir in LibraryFolders(library, libraries))
+        try
         {
-            // Only a copy's end is read: the original it's compared with is only read for its header.
-            var (t, d, f, l) = await TidyFolder(dir, path => ProbeFile(ffprobe, path, readEnd: Path.GetFileName(path).Contains(StrippedSuffix, StringComparison.OrdinalIgnoreCase), CancellationToken.None), deleteOriginals, CancellationToken.None).ConfigureAwait(false);
-            titles += t;
-            deletedCopies += d;
-            freed += f;
-            left.AddRange(l);
+            foreach (var dir in LibraryFolders(library, libraries))
+            {
+                // Only a copy's end is read: the original it's compared with is only read for its header.
+                var (t, d, f, l) = await TidyFolder(dir, path => ProbeFile(ffprobe, path, readEnd: Path.GetFileName(path).Contains(StrippedSuffix, StringComparison.OrdinalIgnoreCase), CancellationToken.None), deleteOriginals, CancellationToken.None).ConfigureAwait(false);
+                titles += t;
+                deletedCopies += d;
+                freed += f;
+                left.AddRange(l);
+            }
+        }
+        finally
+        {
+            // Tidying moves originals into .medic-originals, and can delete them.
+            KeptOriginalsWalk.Clear();
         }
 
         return (titles, deletedCopies, freed, left);
@@ -1883,13 +1900,20 @@ public static class TrackCleaner
         return !File.Exists(twin) && !File.Exists(TempPath(twin));
     }
 
+    // Cleared by whatever keeps, moves or deletes originals: a track run, tidying, and deleting them.
+    internal static readonly LibraryWalkCache<(int Files, long Bytes, int Orphans, long OrphanBytes)> KeptOriginalsWalk = new(TimeProvider.System);
+
     /// <summary>How many originals Medic is keeping in .medic-originals folders and their total size, and how many of them are orphans.</summary>
-    public static (int Files, long Bytes, int Orphans, long OrphanBytes) KeptOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries)
+    public static (int Files, long Bytes, int Orphans, long OrphanBytes) KeptOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries, CancellationToken ct = default) =>
+        KeptOriginalsWalk.Get(c => CountKeptOriginals(library, libraries, c), ct);
+
+    private static (int Files, long Bytes, int Orphans, long OrphanBytes) CountKeptOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries, CancellationToken ct)
     {
         int files = 0, orphans = 0;
         long bytes = 0, orphanBytes = 0;
-        foreach (var dir in LibraryFolders(library, libraries))
+        foreach (var dir in LibraryFolders(library, libraries, ct))
         {
+            ct.ThrowIfCancellationRequested();
             string folder = Path.Combine(dir, OriginalsFolder);
             if (!Directory.Exists(folder))
             {
@@ -1953,6 +1977,7 @@ public static class TrackCleaner
             {
                 foreach (var item in library.GetItemList(new InternalItemsQuery { ParentId = id, Recursive = true, IsFolder = false }))
                 {
+                    ct.ThrowIfCancellationRequested();
                     string path = item.Path ?? string.Empty;
                     if (path.Length > 0 && LooksLocal(path) && !path.EndsWith(".strm", StringComparison.OrdinalIgnoreCase))
                     {
@@ -1964,7 +1989,7 @@ public static class TrackCleaner
                     }
                 }
             }
-            catch
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // Skip a library that can't be read.
             }
