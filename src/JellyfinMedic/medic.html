@@ -1792,7 +1792,7 @@
                 // ---------- Today: planned and actual ----------
 
                 const RUN_WORD = { Completed: 'completed', Failed: 'failed', Aborted: 'stopped', Cancelled: 'cancelled' };
-                const PLAN_WORD = { ran: 'ran on time', late: 'ran late', 'not run': 'did not run', waiting: 'not yet' };
+                const PLAN_WORD = { ran: 'ran on time', late: 'ran late', cancelled: 'started but was cancelled', 'not run': 'did not run', waiting: 'not yet' };
                 // From this many runs today a task (a notifier every few minutes, say) gets one line instead of a block per run.
                 const REPEATS_FROM = 7;
 
@@ -1807,8 +1807,10 @@
 
                 function runText(r) {
                     const status = pick(r, 'Status');
-                    const when = status === 'Running' ? 'running since ' + hm(pick(r, 'StartMinutes'))
-                        : (RUN_WORD[status] || String(status).toLowerCase()) + ', from ' + hm(pick(r, 'StartMinutes')) + ' to ' + hm(pick(r, 'EndMinutes'));
+                    // A run still going at midnight is drawn from 00:00, but that isn't when it started.
+                    const start = pick(r, 'StartedBeforeToday') ? 'before midnight' : hm(pick(r, 'StartMinutes'));
+                    const when = status === 'Running' ? 'running since ' + start
+                        : (RUN_WORD[status] || String(status).toLowerCase()) + ', from ' + start + ' to ' + hm(pick(r, 'EndMinutes'));
                     return pick(r, 'TaskName') + ': ' + when + (pick(r, 'ErrorMessage') ? '. ' + pick(r, 'ErrorMessage') : '');
                 }
 
@@ -1894,6 +1896,7 @@
                         b.style.width = (Math.max(pick(p, 'DurationMinutes') || 0, 1) / 1440 * 100) + '%';
                         b.style.borderColor = (CATEGORY[pick(p, 'Category')] || CATEGORY.upkeep).bg;
                         if (pick(p, 'Status') === 'not run') b.classList.add('md-plan-missed');
+                        else if (pick(p, 'Status') === 'cancelled') b.classList.add('md-plan-cancelled');
                         box.appendChild(b);
                     });
                     // A task that runs over and over would bury the axis in blocks: it gets one line under the axis, and only its

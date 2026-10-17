@@ -2465,6 +2465,41 @@ await check('Dashboard panels: Today draws a cancelled run as cancelled, not as 
     }
 });
 
+await check('Dashboard panels: Today says a run started before midnight, and names a plan whose runs were all cancelled', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const runs = [
+        { TaskId: 'e2e-overnight', TaskName: 'Fixture overnight', StartMinutes: 0, EndMinutes: 45, StartedBeforeToday: true, Status: 'Completed', ErrorMessage: null },
+        { TaskId: 'e2e-overnight-running', TaskName: 'Fixture still going', StartMinutes: 0, EndMinutes: 60, StartedBeforeToday: true, Status: 'Running', ErrorMessage: null }
+    ];
+    const plan = { TaskId: 'e2e-plan-cancelled', TaskName: 'Fixture plan cancelled', StartMinutes: 200, DurationMinutes: 20, Category: 'upkeep', Kind: 'trigger', Status: 'cancelled' };
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Today: { ...data.Today, Planned: [...data.Today.Planned, plan], Actual: [...data.Today.Actual, ...runs] } } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => /Fixture plan cancelled/.test(Array.from(document.querySelectorAll('#md-day .md-planned')).map((b) => b.getAttribute('aria-label')).join('|')), null, { timeout: 30000 });
+        const seen = await page.evaluate(() => {
+            const label = (sel, name) => {
+                const b = Array.from(document.querySelectorAll(sel)).find((x) => (x.getAttribute('aria-label') || '').startsWith(name));
+                return b ? { label: b.getAttribute('aria-label'), classes: b.className, fill: getComputedStyle(b).backgroundColor } : null;
+            };
+            const legend = document.querySelector('.md-sw-stopped');
+            return {
+                overnight: label('#md-day .md-actual', 'Fixture overnight'),
+                running: label('#md-day .md-actual', 'Fixture still going'),
+                plan: label('#md-day .md-planned', 'Fixture plan cancelled'),
+                stoppedFill: legend ? getComputedStyle(legend).backgroundColor : null
+            };
+        });
+        expect(seen.overnight && /^Fixture overnight: completed, from before midnight to (00:45|12:45 am)$/.test(seen.overnight.label), 'the run from before midnight: ' + JSON.stringify(seen.overnight));
+        expect(seen.running && seen.running.label === 'Fixture still going: running since before midnight', 'the run still going since before midnight: ' + JSON.stringify(seen.running));
+        expect(seen.plan && /^Fixture plan cancelled, planned at (03:20|3:20 am): started but was cancelled$/.test(seen.plan.label), 'the cancelled plan: ' + JSON.stringify(seen.plan));
+        expect(/\bmd-plan-cancelled\b/.test(seen.plan.classes), 'the cancelled plan has no style of its own: ' + seen.plan.classes);
+        expect(seen.stoppedFill && seen.plan.fill === seen.stoppedFill, `the cancelled plan is filled ${seen.plan.fill}, the legend's "Stopped or cancelled" ${seen.stoppedFill}`);
+        return seen.overnight.label + '; ' + seen.plan.label;
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
 await check('Dashboard panels: when the live readings stop updating, the Dashboard says so, and the note goes when they come back', async () => {
     await page.route('**/JellyfinMedic/Dashboard/Live', (route) => route.fulfill({ status: 500, body: '' }));
     let routed = true;
