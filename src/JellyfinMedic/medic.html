@@ -69,7 +69,7 @@
                                 <h3 id="md-t-issues" class="md-tile-head">Top issues</h3>
                                 <button type="button" class="so-btn so-btn-plain md-goto" data-goto="recs">All checks</button>
                             </div>
-                            <ul id="md-issues" class="md-issues"></ul>
+                            <ul id="md-issues" class="md-issues" data-ignore-list></ul>
                         </section>
                         <section class="md-tile" aria-labelledby="md-t-load">
                             <h3 id="md-t-load" class="md-tile-head">Load, last 10 minutes</h3>
@@ -313,7 +313,7 @@
                     <button type="button" class="so-filter" data-filter="Good" aria-pressed="false">All good</button>
                     <button type="button" class="so-filter" data-filter="Ignored" aria-pressed="false">Ignored</button>
                 </div>
-                <div id="so-recs"></div>
+                <div id="so-recs" data-ignore-list></div>
             </section>
 
             <!-- IPTV -->
@@ -680,7 +680,7 @@
                     <div class="so-scroll">
                         <table class="so-table">
                             <thead><tr><th>Status</th><th>Section</th><th>Setting</th><th>Value</th><th></th></tr></thead>
-                            <tbody id="so-settings-body"></tbody>
+                            <tbody id="so-settings-body" data-ignore-list></tbody>
                         </table>
                     </div>
                 </div>
@@ -826,8 +826,10 @@
                 return ApiClient.getJSON(ApiClient.getUrl(path, params));
             }
 
-            function postJson(path, params) {
-                return ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl(path, params), dataType: 'json' });
+            // An empty answer, such as 204 No Content, is a success too, and comes back as null.
+            async function postJson(path, params) {
+                const text = await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl(path, params), dataType: 'text' });
+                return text ? JSON.parse(text) : null;
             }
 
             // The reason the server gave for a failed request (a Problem's detail, a message, or plain text), or ''.
@@ -958,6 +960,8 @@
                                 return;
                             }
                             await loadReport();
+                            // loadReport shows its own error when the checks couldn't load again; that one stays.
+                            if (!status.hidden && status.classList.contains('error')) return;
                             showStatus('Medic counts repeated log errors again from now, so this one shows again only if it comes back.', 'info');
                         });
                         card.appendChild(reset);
@@ -1108,14 +1112,34 @@
                     return list;
                 }
 
+                // The item a button belongs to can leave its list or move when the lists are redrawn. Returns what puts
+                // the keyboard on the next item instead of the page's top, or on the previous one when it was the last.
+                function keepFocusAfterRedraw(button) {
+                    const item = button.closest('[data-key]');
+                    const list = item && item.closest('[data-ignore-list]');
+                    if (!list) return function () {};
+                    const keys = Array.from(list.querySelectorAll('[data-key]')).map(function (i) { return i.getAttribute('data-key'); });
+                    const at = keys.indexOf(item.getAttribute('data-key'));
+                    const order = keys.slice(at + 1).concat(keys.slice(0, at).reverse(), keys[at]);
+                    return function () {
+                        if (!list.isConnected) return;
+                        let target = null;
+                        for (let i = 0; i < order.length && !target; i++) target = list.querySelector('[data-key="' + CSS.escape(order[i]) + '"]');
+                        target = target || list.querySelector('[data-key]');
+                        // A card takes the focus itself; a row or a line of advice gives it to its own Ignore or Dismiss button.
+                        if (target && !target.hasAttribute('tabindex')) target = target.querySelector('.md-ignore-toggle');
+                        if (!target) {
+                            list.tabIndex = -1;
+                            target = list;
+                        }
+                        target.focus({ preventScroll: true });
+                    };
+                }
+
                 async function toggleIgnore(f, button) {
                     const key = pick(f, 'Key');
                     const ignore = !isIgnored(f);
-                    // The card leaves this list when it's redrawn: the keyboard goes on to the next card instead of the page's top.
-                    const card = button.closest('.so-card');
-                    const list = card && card.parentNode;
-                    const next = card && (card.nextElementSibling || card.previousElementSibling);
-                    const nextKey = next && next.getAttribute('data-key');
+                    const refocus = keepFocusAfterRedraw(button);
                     button.disabled = true;
                     try {
                         await postJson('/JellyfinMedic/Ignore', { key: key, ignored: ignore });
@@ -1128,14 +1152,10 @@
                         if (report) { renderDashboard(); renderRecs(); }
                         if (plugins) renderPlugins();
                         if (settings) renderSettings();
-                        if (list && list.isConnected) {
-                            const target = (nextKey && list.querySelector('.so-card[data-key="' + CSS.escape(nextKey) + '"]'))
-                                || list.querySelector('.so-card[data-key="' + CSS.escape(key) + '"]') || list.querySelector('.so-card');
-                            if (target) target.focus({ preventScroll: true });
-                        }
+                        refocus();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not update ignored finding', err);
-                        showStatus('Couldn\'t save that change. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        showError(err, 'Couldn\'t save that change.', 'Check the Jellyfin log for Jellyfin Medic errors.');
                         button.disabled = false;
                     }
                 }
@@ -1362,7 +1382,8 @@
                             const advice = el('div', 'md-setting-advice', (ignored ? 'Dismissed: ' : '') + fmtTimes(pick(f, 'Title')) + (pick(f, 'Recommended') && !ignored ? '. Suggested: ' + pick(f, 'Recommended') : ''));
                             nameCell.appendChild(advice);
                             const actions = el('div', 'md-setting-actions');
-                            const dismiss = el('button', 'so-btn so-btn-plain', ignored ? 'Show again' : 'Dismiss');
+                            if (pick(f, 'Key')) actions.setAttribute('data-key', pick(f, 'Key'));
+                            const dismiss = el('button', 'so-btn so-btn-plain md-ignore-toggle', ignored ? 'Show again' : 'Dismiss');
                             dismiss.type = 'button';
                             dismiss.title = ignored ? 'Bring this advice back' : 'You are happy with this setting: mark it as all good';
                             dismiss.addEventListener('click', function () { toggleIgnore(f, dismiss); });
@@ -1484,7 +1505,7 @@
                         show.type = 'button';
                         show.addEventListener('click', function () { openFinding(pick(f, 'Key')); });
                         actions.appendChild(show);
-                        const ignore = el('button', 'so-btn so-btn-plain', 'Ignore');
+                        const ignore = el('button', 'so-btn so-btn-plain md-ignore-toggle', 'Ignore');
                         ignore.type = 'button';
                         ignore.addEventListener('click', function () { toggleIgnore(f, ignore); });
                         actions.appendChild(ignore);
@@ -2264,7 +2285,7 @@
                         renderTimeline();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load the schedule', err);
-                        showStatus('Couldn\'t load the schedule. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        showError(err, 'Couldn\'t load the schedule.', 'Check the Jellyfin log for Jellyfin Medic errors.');
                     }
                 }
 
@@ -3441,6 +3462,20 @@
                     };
                 }
 
+                // Every box fillMedicSettings fills, and the schedule mode, as the form shows them now.
+                const MEDIC_FIELDS = ['md-avoid', 'md-avoid-from', 'md-avoid-to', 'md-inactive', 'md-guard-enabled', 'md-ceiling',
+                    'md-tracks-langs-in', 'md-tracks-undet-in', 'md-tracks-untagsubs-in', 'md-tracks-keepfirst-in', 'md-tracks-onlysub-in',
+                    'md-tracks-window-in', 'md-tracks-window-from', 'md-tracks-window-to', 'md-tracks-watching-in', 'md-tracks-inplace-in',
+                    'md-tracks-conc', 'md-tracks-threads', 'md-tracks-exclude-in', 'md-alert-critical', 'md-alert-restart'];
+                function medicFormState() {
+                    const state = { mode: scheduleMode };
+                    MEDIC_FIELDS.forEach(function (id) {
+                        const box = $(id);
+                        state[id] = box.type === 'checkbox' ? box.checked : box.value;
+                    });
+                    return state;
+                }
+
                 function tracksChanged() {
                     return medicSettingsLoaded && JSON.stringify(tracksForm()) !== tracksSaved;
                 }
@@ -3451,6 +3486,7 @@
                         return false;
                     }
                     const tracks = tracksForm();
+                    const sent = medicFormState();
                     const body = Object.assign({
                         AvoidEnabled: $('md-avoid').checked,
                         AvoidStartMinute: parseInt($('md-avoid-from').value, 10),
@@ -3466,8 +3502,19 @@
                     }, tracks);
                     try {
                         const saved = await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('JellyfinMedic/MedicSettings'), data: JSON.stringify(body), contentType: 'application/json', dataType: 'json' });
+                        // What was changed while the save was on its way stays on screen, still unsaved; the rest shows
+                        // what the server kept.
+                        const now = medicFormState();
                         fillMedicSettings(saved);
-                        statusEl.textContent = okMessage;
+                        const edited = Object.keys(now).filter(function (id) { return now[id] !== sent[id]; });
+                        edited.forEach(function (id) {
+                            if (id === 'mode') scheduleMode = now[id];
+                            else if ($(id).type === 'checkbox') $(id).checked = now[id];
+                            else $(id).value = now[id];
+                        });
+                        showMode();
+                        syncSubtitleOptions();
+                        statusEl.textContent = okMessage + (edited.length ? ' What you changed since isn\'t saved yet.' : '');
                         return true;
                     } catch (e) {
                         statusEl.textContent = 'Couldn\'t save. ' + (await reasonOf(e) || 'Check the Jellyfin log.');
@@ -3539,7 +3586,7 @@
                         $('md-export-text').value = exportText;
                         $('md-export-box').hidden = false;
                     } catch (e) {
-                        showStatus('Couldn\'t build the settings file. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        showError(e, 'Couldn\'t build the settings file.', 'Check the Jellyfin log for Jellyfin Medic errors.');
                     } finally {
                         btn.disabled = false;
                     }
@@ -3959,7 +4006,7 @@
                         const info = await getJson('/JellyfinMedic/Version?all=true');
                         showChangelog("What's new in each version", pick(info, 'Changelog') || []);
                     } catch (e) {
-                        showStatus('Couldn\'t load the changelog.', 'error');
+                        showError(e, 'Couldn\'t load the changelog.');
                     }
                 });
                 $('md-whatsnew-close').addEventListener('click', closeWhatsNew);
@@ -4190,7 +4237,11 @@
                                 const r = await postJson('/JellyfinMedic/Tracks/RenameSubtitle', { path: pick(u, 'ExternalPath'), language: sel.value });
                                 note.textContent = pick(r, 'Message');
                                 if (pick(r, 'Ok')) { btn.textContent = 'Renamed'; sel.disabled = true; } else { btn.disabled = false; }
-                            } catch (e) { btn.disabled = false; note.textContent = 'Couldn\'t rename it.'; }
+                            } catch (e) {
+                                btn.disabled = false;
+                                const reason = await reasonOf(e);
+                                note.textContent = 'Couldn\'t rename it.' + (reason ? ' ' + reason : '');
+                            }
                         });
                     } else {
                         btn.textContent = 'Save';
@@ -4200,7 +4251,10 @@
                             try {
                                 const r = await postJson('/JellyfinMedic/Tracks/SetLanguage', { path: pick(u, 'Path'), index: pick(u, 'Index'), language: sel.value });
                                 note.textContent = pick(r, 'Message');
-                            } catch (e) { note.textContent = 'Couldn\'t save that.'; }
+                            } catch (e) {
+                                const reason = await reasonOf(e);
+                                note.textContent = 'Couldn\'t save that.' + (reason ? ' ' + reason : '');
+                            }
                             btn.disabled = false;
                         });
                     }
@@ -4830,7 +4884,7 @@
                         }
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load ' + name, err);
-                        showStatus('Couldn\'t load this tab. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        showError(err, 'Couldn\'t load this tab.', 'Check the Jellyfin log for Jellyfin Medic errors.');
                     }
                 }
 

@@ -1977,21 +1977,21 @@ async function settleWhatsNew(p) {
 }
 
 // Opens Medic's page on a tab, closing "What's new" if it's showing. Fresh reloads it, so nothing the
-// page kept from an earlier visit (the films it found, say) is reused.
-async function medicTab(name, fresh) {
-    await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+// page kept from an earlier visit (the films it found, say) is reused. p is another signed-in page, when given.
+async function medicTab(name, fresh, p = page) {
+    await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
     if (fresh) {
         // Coming from a page outside the web app (My picks, say), the goto is a full load, and the web app checks
         // its saved sign-in with GET /System/Info as it starts. A reload that cuts that request off makes it
         // fail, and the web app then drops the saved token for good (it clears it on any failure, not only on
         // a 401), so this page and every later check land on the sign-in screen. The page showing means the
         // check is done.
-        await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-        await page.reload();
+        await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+        await p.reload();
     }
-    await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-    await settleWhatsNew(page);
-    await page.click(`#JellyfinMedicPage .so-tab[data-tab="${name}"]`);
+    await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+    await settleWhatsNew(p);
+    await p.click(`#JellyfinMedicPage .so-tab[data-tab="${name}"]`);
 }
 
 // Signs in as the test admin in a new browser context, for checks that need their own clock or time zone.
@@ -3162,6 +3162,229 @@ await check('Tracks: unsaved track settings are saved before a scan or a run sta
         page.off('request', watch);
         page.off('dialog', accept);
         await page.unroute('**/JellyfinMedic/Tracks/Run?*');
+        await api('POST', '/JellyfinMedic/MedicSettings', before);
+    }
+});
+
+// ---------- Medic page actions ----------
+
+// The page signed in on its own, with the report's findings replaced by these and Ignore answered without saving.
+async function pageWithFindings(ctx, findings) {
+    const p = await adminPage(ctx);
+    const real = await ok('/JellyfinMedic/Report');
+    await p.route(REPORT, (route) => route.fulfill({ json: { ...real, Findings: findings } }));
+    await p.route(/\/JellyfinMedic\/Ignore(\?|$)/, (route) => route.fulfill({ json: { Ok: true } }));
+    return p;
+}
+
+const fixtureFinding = (key, area, extra) => ({ Key: key, Severity: 'Problem', Area: area, Title: 'Fixture ' + key, Why: 'An e2e fixture.', ...extra });
+
+// Where the keyboard is: the key of the item it's in, the table row it's in, and the focused element's text.
+const focusedItem = (p) => p.evaluate(() => {
+    const a = document.activeElement;
+    const item = a && a.closest('[data-key]');
+    const row = a && a.closest('tr');
+    return { key: item && item.getAttribute('data-key'), row: row && row.textContent, text: (a && a.textContent || '').trim() };
+});
+
+// Waits for the page's status line to show something other than "Checking your setup", and returns it.
+async function settledStatus(p) {
+    await p.waitForFunction(() => {
+        const s = document.querySelector('#JellyfinMedicPage #so-status');
+        return s && !s.hidden && !/Checking your setup/.test(s.textContent);
+    }, null, { timeout: 30000 });
+    await p.waitForTimeout(500);
+    return p.evaluate(() => {
+        const s = document.querySelector('#JellyfinMedicPage #so-status');
+        return { text: s.hidden ? '' : s.textContent, error: s.classList.contains('error') };
+    });
+}
+
+await check('Medic page actions: Ignore on the last finding of an area moves the keyboard to the next finding, and on the last one to the one before', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await pageWithFindings(ctx, [
+            fixtureFinding('e2e-a1', 'Fixture Alpha'), fixtureFinding('e2e-a2', 'Fixture Alpha'),
+            fixtureFinding('e2e-b1', 'Fixture Beta'), fixtureFinding('e2e-b2', 'Fixture Beta')]);
+        await medicTab('recs', false, p);
+        await p.click('#so-recs .so-card[data-key="e2e-a2"] .so-ignore-btn', { timeout: 30000 });
+        await p.waitForSelector('#so-recs .so-card[data-key="e2e-a2"]', { state: 'detached' });
+        const first = await focusedItem(p);
+        expect(first.key === 'e2e-b1', `after ignoring the last of its area, focus is on "${first.key}", expected e2e-b1`);
+        await p.click('#so-recs .so-card[data-key="e2e-b2"] .so-ignore-btn');
+        await p.waitForSelector('#so-recs .so-card[data-key="e2e-b2"]', { state: 'detached' });
+        const second = await focusedItem(p);
+        expect(second.key === 'e2e-b1', `after ignoring the last finding, focus is on "${second.key}", expected e2e-b1`);
+        return 'next area, then back';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page actions: Ignore in the Dashboard\'s top issues moves the keyboard to the next issue, and on the last one to the one before', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await pageWithFindings(ctx, ['e2e-p1', 'e2e-p2', 'e2e-p3', 'e2e-p4'].map((k) => fixtureFinding(k, 'Fixture')));
+        await medicTab('dashboard', false, p);
+        const ignore = (key) => p.click(`#md-issues li[data-key="${key}"] button:has-text("Ignore")`, { timeout: 30000 });
+        await ignore('e2e-p1');
+        await p.waitForSelector('#md-issues li[data-key="e2e-p1"]', { state: 'detached' });
+        const first = await focusedItem(p);
+        expect(first.key === 'e2e-p2' && first.text === 'Ignore', `after the first issue, focus is on ${JSON.stringify(first)}, expected e2e-p2's Ignore`);
+        await ignore('e2e-p4');
+        await p.waitForSelector('#md-issues li[data-key="e2e-p4"]', { state: 'detached' });
+        const second = await focusedItem(p);
+        expect(second.key === 'e2e-p3' && second.text === 'Ignore', `after the last issue, focus is on ${JSON.stringify(second)}, expected e2e-p3's Ignore`);
+        return 'next issue, then back';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page actions: Dismiss on a setting\'s advice moves the keyboard to the next setting\'s advice', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const names = ['E2eFixtureOne', 'E2eFixtureTwo', 'E2eFixtureThree'];
+        const p = await pageWithFindings(ctx, names.map((n, i) => fixtureFinding('e2e-s' + i, 'Fixture', { Setting: 'Fixture|' + n })));
+        await p.route(/\/JellyfinMedic\/JellyfinSettings(\?|$)/, (route) => route.fulfill({ json: names.map((n) => ({ Section: 'Fixture', Name: n, Value: '1' })) }));
+        await medicTab('settings', false, p);
+        const row = (n) => p.locator('#so-settings-body tr', { hasText: n });
+        await row('E2eFixtureOne').locator('button:has-text("Dismiss")').click({ timeout: 30000 });
+        await row('E2eFixtureOne').locator('button:has-text("Show again")').waitFor();
+        const focused = await focusedItem(p);
+        expect(/E2eFixtureTwo/.test(focused.row || '') && focused.text === 'Dismiss', `focus is on ${JSON.stringify(focused)}, expected the second setting's Dismiss`);
+        return 'on the next setting';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page actions: "Fixed it" takes an empty answer as done, and says so only when the checks load again', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await pageWithFindings(ctx, [fixtureFinding('e2e-log', 'Logs')]);
+        let reportDown = false;
+        const real = await ok('/JellyfinMedic/Report');
+        // An empty 204, as an endpoint with nothing to say answers.
+        await p.route(/\/JellyfinMedic\/Logs\/ResetCount(\?|$)/, (route) => route.fulfill({ status: 204, body: '' }));
+        await p.route(REPORT, (route) => (reportDown
+            ? route.fulfill({ status: 500, json: { detail: 'E2E report down' } })
+            : route.fulfill({ json: { ...real, Findings: [fixtureFinding('e2e-log', 'Logs')] } })));
+        await medicTab('recs', false, p);
+        const fixed = p.locator('#so-recs .so-card[data-key="e2e-log"] button:has-text("Fixed it")');
+        await fixed.click({ timeout: 30000 });
+        const done = await settledStatus(p);
+        expect(!done.error && /counts repeated log errors again/.test(done.text), 'after an empty answer: ' + JSON.stringify(done));
+        // The next reload fails: its error stays, with no word that it worked.
+        reportDown = true;
+        await fixed.click();
+        const failed = await settledStatus(p);
+        expect(failed.error && /checks couldn't run/.test(failed.text), 'after a failed reload: ' + JSON.stringify(failed));
+        return 'empty answer done; failed reload left its error';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page actions: Ignore, the schedule, the settings file, a tab, the changelog and a track\'s language show the server\'s reason when they fail', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    const missing = [];
+    const refuse = (reason) => (route) => route.fulfill({ status: 400, json: { title: 'Bad Request', status: 400, detail: reason } });
+    try {
+        const p = await pageWithFindings(ctx, [fixtureFinding('e2e-r1', 'Fixture')]);
+        await p.unroute(/\/JellyfinMedic\/Ignore(\?|$)/);
+        await p.route(/\/JellyfinMedic\/Ignore(\?|$)/, refuse('E2E reason ignore'));
+        await p.route(/\/JellyfinMedic\/Schedule\/GetCalendar(\?|$)/, refuse('E2E reason schedule'));
+        await p.route(/\/JellyfinMedic\/Export(\?|$)/, refuse('E2E reason export'));
+        await p.route(/\/JellyfinMedic\/Iptv(\?|$)/, refuse('E2E reason tab'));
+        await p.route(/\/JellyfinMedic\/Version\?all=true/, refuse('E2E reason changelog'));
+        await p.route(/\/JellyfinMedic\/Tracks\/RenameSubtitle(\?|$)/, refuse('E2E reason rename'));
+        await p.route(/\/JellyfinMedic\/Tracks\/SetLanguage(\?|$)/, refuse('E2E reason language'));
+        await p.route(/\/JellyfinMedic\/Tracks\/Scan\/Untagged(\?|$)/, (route) => route.fulfill({ json: { Total: 2, Page: 1, Pages: 1, Items: [
+            { Title: 'E2E external', FileName: 'E2E external.mkv', External: true, ExternalPath: '/media/movies/E2E external.srt', Kind: 'subtitle', Codec: 'subrip' },
+            { Title: 'E2E embedded', FileName: 'E2E embedded.mkv', Path: '/media/movies/E2E embedded.mkv', Index: 1, Kind: 'audio', Codec: 'aac', Channels: 2 }] } }));
+        const statusShows = async (reason) => {
+            try {
+                await p.waitForFunction((r) => (document.querySelector('#JellyfinMedicPage #so-status')?.textContent || '').includes(r), reason, { timeout: 15000 });
+            } catch { missing.push(reason + ' (status: ' + await p.textContent('#JellyfinMedicPage #so-status') + ')'); }
+        };
+
+        await medicTab('recs', false, p);
+        await p.click('#so-recs .so-card[data-key="e2e-r1"] .so-ignore-btn', { timeout: 30000 });
+        await statusShows('E2E reason ignore');
+
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
+        await statusShows('E2E reason schedule');
+
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="plugins"]');
+        await p.click('#md-export');
+        await statusShows('E2E reason export');
+
+        // A tab whose data doesn't load, IPTV here.
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="iptv"]');
+        await statusShows('E2E reason tab');
+
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="settings"]');
+        await p.click('#md-changelog-all');
+        await statusShows('E2E reason changelog');
+
+        // The list of untagged tracks, drawn from the answer above; the panel may stay hidden, so the buttons are
+        // pressed by their click event.
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await p.evaluate(() => document.getElementById('md-untag-kind').dispatchEvent(new Event('change')));
+        const note = (title) => p.locator('#md-untag-body tr', { hasText: title }).locator('td:last-child > div:last-child');
+        await p.locator('#md-untag-body tr', { hasText: 'E2E external' }).locator('button').dispatchEvent('click', {}, { timeout: 15000 });
+        await p.locator('#md-untag-body tr', { hasText: 'E2E embedded' }).locator('button').dispatchEvent('click');
+        for (const [title, reason] of [['E2E external', 'E2E reason rename'], ['E2E embedded', 'E2E reason language']]) {
+            try {
+                await p.waitForFunction(([t, r]) => Array.from(document.querySelectorAll('#md-untag-body tr'))
+                    .some((tr) => tr.textContent.includes(t) && tr.lastElementChild.lastElementChild.textContent.includes(r)), [title, reason], { timeout: 15000 });
+            } catch { missing.push(reason + ' (note: ' + await note(title).textContent() + ')'); }
+        }
+        expect(missing.length === 0, 'reasons not shown: ' + missing.join(' | '));
+        return 'all seven name the server\'s reason';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page actions: a track setting changed while a save is on its way stays on screen, unsaved', async () => {
+    const before = await ok('/JellyfinMedic/MedicSettings');
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(ctx);
+        let release;
+        const held = new Promise((r) => { release = r; });
+        const posts = [];
+        await p.route(/\/JellyfinMedic\/MedicSettings(\?|$)/, async (route) => {
+            if (route.request().method() === 'POST') {
+                posts.push(JSON.parse(route.request().postData() || '{}').TracksExclude);
+                if (posts.length === 1) await held;
+            }
+            await route.continue();
+        });
+        await medicTab('tracks', false, p);
+        await p.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 30000 });
+        await p.fill('#md-tracks-exclude-in', 'E2E first');
+        await p.click('#md-tracks-save');
+        for (let i = 0; i < 50 && posts.length === 0; i++) await sleep(100);
+        expect(posts.length === 1, 'the save wasn\'t sent');
+        await p.fill('#md-tracks-exclude-in', 'E2E first\nE2E later');
+        release();
+        await p.waitForFunction(() => /Saved/.test(document.getElementById('md-tracks-saved')?.textContent || ''), null, { timeout: 30000 });
+        const shown = await p.inputValue('#md-tracks-exclude-in');
+        expect(shown === 'E2E first\nE2E later', 'after the save the box shows ' + JSON.stringify(shown));
+        const saved = await ok('/JellyfinMedic/MedicSettings');
+        expect(saved.TracksExclude === 'E2E first', 'saved: ' + JSON.stringify(saved.TracksExclude));
+        expect(/isn't saved yet/.test(await p.textContent('#md-tracks-saved')), 'the note doesn\'t say the later change is unsaved');
+        // Still counted as a change: a scan saves it first.
+        await p.route(/\/JellyfinMedic\/Tracks\/Scan\/Start(\?|$)/, (route) => route.fulfill({ json: {} }));
+        await p.click('#md-tracks-scan');
+        for (let i = 0; i < 50 && posts.length < 2; i++) await sleep(100);
+        expect(posts[1] === 'E2E first\nE2E later', 'the scan didn\'t save the later change first: ' + JSON.stringify(posts));
+        return 'kept, and saved before the scan';
+    } finally {
+        await ctx.close();
         await api('POST', '/JellyfinMedic/MedicSettings', before);
     }
 });
