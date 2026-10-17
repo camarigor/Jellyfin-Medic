@@ -1768,18 +1768,25 @@
                         return;
                     }
                     const missing = drives.filter(function (d) { return pick(d, 'Missing'); });
+                    const read = drives.filter(function (d) { return !pick(d, 'Missing'); });
+                    const share = function (d) { return pick(d, 'TotalGb') > 0 ? pick(d, 'FreeGb') / pick(d, 'TotalGb') : 1; };
+                    const worst = read.slice().sort(function (a, b) { return share(a) - share(b); })[0];
+                    const freeText = function (d) { return pick(d, 'TotalGb') > 0 ? Math.round(share(d) * 100) + '% free' : gb(pick(d, 'FreeGb')) + ' free'; };
+                    const outlook = function (d) {
+                        const days = pick(d, 'DaysToFull');
+                        const rate = pick(d, 'GbPerDay');
+                        return days !== null && days !== undefined ? 'full in ' + daysText(days)
+                            : rate === null || rate === undefined ? 'the trend shows after 3 days of readings' : 'not filling';
+                    };
                     if (missing.length) {
+                        // The drives still read go on filling, so the fullest of them stays in view.
                         big.textContent = missing.length === 1 ? '1 drive missing' : missing.length + ' drives missing';
-                        text.textContent = (pick(missing[0], 'Holds') || pick(missing[0], 'Key')) + ': its folder can\'t be found';
+                        text.textContent = (pick(missing[0], 'Holds') || pick(missing[0], 'Key')) + ': its folder can\'t be found' +
+                            (worst ? '. ' + (pick(worst, 'Holds') || pick(worst, 'Key')) + ': ' + freeText(worst) + ', ' + outlook(worst) : '');
                         return;
                     }
-                    const share = function (d) { return pick(d, 'TotalGb') > 0 ? pick(d, 'FreeGb') / pick(d, 'TotalGb') : 1; };
-                    const worst = drives.slice().sort(function (a, b) { return share(a) - share(b); })[0];
-                    big.textContent = pick(worst, 'TotalGb') > 0 ? Math.round(share(worst) * 100) + '% free' : gb(pick(worst, 'FreeGb')) + ' free';
-                    const days = pick(worst, 'DaysToFull');
-                    const rate = pick(worst, 'GbPerDay');
-                    text.textContent = (pick(worst, 'Holds') || pick(worst, 'Key')) + ': ' + (days !== null && days !== undefined ? 'full in ' + daysText(days)
-                        : rate === null || rate === undefined ? 'the trend shows after 3 days of readings' : 'not filling');
+                    big.textContent = freeText(worst);
+                    text.textContent = (pick(worst, 'Holds') || pick(worst, 'Key')) + ': ' + outlook(worst);
                 }
 
                 // ---------- Today: planned and actual ----------

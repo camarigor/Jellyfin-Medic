@@ -2714,6 +2714,27 @@ await check('Dashboard panels: Disk trend marks the days Medic freed space', asy
     }
 });
 
+await check('Dashboard panels: the Disks tile keeps the fullest drive in view while another is missing', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    // No drive goes missing on the e2e server, nor fills this fast: serve one nearly full, beside one that didn't mount.
+    const series = [{ Day: new Date().toISOString().slice(0, 10), FreeGb: 10 }];
+    const full = { Key: '/mnt/films', Holds: 'Full films', Missing: false, Path: '', FreeGb: 10, TotalGb: 1000, GbPerDay: 20, DaysToFull: 0.5, Series: series };
+    const missing = { Key: '/mnt/gone', Holds: 'Gone shows', Missing: true, Path: '/mnt/gone/shows', FreeGb: 500, TotalGb: 0, GbPerDay: null, DaysToFull: null, Series: series };
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Disks: { ...data.Disks, Drives: [missing, full] } } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => /missing/.test(document.getElementById('md-disks-big')?.textContent || ''), null, { timeout: 30000 });
+        const big = (await page.textContent('#md-disks-big')).trim();
+        const text = (await page.textContent('#md-disks-text')).trim();
+        expect(big === '1 drive missing', 'the tile: ' + big);
+        expect(/Gone shows: its folder can't be found/.test(text), 'the missing drive is not named: ' + text);
+        expect(/Full films: 1% free, full in about 1 day/.test(text), 'the nearly full drive is not shown: ' + text);
+        return text;
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
 await check('Dashboard panels: People and access counts the accounts and lists the administrators', async () => {
     await medicTab('dashboard', true);
     await page.waitForFunction(() => /account/.test(document.getElementById('md-people-big')?.textContent || ''), null, { timeout: 30000 });
