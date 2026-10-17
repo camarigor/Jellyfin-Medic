@@ -73,7 +73,7 @@ public class PostersController : ControllerBase
     }
 
     [HttpPost("Settings")]
-    public ActionResult SaveSettings([FromBody] SettingsRequest request)
+    public ActionResult SaveSettings([FromBody] PosterSettingsRequest request)
     {
         if (request is null)
         {
@@ -106,7 +106,7 @@ public class PostersController : ControllerBase
 
     /// <summary>Makes a poster for one film (a random one if none is given) without changing the film.</summary>
     [HttpPost("Preview")]
-    public async Task<ActionResult> Preview([FromBody] PreviewRequest? request, CancellationToken ct)
+    public async Task<ActionResult> Preview([FromBody] PosterPreviewRequest? request, CancellationToken ct)
     {
         var (film, error) = await _service.PreviewAsync(request?.ItemId, PosterSpec.From(Plugin.Instance!.Configuration), ct).ConfigureAwait(false);
         long bytes = error is null && System.IO.File.Exists(_store.PreviewPath) ? new FileInfo(_store.PreviewPath).Length : 0;
@@ -170,7 +170,7 @@ public class PostersController : ControllerBase
         Content(JsonSerializer.Serialize(body, PosterStore.JsonOptions), MediaTypeNames.Application.Json);
 }
 
-public class SettingsRequest
+public class PosterSettingsRequest
 {
     public string[]? LibraryIds { get; set; }
 
@@ -189,7 +189,7 @@ public class SettingsRequest
     public bool? ShowFrame { get; set; }
 }
 
-public class PreviewRequest
+public class PosterPreviewRequest
 {
     public Guid? ItemId { get; set; }
 }
