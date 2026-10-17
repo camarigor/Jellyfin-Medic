@@ -349,7 +349,7 @@ public static class PluginAuditor
 
         if (!element.HasElements)
         {
-            rows.Add(new SettingRow { Section = "Plugin", Name = path, Value = SettingsReader.Display(path, element.Value) });
+            rows.Add(new SettingRow { Section = "Plugin", Name = path, Value = ShownSetting(path, element) });
             return;
         }
 
@@ -357,6 +357,20 @@ public static class PluginAuditor
         {
             FlattenXml(child.Element, $"{path}.{child.Name}", rows);
         }
+    }
+
+    // The support export's masking as well, so a secret it hides (in a script, or the Value of an X-Api-Key
+    // header pair) isn't shown here either. A setting named as a secret goes to Display as it is, which still
+    // shows On or Off for a switch.
+    internal static string ShownSetting(string path, XElement element)
+    {
+        string value = element.Value;
+        if (value.Length > 0 && SettingsExporter.IsSecretPairValue(element))
+        {
+            return "•••• (hidden)";
+        }
+
+        return SettingsReader.Display(path, SettingsReader.IsSecretName(path) ? value : SettingsExporter.Mask(path, value, "••••"));
     }
 
     private static void Add(PluginReport report, string severity, string problem, string current, string recommended, string why) =>

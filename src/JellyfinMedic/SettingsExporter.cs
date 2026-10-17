@@ -108,18 +108,19 @@ public static class SettingsExporter
         return text.ToString();
     }
 
-    public static string Mask(string name, string value)
+    /// <summary>Masks a setting's value, writing <paramref name="mask"/> in place of what's hidden.</summary>
+    public static string Mask(string name, string value, string mask = "****")
     {
         if (string.IsNullOrEmpty(value))
         {
             return value;
         }
 
-        return SettingsReader.IsSecretName(name) ? "****" : MaskValue(value);
+        return SettingsReader.IsSecretName(name) ? mask : MaskValue(value, mask);
     }
 
     /// <summary>Masks what looks like a credential inside a value, whatever the setting is called.</summary>
-    private static string MaskValue(string value)
+    private static string MaskValue(string value, string mask = "****")
     {
         if (string.IsNullOrEmpty(value))
         {
@@ -127,11 +128,11 @@ public static class SettingsExporter
         }
 
         string masked = SettingsReader.MaskSecrets(value);
-        masked = TelegramToken.Replace(masked, "****");
-        masked = QuotedSecret.Replace(masked, "$1$2****$2");
+        masked = TelegramToken.Replace(masked, mask);
+        masked = QuotedSecret.Replace(masked, m => m.Groups[1].Value + m.Groups[2].Value + mask + m.Groups[2].Value);
         if (LongToken.IsMatch(masked.Trim()) && !GuidLike.IsMatch(masked.Trim()))
         {
-            masked = "****";
+            masked = mask;
         }
 
         return masked;
@@ -141,7 +142,7 @@ public static class SettingsExporter
     /// The Value of a name/value pair (custom HTTP headers, extra fields) whose label looks secret. There the
     /// secret sits under a harmless element name: &lt;Key&gt;Authorization&lt;/Key&gt;&lt;Value&gt;Bearer ...&lt;/Value&gt;.
     /// </summary>
-    private static bool IsSecretPairValue(XElement element) =>
+    internal static bool IsSecretPairValue(XElement element) =>
         IsNamed(element.Name, "Value")
         && element.Parent?.Elements().Any(e => IsLabelElement(e) && LooksSecretLabel(e.Value)) == true;
 
