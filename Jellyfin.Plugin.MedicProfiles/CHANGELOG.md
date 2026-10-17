@@ -3,6 +3,13 @@
 All notable changes to Medic Profiles are recorded here. The newest version is at the top.
 Jellyfin Medic and Medic Picks have their own changelogs.
 
+## Unreleased
+
+### Fixed
+- **Sonarr's advice comes from episodes, Radarr's from films.** Every playback tip was based on films and episodes counted together, so five 4K films shrunk for a 1080p TV told you to untick 2160p in Sonarr too, and a Remux film collection told Sonarr to avoid DTS. Each app's advice, its evidence line and the "HEVC plays fine here" tip now count only that app's own kind of file.
+- **A qBittorrent answer that isn't about the password is no longer called a wrong password.** A 404 (a reverse proxy path missing from the address), a 502 from the proxy or a 500 from qBittorrent said "qBittorrent didn't accept the user name and password", counted towards the two refusals after which Medic Profiles stops signing in, and paused sign-ins for 5 minutes. Only a real refusal (a 401, or "Fails.") counts now; anything else says which HTTP status came back so you can check the address.
+- **A key or password stays with its server however the settings are saved.** Pointing the Sonarr, Radarr or qBittorrent address at another server removes its saved key or password only when saved from the Medic Profiles page. Saving the plugin's settings another way (Jellyfin's own plugin settings API, say) kept them, and the next call sent them to the new address. Both ways now remove them.
+
 ## [1.1.6] - 2026-10-17
 
 ### Fixed

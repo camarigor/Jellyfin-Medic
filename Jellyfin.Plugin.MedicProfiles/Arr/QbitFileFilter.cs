@@ -378,7 +378,7 @@ public class QbitFileFilter
 
     /// <summary>
     /// Signs in to qBittorrent's Web UI. Refused is true when qBittorrent turned the user name and password
-    /// down (or is blocking sign-ins), as opposed to not being reachable.
+    /// down (or is blocking sign-ins), as opposed to not being reachable or answering something else.
     /// </summary>
     private async Task<(HttpClient? Client, string Error, bool Refused)> SignInAsync(string baseUrl, string user, string password, CancellationToken ct)
     {
@@ -413,10 +413,20 @@ public class QbitFileFilter
                 return (null, "qBittorrent has blocked sign-ins from this server after too many wrong passwords. Its ban lasts an hour by default, or until qBittorrent restarts.", true);
             }
 
-            if (!response.IsSuccessStatusCode || body.Contains("Fails", StringComparison.OrdinalIgnoreCase))
+            if (response.StatusCode == HttpStatusCode.Unauthorized || (response.IsSuccessStatusCode && body.Contains("Fails", StringComparison.OrdinalIgnoreCase)))
             {
                 client.Dispose();
                 return (null, "qBittorrent didn't accept the user name and password.", true);
+            }
+
+            // Anything else never got as far as checking the password (a proxy path missing from the address, the
+            // proxy or qBittorrent failing), so it isn't counted towards the stop and the owner isn't sent to the password.
+            if (!response.IsSuccessStatusCode)
+            {
+                client.Dispose();
+                string reason = string.IsNullOrWhiteSpace(response.ReasonPhrase) ? string.Empty : " (" + response.ReasonPhrase + ")";
+                _logger.LogInformation("Medic Profiles: qBittorrent at {Url} answered the sign-in with HTTP {Status}", baseUrl, (int)response.StatusCode);
+                return (null, $"The sign-in at that address was answered with HTTP {(int)response.StatusCode}{reason}, which isn't qBittorrent saying yes or no. Check the address, including any path a reverse proxy needs, and that qBittorrent's Web UI is running.", false);
             }
 
             return (client, string.Empty, false);
