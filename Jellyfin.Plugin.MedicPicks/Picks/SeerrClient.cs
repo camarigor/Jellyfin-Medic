@@ -8,7 +8,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using MediaBrowser.Common.Net;
 using Medic.Shared;
 using Microsoft.Extensions.Logging;
 using static Medic.Shared.Json;
@@ -84,6 +83,10 @@ public class SeerrClient
             return response.IsSuccessStatusCode
                 ? (true, "Seerr answered and accepted the key.")
                 : (false, $"Seerr answered with {(int)response.StatusCode}. Check the API key (Seerr → Settings → General).");
+        }
+        catch (RedirectedException ex)
+        {
+            return (false, $"{baseUrl} sent the request on to {ex.Target}. Medic Picks doesn't follow that, so the API key only goes to the address saved. Enter the address Seerr answers at directly.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -431,12 +434,16 @@ public class SeerrClient
         }
     }
 
-    private HttpClient Client() => _httpClientFactory.CreateClient(NamedClient.Default);
+    // Doesn't follow redirects, so the key only goes to the saved address: see ServiceHttp.KeyClient.
+    private HttpClient Client() => _httpClientFactory.CreateClient(ServiceHttp.KeyClient);
 
     // Each call to Seerr gives up after this long, so a Seerr that hangs can't hold a page open for minutes.
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(10);
 
-    /// <summary>Sends a request to Seerr. A call that runs out of time fails like an unreachable Seerr, not like a cancelled page.</summary>
+    /// <summary>
+    /// Sends a request to Seerr. A call that runs out of time, or that the address sends on elsewhere, fails like an
+    /// unreachable Seerr, not like a cancelled page.
+    /// </summary>
     private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
         ServiceHttp.SendAsync(Client(), request, CallTimeout, "Seerr", ct);
 

@@ -84,22 +84,31 @@ public sealed class ArrClientTests : IDisposable
         Assert.Contains("URL base", message, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task Test_fails_on_a_redirect_and_names_where_it_went()
+    [Theory]
+    [InlineData(HttpStatusCode.Found)]
+    [InlineData(HttpStatusCode.TemporaryRedirect)]
+    [InlineData(HttpStatusCode.PermanentRedirect)]
+    public async Task Test_fails_on_a_redirect_names_where_it_went_and_doesnt_follow_it(HttpStatusCode status)
     {
-        var arr = Client(request => Redirected(request, "http://auth.example/login?rd=sonarr", HttpMethod.Get, SignInPage, "text/html"));
+        var sent = new List<string>();
+        var arr = Client(request =>
+        {
+            sent.Add(request.RequestUri!.ToString());
+            return MovedTo(status, "http://auth.example/login?rd=sonarr");
+        });
 
         var (ok, message) = await arr.StatusAsync(ArrApp.Sonarr, CancellationToken.None);
 
         Assert.False(ok);
         Assert.Contains("http://auth.example/login?rd=sonarr", message, StringComparison.Ordinal);
+        Assert.Equal(new[] { "http://sonarr:8989/api/v3/system/status" }, sent);
     }
 
     [Fact]
-    public async Task Test_fails_even_when_the_redirect_reaches_Sonarr()
+    public async Task Test_fails_even_when_the_redirect_is_to_Sonarr_and_names_the_full_address()
     {
-        // Sonarr with a URL base sends base-less calls on with a 307; the address to save is the one it went to.
-        var arr = Client(request => Redirected(request, "http://sonarr:8989/sonarr/api/v3/system/status", HttpMethod.Get, """{"appName":"Sonarr","version":"4.0.15"}"""));
+        // Sonarr with a URL base sends base-less calls on with a 307; the address to save is the one it points at.
+        var arr = Client(_ => MovedTo(HttpStatusCode.TemporaryRedirect, "/sonarr/api/v3/system/status"));
 
         var (ok, message) = await arr.StatusAsync(ArrApp.Sonarr, CancellationToken.None);
 
@@ -108,25 +117,34 @@ public sealed class ArrClientTests : IDisposable
     }
 
     [Fact]
-    public async Task A_redirect_that_keeps_the_method_still_works()
+    public async Task A_redirected_change_isnt_sent_on()
     {
-        var arr = Client(request => Redirected(request, "http://sonarr:8989/sonarr/api/v3/queue", request.Method, """{"records":[],"totalRecords":0}"""));
-
-        using var result = await arr.GetAsync(ArrApp.Sonarr, "queue", CancellationToken.None);
-
-        Assert.True(result.Ok);
-    }
-
-    [Fact]
-    public async Task A_redirect_that_turns_a_post_into_a_get_fails_and_names_where_it_went()
-    {
-        // .NET follows a 301 or 302 for a POST with a GET, and GET command answers Sonarr's list of commands.
-        var arr = Client(request => Redirected(request, "http://sonarr:8989/sonarr/api/v3/command", HttpMethod.Get, "[]"));
+        // A 307 would post the same body, key and all, to the new address.
+        var sent = new List<string>();
+        var arr = Client(request =>
+        {
+            sent.Add(request.Method + " " + request.RequestUri);
+            return MovedTo(HttpStatusCode.TemporaryRedirect, "http://elsewhere.example/api/v3/command");
+        });
 
         using var result = await arr.PostRawAsync(ArrApp.Sonarr, "command", "{}", CancellationToken.None);
 
         Assert.False(result.Ok);
-        Assert.Contains("http://sonarr:8989/sonarr/api/v3/command", result.Message, StringComparison.Ordinal);
+        Assert.Equal(new Uri("http://elsewhere.example/api/v3/command"), result.RedirectedTo);
+        Assert.Contains("http://elsewhere.example/api/v3/command", result.Message, StringComparison.Ordinal);
+        Assert.Equal(new[] { "POST http://sonarr:8989/api/v3/command" }, sent);
+    }
+
+    [Fact]
+    public async Task An_answer_from_another_address_still_fails()
+    {
+        // Should a client follow the redirect itself, the call still fails and names where it went.
+        var arr = Client(request => Redirected(request, "http://sonarr:8989/sonarr/api/v3/queue", request.Method, """{"records":[],"totalRecords":0}"""));
+
+        using var result = await arr.GetAsync(ArrApp.Sonarr, "queue", CancellationToken.None);
+
+        Assert.False(result.Ok);
+        Assert.Contains("http://sonarr:8989/sonarr/api/v3/queue", result.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -210,6 +228,13 @@ public sealed class ArrClientTests : IDisposable
 
     private static HttpResponseMessage Answer(HttpStatusCode status, string body, string type = "application/json") =>
         new(status) { Content = new StringContent(body, Encoding.UTF8, type) };
+
+    private static HttpResponseMessage MovedTo(HttpStatusCode status, string location)
+    {
+        var response = new HttpResponseMessage(status);
+        response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+        return response;
+    }
 
     // As .NET's own redirect handler does: the request itself is moved on, and changed to a GET for a 301 or 302.
     private static HttpResponseMessage Redirected(HttpRequestMessage request, string to, HttpMethod method, string body, string type = "application/json")

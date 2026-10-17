@@ -10,11 +10,14 @@ Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 - **A person's picks are rebuilt at most every 20 seconds.** Pressing "Update my picks" or "Show me different ones" again and again started a rebuild each time, each reading the whole library. A rebuild now starts at least 20 seconds after that person's last one; choices made meanwhile are saved and go into it, and the page waits for it as before.
 
 ### Fixed
+- **The Seerr key only goes to the address you saved.** When the Seerr address answered with a redirect to another address, the call followed it and sent the API key along. Redirects are no longer followed for calls to Seerr. Test now fails with a message naming where the address points, so you can save that address instead, and My requests says Seerr is out of reach.
 - **"On your server" leaves out films and series you've started.** Linked picks already did; "On your server" still picked a film you'd stopped half way through, and a series with an episode under way. Both are left out now.
 - **The picks playlist keeps its place in your apps.** Each build deleted the playlist and made a new one, so it got a new id, and when making it failed there was no playlist at all. It's now updated in place, and only made again when that fails. Hiding a title on the picks page also takes it out of the playlist straight away, instead of at the next build.
 - **The Play link in My requests checks library access.** It checked parental limits only, so a title that arrived in a library the person can't open still got a Play link. It now checks the library too.
 - **My requests loads faster when Seerr is slow.** Titles were looked up one after another, up to 30 at 10 seconds each, and a title Seerr couldn't give was asked for again on every visit. Up to 4 are now looked up at once, a failed one isn't asked for again for 5 minutes, and titles are kept per Seerr server.
 - **Builds read the library less.** "On your server" and Linked picks each read the films and series they choose from; they now share one reading per build, and without Discover the library isn't read for the TMDb ids only Discover uses. Linked picks also match names through a list made once per build instead of comparing every title watched with every title in the library.
+
+Thanks @camarigor for reporting the Seerr key redirect (#206).
 
 ## [1.2.5] – 2026-10-17
 

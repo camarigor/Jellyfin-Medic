@@ -57,10 +57,54 @@ public sealed class SeerrClientTests : IDisposable
         Assert.Empty(_seerr.Asked);
     }
 
+    [Fact]
+    public async Task Test_doesnt_follow_a_redirect_and_names_where_it_went()
+    {
+        var (client, sent) = Redirecting(HttpStatusCode.TemporaryRedirect, "https://login.example/?rd=seerr");
+
+        var (ok, message) = await client.TestAsync("http://seerr-a:5055", CancellationToken.None);
+
+        Assert.False(ok);
+        Assert.Contains("https://login.example/?rd=seerr", message, StringComparison.Ordinal);
+        Assert.Equal(new[] { "http://seerr-a:5055/api/v1/auth/me" }, sent);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Found)]
+    [InlineData(HttpStatusCode.PermanentRedirect)]
+    public async Task A_redirected_call_counts_as_Seerr_out_of_reach(HttpStatusCode status)
+    {
+        // Not followed, so the key and the request stay with the saved address; My requests says Seerr is out of reach.
+        var (client, sent) = Redirecting(status, "http://elsewhere.example/api/v1/user/jellyfin/x");
+
+        await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.FindSeerrUserAsync("http://seerr-a:5055", Person, CancellationToken.None));
+        Assert.Null(await client.GetRequestsAsync("http://seerr-a:5055", null, "all", 10, CancellationToken.None));
+        Assert.All(sent, url => Assert.StartsWith("http://seerr-a:5055/", url, StringComparison.Ordinal));
+    }
+
     public void Dispose()
     {
         _http.Dispose();
         Directory.Delete(_root, recursive: true);
+    }
+
+    private (SeerrClient Client, List<string> Sent) Redirecting(HttpStatusCode status, string location)
+    {
+        var sent = new List<string>();
+        var http = new HttpClient(new Redirects(status, location, sent));
+        var store = new PicksStore(new TestPaths(_root), NullLogger<PicksStore>.Instance);
+        return (new SeerrClient(new OneClient(http), store, NullLogger<SeerrClient>.Instance), sent);
+    }
+
+    private sealed class Redirects(HttpStatusCode status, string location, List<string> sent) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            sent.Add(request.RequestUri!.ToString());
+            var response = new HttpResponseMessage(status);
+            response.Headers.Location = new Uri(location);
+            return Task.FromResult(response);
+        }
     }
 
     /// <summary>A Seerr on each host, each with its own account id for the same Jellyfin user.</summary>

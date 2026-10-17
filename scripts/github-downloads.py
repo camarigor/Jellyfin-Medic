@@ -21,6 +21,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import github_http
+
 
 def fetch(url, api=False):
     headers = {"User-Agent": "github-downloads"}
@@ -28,7 +30,7 @@ def fetch(url, api=False):
         headers["Accept"] = "application/vnd.github+json"
         if os.environ.get("GITHUB_TOKEN"):
             headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as r:
+    with github_http.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as r:
         body = r.read().decode()
     return json.loads(body) if api else body
 

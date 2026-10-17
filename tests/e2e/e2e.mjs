@@ -1226,6 +1226,58 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
     }
 });
 
+await check('Sonarr, Seerr and qBittorrent keys and passwords never follow a redirect to another address', async () => {
+    // Each saved address answers with a 307 to another server, which must hear nothing: .NET resends X-Api-Key on a
+    // redirect, and for a 307 the qBittorrent sign-in form, password and all (#206).
+    const http = await import('node:http');
+    const caught = [];
+    const catcher = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+            caught.push(`${req.method} ${req.url} key=${req.headers['x-api-key'] || ''} ${body}`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end('{"appName":"Sonarr","version":"4.0.15","id":1}');
+        });
+    });
+    const target = `http://host.docker.internal:${P(18997)}`;
+    const redirector = http.createServer((req, res) => {
+        req.resume();
+        res.writeHead(307, { Location: target + req.url });
+        res.end();
+    });
+    await new Promise((resolve) => catcher.listen(P(18997), '0.0.0.0', resolve));
+    await new Promise((resolve) => redirector.listen(P(18998), '0.0.0.0', resolve));
+    const moved = `http://host.docker.internal:${P(18998)}`;
+    const picks = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const picksCfg = await ok(`/Plugins/${picks.Id}/Configuration`);
+    try {
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: moved, SonarrKey: 'test-key', RadarrUrl: '', QbitUrl: moved, QbitUser: 'admin', QbitPassword: 'secret' });
+        const sonarr = await api('POST', '/MedicProfiles/Test/sonarr');
+        expect(sonarr.json?.ok === false && sonarr.json.message.includes(target), 'Sonarr Test: ' + sonarr.text);
+        const queue = await api('GET', '/MedicProfiles/Queue');
+        expect(queue.text.includes(target), 'Queue: ' + queue.text.slice(0, 300));
+        const qbit = await ok('/MedicProfiles/FileFilter');
+        expect(!qbit.reachable && qbit.message.includes(target), 'qBittorrent: ' + JSON.stringify(qbit));
+
+        await api('POST', `/Plugins/${picks.Id}/Configuration`, { ...picksCfg, JellyseerrUrl: moved, ShowRequests: true });
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+        const seerr = await api('POST', '/MedicPicks/Admin/TestSeerr');
+        expect(seerr.json?.ok === false && seerr.json.message.includes(target), 'Seerr Test: ' + seerr.text);
+        const mine = await api('GET', '/MedicPicks/Me/Requests');
+        expect(mine.status === 200 && mine.json?.reachable === false, `My requests: ${mine.status} ${mine.text.slice(0, 200)}`);
+
+        expect(caught.length === 0, 'the other address received: ' + caught.join(' | '));
+        return 'Sonarr, Seerr and qBittorrent each named where they were sent; the other address heard nothing';
+    } finally {
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '', QbitUrl: '' });
+        await api('POST', `/Plugins/${picks.Id}/Configuration`, picksCfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        catcher.close();
+        redirector.close();
+    }
+});
+
 // What the page's "Try qBittorrent again" button posts.
 async function tryQbitAgain() {
     const r = await api('POST', '/MedicProfiles/FileFilter/Retry', {});
