@@ -1836,11 +1836,7 @@ await check('schedule Apply refuses a plan that changed since the preview, and s
     const same = (a, b) => a.replace(/-/g, '').toLowerCase() === b.replace(/-/g, '').toLowerCase();
     const was = (await ok('/JellyfinMedic/Schedule/PreviewScheduleDiff')).SchedulePlan.find((p) => same(p.TaskId, scan.Id)).Choice;
     const to = was === 'off' ? 'keep' : 'off';
-    await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
-    await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-    const gotIt = page.locator('#md-whatsnew-close');
-    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
-    await page.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
+    await medicTab('schedule');
     await page.click('#md-preview');
     const scanChoice = page.locator('#md-preview-box tbody tr', { hasText: scan.Name }).locator('select');
     await scanChoice.waitFor({ timeout: 30000 });
@@ -2252,16 +2248,8 @@ await check('Medic times: on the server\'s zone across a daylight saving change,
 
         await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
         await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-        const gotIt = p.locator('#md-whatsnew-close');
-        for (let attempt = 1; ; attempt++) {
-            if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
-            try {
-                await p.click('#JellyfinMedicPage .so-tab[data-tab="history"]', { timeout: 5000 });
-                break;
-            } catch (e) {
-                if (attempt === 3) throw e;
-            }
-        }
+        await settleWhatsNew(p);
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="history"]');
         const winterCell = '#JellyfinMedicPage #md-hist-runs tr:first-child td:first-child';
         await p.waitForFunction((sel) => /15 Jan/.test(document.querySelector(sel)?.textContent || ''), winterCell, { timeout: 30000 });
         const early = await p.textContent(winterCell);
@@ -2308,16 +2296,8 @@ await check('Medic times: a page error while redrawing for the server\'s clock i
             new MutationObserver(() => { if (!s.hidden) window.e2eStatuses.push(s.textContent); }).observe(s, { childList: true, characterData: true, subtree: true, attributes: true });
         });
         const historyRead = p.waitForResponse(/\/JellyfinMedic\/Schedule\/GetRunHistory/, { timeout: 30000 });
-        const gotIt = p.locator('#md-whatsnew-close');
-        for (let attempt = 1; ; attempt++) {
-            if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
-            try {
-                await p.click('#JellyfinMedicPage .so-tab[data-tab="history"]', { timeout: 5000 });
-                break;
-            } catch (e) {
-                if (attempt === 3) throw e;
-            }
-        }
+        await settleWhatsNew(p);
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="history"]');
         await historyRead;
         await p.waitForTimeout(300);
         const zoneNote = () => p.textContent('#JellyfinMedicPage .so-tabpanel[data-panel="history"] .md-zone');
