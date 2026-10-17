@@ -1442,6 +1442,39 @@ await check('exposure check result says when it only tested from this server', a
     expect(ours.length === 0, ours.join(' | '));
 });
 
+await check('exposure check keeps the port and protocol you chose, and names the address it tested', async () => {
+    // The public IP lookup asks a service on the internet, so it gets a made-up answer here.
+    const lookup = /\/JellyfinMedic\/ExposureDefaults\?.*publicIp=true/i;
+    await page.route(lookup, (route) => route.fulfill({ json: { PublicIp: '203.0.113.7', Port: 443, Protocol: 'https' } }));
+    try {
+        await medicTab('dashboard', true);
+        await sleep(2000); // the boxes fill in from Medic's suggestions first
+        await page.fill('#md-expose-port', '8443');
+        await page.selectOption('#md-expose-protocol', 'http');
+        await page.click('#md-expose-use-ip');
+        await page.waitForFunction(() => document.getElementById('md-expose-host').value === '203.0.113.7', null, { timeout: 10000 });
+        const boxes = () => page.evaluate(() => ['md-expose-protocol', 'md-expose-host', 'md-expose-port'].map((id) => document.getElementById(id).value).join(' '));
+        let seen = await boxes();
+        expect(seen === 'http 203.0.113.7 8443', '"Use my IP" changed the chosen port or protocol: ' + seen);
+        // A domain that can't resolve keeps the check on this server.
+        await page.fill('#md-expose-host', 'medic-e2e.invalid');
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
+        const defaults = page.waitForResponse(/\/JellyfinMedic\/ExposureDefaults/, { timeout: 30000 });
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+        await defaults;
+        await sleep(500);
+        seen = await boxes();
+        expect(seen === 'http medic-e2e.invalid 8443', 'coming back to the tab changed the boxes: ' + seen);
+        await page.click('#md-expose');
+        await page.waitForFunction(() => !/^Checking/.test(document.getElementById('md-expose-result').textContent), null, { timeout: 30000 });
+        const text = await page.locator('#md-expose-result').textContent();
+        expect(text.includes('http://medic-e2e.invalid:8443'), 'the result doesn\'t name what was tested: ' + text);
+        return text.slice(0, 80);
+    } finally {
+        await page.unroute(lookup);
+    }
+});
+
 await check('Medic stops polling while its browser tab is hidden and after you leave the page', async () => {
     await medicTab('dashboard');
     // The dashboard's live tiles ask for /JellyfinMedic/Dashboard/Live every 15 seconds.
