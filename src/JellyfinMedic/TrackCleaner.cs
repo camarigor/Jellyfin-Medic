@@ -2183,7 +2183,7 @@ public static class TrackCleaner
     }
 
     /// <summary>Gives the path this owner and group, or only the group where Jellyfin may not give files away; false when neither works.</summary>
-    internal static async Task<bool> MatchOwner(string path, int uid, int gid, CancellationToken ct)
+    internal static async Task<bool> MatchOwner(string path, uint uid, uint gid, CancellationToken ct)
     {
         var (owner, _) = await RunTool("chown", new[] { $"{uid}:{gid}", "--", path }, ct).ConfigureAwait(false);
         if (owner == 0)

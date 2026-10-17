@@ -1,10 +1,12 @@
 using System.Net;
+using System.Reflection;
 using System.Security.Claims;
 using System.Text.Json;
 using Jellyfin.Plugin.MedicPicks;
 using Jellyfin.Plugin.MedicPicks.Api;
 using Jellyfin.Plugin.MedicPicks.Configuration;
 using Jellyfin.Plugin.MedicPicks.Picks;
+using MediaBrowser.Model.Globalization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -36,8 +38,8 @@ public sealed class PicksControllerTests : IDisposable
         _plugin = new Plugin(paths, new DefaultSettingsSerializer());
         var seerr = new SeerrClient(new OneClient(new HttpClient(_seerrCalls)), _store, NullLogger<SeerrClient>.Instance);
 
-        // Only the store, Seerr and the logger are used by the routes tested here.
-        _controller = new PicksController(_store, null!, null!, null!, seerr, null!, NullLogger<PicksController>.Instance)
+        // Only the store, Seerr, the logger and the language lookup are used by the routes tested here.
+        _controller = new PicksController(_store, null!, null!, DispatchProxy.Create<ILocalizationManager, NoLanguages>(), null!, seerr, null!, NullLogger<PicksController>.Instance)
         {
             ControllerContext = new ControllerContext
             {
@@ -169,5 +171,11 @@ public sealed class PicksControllerTests : IDisposable
     private sealed class OneClient(HttpClient client) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => client;
+    }
+
+    // A localization manager that knows no languages, so the dubbed-audio language falls back to none.
+    public class NoLanguages : DispatchProxy
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => null;
     }
 }

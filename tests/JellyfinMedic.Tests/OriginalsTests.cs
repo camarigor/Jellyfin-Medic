@@ -95,7 +95,7 @@ public sealed class OriginalsTests : IDisposable
         }
 
         string file = Film(Shared);
-        int gid = int.Parse(Run("id", "-g"), System.Globalization.CultureInfo.InvariantCulture);
+        uint gid = uint.Parse(Run("id", "-g"), System.Globalization.CultureInfo.InvariantCulture);
 
         Assert.True(await TrackCleaner.MatchOwner(file, 0, gid, CancellationToken.None));
         Assert.Equal(Run("id", "-u") + ":" + gid, Owner(file));
