@@ -629,7 +629,7 @@ await check('track cleanup checks the file itself before changing it', async () 
 
     return withTrackSettings({ TracksExclude: 'Keep Me Too' }, async () => {
         const first = await runTracks();
-        expect(first.Changed === 0 && first.Failed === 1, 'stale plan was not refused: ' + JSON.stringify(first.Recent));
+        expect(first.Changed === 0 && first.Skipped === 1 && first.Failed === 0, 'stale plan was not refused: ' + JSON.stringify(first.Recent));
         expect(audioLanguages(file) === 'fre,eng', 'the file was changed anyway: ' + audioLanguages(file));
 
         // Medic asked Jellyfin to read the file again; once it has, the run strips the French track.
@@ -680,7 +680,7 @@ await check('track cleanup refuses a new copy that comes out shorter than the or
     return withTrackSettings({ TracksExclude: 'Two Tracks\nKeep Me Too', TracksReplaceInPlace: true }, async () => {
         const p = await runTracks();
         const notes = JSON.stringify(p.Recent);
-        expect(p.Changed === 0 && p.Failed === 1, 'a short copy was accepted: ' + notes);
+        expect(p.Changed === 0 && p.Skipped === 1 && p.Failed === 0, 'a short copy was accepted: ' + notes);
         expect((p.Recent || []).some((r) => /Cut Short.*didn't come out right \(it lasts/.test(r)), 'not refused for its length: ' + notes);
         expect(fs.statSync(file).size === size && audioLanguages(file) === 'eng,fre', 'the original was changed');
         expect(!fs.existsSync(`${file}.medic-tmp.mkv`), 'the temp file was left behind');
@@ -697,7 +697,7 @@ await check('track cleanup leaves hardlinked files alone', async () => {
         return await withTrackSettings({ TracksExclude: 'Cut Short' }, async () => {
             const p = await runTracks();
             const notes = JSON.stringify(p.Recent);
-            expect(p.Changed === 0 && p.Failed === 1 && /Seeded.*2 hard links/.test(notes), 'the hardlinked film was cleaned: ' + notes);
+            expect(p.Changed === 0 && p.Skipped === 1 && p.Failed === 0 && /Seeded.*2 hard links/.test(notes), 'the hardlinked film was cleaned: ' + notes);
             expect(audioLanguages(file) === 'eng,fre' && fs.statSync(file).nlink === 2, 'the film was changed');
             return 'skipped, still shared with the seeding copy';
         });
@@ -728,6 +728,42 @@ await check('track cleanup keeps the file\'s owner and permissions', async () =>
         expect(describe(originals) === `2770 ${folder.uid}:${folder.gid}` && describe(ignore) === `660 ${folder.uid}:${folder.gid}`,
             `.medic-originals is ${describe(originals)} and its .ignore ${describe(ignore)}, the film's folder ${describe(folder)}`);
         return 'mode 660 and owner kept, originals folder like the film\'s';
+    });
+});
+
+await check('track cleanup keeps the original of a file replaced between runs', async () => {
+    // Sonarr or Radarr upgrading a cleaned film under the same name: the new release must be kept when it's
+    // cleaned, not lost because .medic-originals already holds the old release's original.
+    const file = await addFilm('Upgraded (2021)', ['eng', 'fre'], 4);
+    const dir = `${movies}/Upgraded (2021)`;
+    const kept = `${dir}/.medic-originals/Upgraded (2021).mkv`;
+    return withTrackSettings({ TracksExclude: 'Cut Short\nSeeded\nOwned' }, async () => {
+        const first = await runTracks();
+        expect(first.Changed === 1 && first.Failed === 0, 'first clean: ' + JSON.stringify(first.Recent));
+        expect(first.BytesKept > 0, 'space held by the kept original not reported: ' + first.BytesKept);
+        const changes = await ok('/JellyfinMedic/Tracks/Changes');
+        expect(changes.some((c) => c.Path === file && c.KeptOriginal === kept), 'the change was not recorded: ' + JSON.stringify(changes.slice(0, 3)));
+
+        const upgrade = `${process.env.WORK}/upgrade.mkv`;
+        makeFilm(upgrade, ['eng', 'fre'], 6);
+        fs.renameSync(upgrade, file);
+        const size = fs.statSync(file).size;
+        await runTracks(); // left alone: Jellyfin's track list is out of date, and it's asked to read the file again
+        let audio = 0;
+        for (let i = 0; i < 30 && audio < 2; i++) {
+            await sleep(2000);
+            const item = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Upgraded&Fields=MediaStreams')).Items[0];
+            audio = (item?.MediaStreams || []).filter((m) => m.Type === 'Audio').length;
+        }
+        expect(audio === 2, 'Jellyfin did not read the new release');
+        const second = await runTracks();
+        expect(second.Changed === 1, 'second clean: ' + JSON.stringify(second.Recent));
+        const aside = fs.readdirSync(`${dir}/.medic-originals`).filter((f) => /^Upgraded \(2021\)\.replaced-\d{8}-\d{6}\.mkv$/.test(f));
+        expect(aside.length === 1, 'the old release\'s original was not moved aside: ' + fs.readdirSync(`${dir}/.medic-originals`));
+        expect(fs.statSync(kept).size === size && audioLanguages(kept) === 'eng,fre', 'the new release was not kept');
+        const k = await ok('/JellyfinMedic/Tracks/KeptOriginals');
+        expect(k.Orphans >= 1, 'the old original is not offered as one with no file: ' + JSON.stringify(k));
+        return 'new release kept, old one moved aside and offered for deletion';
     });
 });
 

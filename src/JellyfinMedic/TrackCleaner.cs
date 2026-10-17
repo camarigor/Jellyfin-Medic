@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 
@@ -205,7 +206,13 @@ public class TrackRunProgress
 
     public int Failed { get; set; }
 
+    // Left alone on purpose (out of space, linked, changed meanwhile...): not failures.
+    public int Skipped { get; set; }
+
     public long BytesSaved { get; set; }
+
+    // Size of the originals this run moved into .medic-originals: space still held until they're deleted.
+    public long BytesKept { get; set; }
 
     public string? Current { get; set; }
 
@@ -258,6 +265,12 @@ public static class TrackCleaner
     private static CancellationTokenSource? _cancel;
     private static long _bytesFreed; // space freed by this run right away (not held in kept originals)
     private static long _writing; // bytes the files being cleaned right now may still write
+    private static readonly object SpaceSync = new(); // the space check and the reservation are one step
+
+    /// <summary>Where each changed file is recorded (one JSON line per file), set by the controller. Null records nothing.</summary>
+    public static string? ChangesFile { get; set; }
+
+    private const string CleanedRecord = ".medic-cleaned.json"; // in .medic-originals: what Medic made of each file
     private static bool _ownerNoted; // a folder that couldn't get its parent's owner was noted this run
     private const string StrippedSuffix = ".medic-stripped";   // used by Medic 1.0.4–1.0.7; tidied up by TidyEarlierCopies
     private const string OriginalsFolder = ".medic-originals"; // hidden, and ignored by Jellyfin, Sonarr and Radarr
@@ -923,7 +936,9 @@ public static class TrackCleaner
             Progress.Done = 0;
             Progress.Changed = 0;
             Progress.Failed = 0;
+            Progress.Skipped = 0;
             Progress.BytesSaved = 0;
+            Progress.BytesKept = 0;
             _bytesFreed = 0;
             Progress.Current = null;
             Progress.StartedUtc = DateTime.UtcNow;
@@ -1105,21 +1120,24 @@ public static class TrackCleaner
         }
 
         // The cleaned copy is written beside the original: it needs about the original's size free, plus a margin,
-        // on top of what other files being cleaned right now are still writing.
+        // on top of what other files being cleaned right now are still writing, and the run leaves a floor free
+        // for everything else on the drive. Checked and reserved in one step, so two files can't both pass.
         long size = Size(plan.Path);
-        long needed = size + Math.Max(1L << 30, size / 20) + Interlocked.Read(ref _writing);
-        long free = FreeSpace(plan.Path);
-        if (free >= 0 && free < needed)
+        var (free, total) = DriveSpace(plan.Path);
+        long needed;
+        lock (SpaceSync)
         {
-            Skipped(plan, $"its drive has {Gb(free)} free and the new copy needs about {Gb(needed)}, so it was left alone");
-            return;
+            if (!Reserve(free, total, size, ref _writing, out needed))
+            {
+                Skipped(plan, $"its drive has {Gb(free)} free and the new copy needs about {Gb(needed)}, keeping {Gb(SpaceFloor(total))} free for everything else, so it was left alone");
+                return;
+            }
         }
 
         // To tell whether Sonarr or Radarr replaces the file while it's being cleaned.
         var original = (Length: size, Written: File.GetLastWriteTimeUtc(plan.Path));
 
         string temp = TempPath(plan.Path);
-        Interlocked.Add(ref _writing, size);
         try
         {
             // Map only the kept streams: all video, plus the audio/subtitle tracks we keep, by type-relative index.
@@ -1178,6 +1196,8 @@ public static class TrackCleaner
 
             long saved = Math.Max(0, before - Size(temp));
             long freedNow = 0;
+            long keptNow = 0;
+            string? keptAs = null;
             FlushToDisk(temp);
             await KeepOwnership(plan.Path, temp, facts, ct).ConfigureAwait(false);
 
@@ -1198,11 +1218,21 @@ public static class TrackCleaner
             }
             else
             {
+                // A kept original that the current file isn't Medic's cleaned copy of belongs to an earlier
+                // release (Sonarr or Radarr replaced the file between runs). It's moved aside under a dated name, so
+                // the current file is kept as this file's original and nothing is lost.
+                string kept = OriginalPath(plan.Path);
+                if (File.Exists(kept) && !MadeByMedic(plan.Path))
+                {
+                    string aside = ReplacedPath(kept, DateTime.Now);
+                    File.Move(kept, aside);
+                    Note($"Kept {Path.GetFileName(aside)}: the original of an earlier release of {plan.Title}, replaced since it was cleaned");
+                }
+
                 // Safe default: move the original into the hidden .medic-originals folder beside it, then put
                 // the cleaned file in its place under the same name. The library keeps one file per title, and
                 // Jellyfin keeps the same item, artwork and watched status. If a kept original is already there
                 // (this file was cleaned before), that one is the true original, so it's left alone.
-                string kept = OriginalPath(plan.Path);
                 if (File.Exists(kept))
                 {
                     File.Move(temp, plan.Path, overwrite: true);
@@ -1223,7 +1253,12 @@ public static class TrackCleaner
                         File.Move(kept, plan.Path); // put the original back
                         throw;
                     }
+
+                    keptNow = before;
+                    keptAs = kept;
                 }
+
+                RecordCleaned(plan.Path);
             }
 
             // Languages set by hand are in the file now, and its track numbers have changed.
@@ -1232,8 +1267,9 @@ public static class TrackCleaner
             // Have Jellyfin read the new file, so its track list (and the next plan) matches it.
             item.ChangedExternally();
 
-            lock (Sync) { Progress.Changed++; Progress.Done++; Progress.BytesSaved += saved; _bytesFreed += freedNow; Progress.BytesDone += plan.SizeBytes; }
+            lock (Sync) { Progress.Changed++; Progress.Done++; Progress.BytesSaved += saved; Progress.BytesKept += keptNow; _bytesFreed += freedNow; Progress.BytesDone += plan.SizeBytes; }
             Note($"Done {plan.Title}: {Summary(plan)}");
+            RecordChange(new TrackChange(DateTime.UtcNow, plan.Path, Summary(plan), before, before - saved, keptAs));
         }
         catch (OperationCanceledException)
         {
@@ -1252,11 +1288,158 @@ public static class TrackCleaner
         }
     }
 
-    /// <summary>Counts a file as not done, with the reason in the run's notes.</summary>
+    /// <summary>Counts a file as left alone on purpose (not a failure), with the reason in the run's notes.</summary>
     private static void Skipped(FilePlan plan, string why)
     {
-        lock (Sync) { Progress.Failed++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
+        lock (Sync) { Progress.Skipped++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
         Note($"Skipped {plan.Title}: {why}");
+    }
+
+    /// <summary>
+    /// What a run leaves free on each drive for imports, downloads and Jellyfin itself: the larger of 10 GiB and 5% of
+    /// the drive (10 GiB when its size is unknown).
+    /// </summary>
+    internal static long SpaceFloor(long driveTotal) => Math.Max(10L << 30, driveTotal > 0 ? driveTotal / 20 : 0);
+
+    /// <summary>
+    /// Whether a file of this size can be cleaned with this much free: its copy, a margin of the larger of 1 GiB and 5%
+    /// of the file, what files being cleaned now may still write, and the floor. On success the copy's size is added to
+    /// writing, which the caller takes off again when the file is done. Free below 0 means unknown, which passes.
+    /// The caller holds the lock that makes the check and the reservation one step.
+    /// </summary>
+    internal static bool Reserve(long free, long driveTotal, long size, ref long writing, out long needed)
+    {
+        needed = size + Math.Max(1L << 30, size / 20) + writing;
+        if (free >= 0 && free < needed + SpaceFloor(driveTotal))
+        {
+            return false;
+        }
+
+        writing += size;
+        return true;
+    }
+
+    /// <summary>Where an earlier release's kept original goes when the file has been replaced since it was cleaned.</summary>
+    internal static string ReplacedPath(string kept, DateTime when) =>
+        Path.Combine(Path.GetDirectoryName(kept) ?? string.Empty,
+            Path.GetFileNameWithoutExtension(kept) + ".replaced-" + when.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + Path.GetExtension(kept));
+
+    private sealed record CleanedFile(long Length, DateTime WrittenUtc);
+
+    private static string CleanedRecordPath(string mediaPath) =>
+        Path.Combine(Path.GetDirectoryName(mediaPath) ?? string.Empty, OriginalsFolder, CleanedRecord);
+
+    private static Dictionary<string, CleanedFile> ReadCleaned(string record)
+    {
+        try
+        {
+            return File.Exists(record)
+                ? JsonSerializer.Deserialize<Dictionary<string, CleanedFile>>(File.ReadAllText(record)) ?? new()
+                : new();
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return new();
+        }
+    }
+
+    /// <summary>Notes the size and time of the cleaned file Medic just put in place, so a later run can tell it from a replacement.</summary>
+    private static void RecordCleaned(string mediaPath)
+    {
+        string record = CleanedRecordPath(mediaPath);
+        lock (SpaceSync)
+        {
+            try
+            {
+                var files = ReadCleaned(record);
+                files[Path.GetFileName(mediaPath)] = new CleanedFile(Size(mediaPath), File.GetLastWriteTimeUtc(mediaPath));
+                JellyfinMedic.Api.ScheduleStorage.WriteText(record, JsonSerializer.Serialize(files));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Note($"Couldn't note what Medic made of {Path.GetFileName(mediaPath)}: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the file at this path is still the cleaned copy Medic made. Without a record (files cleaned before Medic
+    /// kept one) it isn't taken to be, so the current file is kept rather than lost.
+    /// </summary>
+    private static bool MadeByMedic(string mediaPath)
+    {
+        Dictionary<string, CleanedFile> files;
+        lock (SpaceSync)
+        {
+            files = ReadCleaned(CleanedRecordPath(mediaPath));
+        }
+
+        return files.TryGetValue(Path.GetFileName(mediaPath), out var made)
+            && made.Length == Size(mediaPath) && made.WrittenUtc == File.GetLastWriteTimeUtc(mediaPath);
+    }
+
+    /// <summary>One file a run changed.</summary>
+    public sealed record TrackChange(DateTime WhenUtc, string Path, string Removed, long BytesBefore, long BytesAfter, string? KeptOriginal);
+
+    private const long ChangesLimit = 4L << 20;
+
+    /// <summary>Adds a changed file to the record that outlasts the run (the run's own notes are kept in memory only).</summary>
+    private static void RecordChange(TrackChange change)
+    {
+        if (ChangesFile is not { } file)
+        {
+            return;
+        }
+
+        lock (SpaceSync)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+                // Past the limit, the older half goes, so the record stays small.
+                if (File.Exists(file) && new FileInfo(file).Length > ChangesLimit)
+                {
+                    var lines = File.ReadAllLines(file);
+                    JellyfinMedic.Api.ScheduleStorage.WriteText(file, string.Join('\n', lines.Skip(lines.Length / 2)) + "\n");
+                }
+
+                File.AppendAllText(file, JsonSerializer.Serialize(change) + "\n");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Note($"Couldn't record the change to {Path.GetFileName(change.Path)}: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>The newest changes recorded, newest first.</summary>
+    public static List<TrackChange> RecentChanges(int count)
+    {
+        if (ChangesFile is not { } file || !File.Exists(file))
+        {
+            return new();
+        }
+
+        lock (SpaceSync)
+        {
+            var list = new List<TrackChange>();
+            foreach (var line in File.ReadLines(file).Reverse().Take(count))
+            {
+                try
+                {
+                    if (JsonSerializer.Deserialize<TrackChange>(line) is { } c)
+                    {
+                        list.Add(c);
+                    }
+                }
+                catch (JsonException)
+                {
+                    // A line cut short by a crash.
+                }
+            }
+
+            return list;
+        }
     }
 
     /// <summary>
@@ -1360,17 +1543,18 @@ public static class TrackCleaner
         }
     }
 
-    /// <summary>Free space on the drive holding the file, or -1 when it can't be read.</summary>
-    private static long FreeSpace(string path)
+    /// <summary>Free space and size of the drive holding the file, or -1 for each when they can't be read.</summary>
+    private static (long Free, long Total) DriveSpace(string path)
     {
         try
         {
             string dir = Path.GetDirectoryName(path) ?? path;
-            return new DriveInfo(OperatingSystem.IsWindows() ? Path.GetPathRoot(dir) ?? dir : dir).AvailableFreeSpace;
+            var drive = new DriveInfo(OperatingSystem.IsWindows() ? Path.GetPathRoot(dir) ?? dir : dir);
+            return (drive.AvailableFreeSpace, drive.TotalSize);
         }
         catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException)
         {
-            return -1;
+            return (-1, -1);
         }
     }
 
@@ -1418,7 +1602,11 @@ public static class TrackCleaner
 
     // ---------- Delete kept originals (only ones Medic kept) ----------
 
-    public static (int Deleted, long Freed) DeleteOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries)
+    /// <summary>
+    /// Deletes kept originals whose cleaned file is still in place under the same name. With orphans, also those with
+    /// no file of that name any more (Sonarr or Radarr renamed or replaced it), unless a swap of it was cut short.
+    /// </summary>
+    public static (int Deleted, long Freed) DeleteOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries, bool orphans = false)
     {
         int deleted = 0;
         long freed = 0;
@@ -1430,15 +1618,10 @@ public static class TrackCleaner
                 continue;
             }
 
-            foreach (var kept in SafeFiles(folder))
+            foreach (var kept in SafeFiles(folder).Where(IsKeptOriginal))
             {
-                if (Path.GetFileName(kept) == ".ignore")
-                {
-                    continue;
-                }
-
-                // Only delete an original whose cleaned version is still in place.
-                if (!File.Exists(Path.Combine(dir, Path.GetFileName(kept))))
+                // Only delete an original whose cleaned version is still in place, or, when asked, one with no twin.
+                if (!orphans && IsOrphan(dir, kept))
                 {
                     continue;
                 }
@@ -1578,11 +1761,24 @@ public static class TrackCleaner
         return (titles, deletedCopies, freed, left);
     }
 
-    /// <summary>How many originals Medic is keeping in .medic-originals folders, and their total size.</summary>
-    public static (int Files, long Bytes) KeptOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries)
+    /// <summary>A file in .medic-originals that is a kept original, not Medic's own .ignore or record.</summary>
+    private static bool IsKeptOriginal(string path) => !Path.GetFileName(path).StartsWith('.');
+
+    /// <summary>
+    /// A kept original with no file of its name in the library folder any more. One whose swap was cut short (the
+    /// temp file is still there) isn't: the next run puts it back.
+    /// </summary>
+    internal static bool IsOrphan(string dir, string kept)
     {
-        int files = 0;
-        long bytes = 0;
+        string twin = Path.Combine(dir, Path.GetFileName(kept));
+        return !File.Exists(twin) && !File.Exists(TempPath(twin));
+    }
+
+    /// <summary>How many originals Medic is keeping in .medic-originals folders and their total size, and how many of them are orphans.</summary>
+    public static (int Files, long Bytes, int Orphans, long OrphanBytes) KeptOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries)
+    {
+        int files = 0, orphans = 0;
+        long bytes = 0, orphanBytes = 0;
         foreach (var dir in LibraryFolders(library, libraries))
         {
             string folder = Path.Combine(dir, OriginalsFolder);
@@ -1591,14 +1787,20 @@ public static class TrackCleaner
                 continue;
             }
 
-            foreach (var f in SafeFiles(folder).Where(f => Path.GetFileName(f) != ".ignore"))
+            foreach (var f in SafeFiles(folder).Where(IsKeptOriginal))
             {
+                long size = Size(f);
                 files++;
-                bytes += Size(f);
+                bytes += size;
+                if (IsOrphan(dir, f))
+                {
+                    orphans++;
+                    orphanBytes += size;
+                }
             }
         }
 
-        return (files, bytes);
+        return (files, bytes, orphans, orphanBytes);
     }
 
     private static string OriginalNameFor(string copy)
@@ -2082,6 +2284,7 @@ public static class TrackCleaner
             if (Directory.Exists(kept))
             {
                 candidates.AddRange(SafeFiles(kept)
+                    .Where(IsKeptOriginal)
                     .Select(f => (f, Path.Combine(dir, Path.GetFileName(f))))
                     .Where(c => File.Exists(TempPath(c.Item2))));
             }
@@ -2280,7 +2483,7 @@ public static class TrackCleaner
     private static TrackRunProgress Clone(TrackRunProgress p) => new()
     {
         Running = p.Running, DryRun = p.DryRun, Total = p.Total, Done = p.Done, Changed = p.Changed,
-        Failed = p.Failed, BytesSaved = p.BytesSaved, Current = p.Current, StartedUtc = p.StartedUtc,
+        Failed = p.Failed, Skipped = p.Skipped, BytesSaved = p.BytesSaved, BytesKept = p.BytesKept, Current = p.Current, StartedUtc = p.StartedUtc,
         BytesTotal = p.BytesTotal, BytesDone = p.BytesDone, WorkStartedUtc = p.WorkStartedUtc, SecondsLeft = EstimateSecondsLeft(p),
         Paused = p.Paused, Waiting = p.Waiting, WaitedSeconds = p.WaitedSeconds, WaitingSinceUtc = p.WaitingSinceUtc,
         FinishedUtc = p.FinishedUtc, Recent = p.Recent.ToList()

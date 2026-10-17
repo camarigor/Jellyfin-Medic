@@ -396,7 +396,10 @@
                     <div class="md-row md-wrap">
                         <span id="md-tracks-kept" class="so-small">Checking kept originals…</span>
                         <button type="button" id="md-tracks-delete2" class="so-btn so-btn-plain" disabled>Delete the kept originals</button>
+                        <button type="button" id="md-tracks-delete-orphans" class="so-btn so-btn-plain" hidden>Delete those with no file too</button>
+                        <button type="button" id="md-tracks-changes" class="so-btn so-btn-plain">What earlier runs changed</button>
                     </div>
+                    <div id="md-tracks-changes-list" class="md-fulltext" style="margin-top:8px;display:none"></div>
                     <p class="so-muted so-small" id="md-tracks-rescan-hint"></p>
                 </div>
 
@@ -4554,8 +4557,11 @@
                     }
 
                     parts.push((pick(p, 'Changed') || 0) + ' changed');
+                    if (pick(p, 'Skipped')) parts.push(pick(p, 'Skipped') + ' left alone');
                     parts.push((pick(p, 'Failed') || 0) + ' failed');
                     if (pick(p, 'BytesSaved')) parts.push('saved ' + tracksSize(pick(p, 'BytesSaved')));
+                    // Kept originals still take their space until they're deleted, so "saved" isn't free yet.
+                    if (pick(p, 'BytesKept')) parts.push(tracksSize(pick(p, 'BytesKept')) + ' held in kept originals');
                     if (running && !holding && pick(p, 'Current')) parts.push('now: ' + pick(p, 'Current'));
                     return parts.join(' · ');
                 }
@@ -4591,11 +4597,13 @@
                 async function loadKept() {
                     try {
                         const k = await getJson('/JellyfinMedic/Tracks/KeptOriginals');
-                        const n = pick(k, 'Files') || 0;
-                        $('md-tracks-kept').textContent = n === 0
+                        const n = pick(k, 'Files') || 0, orphans = pick(k, 'Orphans') || 0;
+                        $('md-tracks-kept').textContent = (n === 0
                             ? 'No kept originals.'
-                            : 'Kept originals: ' + n.toLocaleString('en-GB') + ' file' + (n === 1 ? '' : 's') + ', ' + pick(k, 'SizeText') + '.';
+                            : 'Kept originals: ' + n.toLocaleString('en-GB') + ' file' + (n === 1 ? '' : 's') + ', ' + pick(k, 'SizeText') + '.')
+                            + (orphans > 0 ? ' ' + orphans.toLocaleString('en-GB') + ' of them (' + pick(k, 'OrphanSizeText') + ') no longer have a file of the same name beside them, as Sonarr or Radarr renamed or replaced it.' : '');
                         $('md-tracks-delete2').disabled = n === 0;
+                        $('md-tracks-delete-orphans').hidden = orphans === 0;
                     } catch (e) {
                         $('md-tracks-kept').textContent = '';
                     }
@@ -4640,11 +4648,14 @@
                     }
                 });
 
-                async function deleteKeptOriginals(btn) {
-                    if (!window.confirm('Delete the originals Medic kept in .medic-originals folders? Only originals whose cleaned file is still in place are deleted. This can\'t be undone.')) return false;
+                async function deleteKeptOriginals(btn, orphans) {
+                    const question = orphans
+                        ? 'Delete every original Medic kept in .medic-originals folders, including those whose file Sonarr or Radarr has since renamed or replaced? Check the library has the film or episode first. This can\'t be undone.'
+                        : 'Delete the originals Medic kept in .medic-originals folders? Only originals whose cleaned file is still in place are deleted. This can\'t be undone.';
+                    if (!window.confirm(question)) return false;
                     btn.disabled = true;
                     try {
-                        const r = await postJson('/JellyfinMedic/Tracks/DeleteOriginals');
+                        const r = await postJson('/JellyfinMedic/Tracks/DeleteOriginals' + (orphans ? '?orphans=true' : ''));
                         showStatus('Deleted ' + pick(r, 'Deleted') + ' kept original(s), freeing ' + pick(r, 'FreedText') + '.', 'info');
                         return true;
                     } catch (e) {
@@ -4657,6 +4668,22 @@
                 function afterDelete(ok) { loadKept(); if (ok) rescanHint(); }
                 $('md-tracks-delete').addEventListener('click', function () { deleteKeptOriginals($('md-tracks-delete')).then(afterDelete); });
                 $('md-tracks-delete2').addEventListener('click', function () { deleteKeptOriginals($('md-tracks-delete2')).then(afterDelete); });
+                $('md-tracks-delete-orphans').addEventListener('click', function () { deleteKeptOriginals($('md-tracks-delete-orphans'), true).then(afterDelete); });
+                $('md-tracks-changes').addEventListener('click', async function () {
+                    const box = $('md-tracks-changes-list');
+                    try {
+                        const list = await getJson('/JellyfinMedic/Tracks/Changes?count=200');
+                        box.textContent = !list.length ? 'No run has changed a file yet.'
+                            : list.map(function (c) {
+                                return fmtDateTime(pick(c, 'WhenUtc')) + ' ' + pick(c, 'Path') + ': ' + pick(c, 'Removed')
+                                    + ' (' + tracksSize(pick(c, 'BytesBefore')) + ' to ' + tracksSize(pick(c, 'BytesAfter')) + ')'
+                                    + (pick(c, 'KeptOriginal') ? ', original kept' : '');
+                            }).join('\n');
+                    } catch (e) {
+                        box.textContent = (await reasonOf(e)) || 'Couldn\'t read what earlier runs changed.';
+                    }
+                    box.style.display = 'block';
+                });
 
                 // ---------- Loading ----------
 
