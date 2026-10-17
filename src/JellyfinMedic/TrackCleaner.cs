@@ -1604,7 +1604,7 @@ public static class TrackCleaner
 
     /// <summary>
     /// Deletes kept originals whose cleaned file is still in place under the same name. With orphans, also those with
-    /// no file of that name any more (Sonarr or Radarr renamed or replaced it), unless a swap of it was cut short.
+    /// no file of that name any more (Sonarr or Radarr renamed or replaced it). Never one whose swap was cut short.
     /// </summary>
     public static (int Deleted, long Freed) DeleteOriginals(ILibraryManager library, IEnumerable<LibraryFacts> libraries, bool orphans = false)
     {
@@ -1620,8 +1620,10 @@ public static class TrackCleaner
 
             foreach (var kept in SafeFiles(folder).Where(IsKeptOriginal))
             {
-                // Only delete an original whose cleaned version is still in place, or, when asked, one with no twin.
-                if (!orphans && IsOrphan(dir, kept))
+                // A swap cut short leaves the path empty too, and its original is the title's only untouched copy:
+                // the next run (or "Tidy copies") puts it back.
+                string twin = Path.Combine(dir, Path.GetFileName(kept));
+                if (File.Exists(TempPath(twin)) || (!orphans && !File.Exists(twin)))
                 {
                     continue;
                 }
@@ -1765,8 +1767,8 @@ public static class TrackCleaner
     private static bool IsKeptOriginal(string path) => !Path.GetFileName(path).StartsWith('.');
 
     /// <summary>
-    /// A kept original with no file of its name in the library folder any more. One whose swap was cut short (the
-    /// temp file is still there) isn't: the next run puts it back.
+    /// A kept original with no file of its name in the library folder any more, which "Delete those with no file too"
+    /// deletes. One whose swap was cut short (the temp file is still there) isn't: the next run puts it back.
     /// </summary>
     internal static bool IsOrphan(string dir, string kept)
     {
