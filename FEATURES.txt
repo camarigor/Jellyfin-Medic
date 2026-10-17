@@ -493,7 +493,7 @@ Running it:
         at most once an hour.
       * The Plugin directory fetches the public awesome-jellyfin list.
       * Medic Picks and Medic Profiles: see their own privacy notes (2.9 and
-        3.6). Medic Posters contacts nothing outside the server (4.4).
+        3.6).
 
 
 ===============================================================================

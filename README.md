@@ -169,7 +169,7 @@ The keys are kept on the server in their own file, only admins can use them, and
   - "Use my IP + 8096" asks a public IP service for your address: ipify, or if it doesn't answer, icanhazip.com and then checkip.amazonaws.com. The answer is kept for an hour.
   - Opening the Plugin directory tab fetches the public awesome-jellyfin plugin list.
   - None of these send your settings, files or accounts.
-  - Medic Picks contacts TMDb and Seerr only when an admin has set them up, and each person's browser loads its outside-library posters from image.tmdb.org (see its own privacy notes). Medic Profiles contacts only the Sonarr, Radarr and qBittorrent addresses you give it. Medic Posters contacts nothing outside your server: it reads your video files with Jellyfin's own FFmpeg, and its font is built in.
+  - Medic Picks contacts TMDb and Seerr only when an admin has set them up, and each person's browser loads its outside-library posters from image.tmdb.org (see its own privacy notes). Medic Profiles contacts only the Sonarr, Radarr and qBittorrent addresses you give it.
 - **The "help improve Medic" export** masks passwords, keys, tokens, usernames and credentials in links before you ever see the file, and asks you to read it before sending. Sending it is always your choice. If anything personal reaches the maintainer, it's deleted and not used.
 
 ---
