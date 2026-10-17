@@ -70,6 +70,21 @@ public sealed class ScheduleApplyTests : IDisposable
         Assert.False(Directory.Exists(ScheduleStorage.BackupDir(_paths)));
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void Apply_without_a_previewed_plan_changes_nothing(string? planHash)
+    {
+        ScheduleStorage.SaveChoice(_paths, _scan.Id, ScheduleStorage.ChoiceOff); // the plan would change this task
+
+        var result = _controller.ApplyRecommendedSchedule(planHash);
+
+        var refused = Assert.IsType<BadRequestObjectResult>(result.Result);
+        Assert.Contains("Preview", Assert.IsType<string>(refused.Value), StringComparison.Ordinal);
+        Assert.Equal(Daily(2, 0).TimeOfDayTicks, _scan.Triggers.Single().TimeOfDayTicks);
+        Assert.False(Directory.Exists(ScheduleStorage.BackupDir(_paths)));
+    }
+
     [Fact]
     public void Apply_with_the_current_preview_applies_it()
     {

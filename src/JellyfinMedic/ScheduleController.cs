@@ -222,14 +222,19 @@ public class ScheduleController : ControllerBase
         return Ok(new { Success = true });
     }
 
-    /// <param name="planHash">The PlanHash from the preview the owner saw. Without it (an older page), the plan as it is now is applied.</param>
+    /// <param name="planHash">The PlanHash from the preview the owner saw. Without it nothing is applied, since nobody saw the plan.</param>
     [HttpPost("ApplyRecommendedSchedule")]
     public ActionResult<object> ApplyRecommendedSchedule([FromQuery] string? planHash = null)
     {
+        if (string.IsNullOrEmpty(planHash))
+        {
+            return BadRequest("Nothing was changed. Preview the changes first, then apply them from the preview.");
+        }
+
         var plan = BuildPlan();
 
         // Usage, settings, choices or tasks may have changed since the preview: never apply a plan the owner didn't see.
-        if (!string.IsNullOrEmpty(planHash) && !string.Equals(planHash, PlanHash(plan), StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(planHash, PlanHash(plan), StringComparison.OrdinalIgnoreCase))
         {
             return StatusCode(StatusCodes.Status409Conflict, "The plan changed since you previewed it. Preview again.");
         }

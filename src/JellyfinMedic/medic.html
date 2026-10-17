@@ -2728,7 +2728,7 @@
                 async function applyPlan(planHash) {
                     if (!window.confirm('Apply the recommended schedule? Your current schedule is backed up first, so you can restore it.')) return;
                     try {
-                        const result = await postJson('/JellyfinMedic/Schedule/ApplyRecommendedSchedule', planHash ? { planHash: planHash } : undefined);
+                        const result = await postJson('/JellyfinMedic/Schedule/ApplyRecommendedSchedule', { planHash: planHash });
                         showStatus(pick(result, 'Message') || 'Schedule applied.', pick(result, 'Success') === false ? 'error' : 'info');
                         $('md-preview-box').hidden = true;
                         await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
@@ -2742,7 +2742,15 @@
                     }
                 }
 
-                $('md-apply').addEventListener('click', function () { applyPlan(); });
+                // The plan is shown first and only the preview's own Apply sends it, so nothing is applied unseen.
+                $('md-apply').addEventListener('click', async function () {
+                    await showPreview();
+                    const apply = $('md-preview-box').querySelector('button');
+                    if (apply) {
+                        apply.scrollIntoView({ block: 'center' });
+                        apply.focus({ preventScroll: true });
+                    }
+                });
 
                 $('md-backup').addEventListener('click', async function () {
                     try {
@@ -3428,14 +3436,36 @@
                 });
 
                 async function loadMedicSettings() {
-                    fillQuarters($('md-avoid-from'));
-                    fillQuarters($('md-avoid-to'));
-                    fillHours($('md-tracks-window-from'));
-                    fillHours($('md-tracks-window-to'));
+                    // Built once: rebuilding them shows 00:00 until a read fills them again, and a failed read never does.
+                    if (!$('md-avoid-from').options.length) {
+                        fillQuarters($('md-avoid-from'));
+                        fillQuarters($('md-avoid-to'));
+                        fillHours($('md-tracks-window-from'));
+                        fillHours($('md-tracks-window-to'));
+                    }
+                    let s;
                     try {
-                        fillMedicSettings(await getJson('/JellyfinMedic/MedicSettings'));
-                        $('md-tracks-save').disabled = false;
-                    } catch (e) { /* defaults stay; saving stays off so nothing is overwritten with defaults */ }
+                        s = await getJson('/JellyfinMedic/MedicSettings');
+                    } catch (e) {
+                        // The form may not match what's saved, so saving waits for a read that works.
+                        medicSettingsLoaded = false;
+                        $('md-tracks-save').disabled = true;
+                        medicReadError = 'Couldn\'t read your saved settings, so saving is off until they load. Open this tab again to retry. ' + (await reasonOf(e) || '');
+                        $('md-settings-saved').textContent = medicReadError;
+                        $('md-tracks-saved').textContent = medicReadError;
+                        return;
+                    }
+                    if (medicReadError) {
+                        medicReadError = null;
+                        $('md-settings-saved').textContent = '';
+                        $('md-tracks-saved').textContent = '';
+                    }
+                    // Edits not saved yet stay on screen over what was just read, as on every visit to this tab.
+                    const now = medicFormState();
+                    const shown = medicShown;
+                    fillMedicSettings(s);
+                    if (shown) putBackEdits(now, shown);
+                    $('md-tracks-save').disabled = false;
                 }
 
                 // The settings as the server has them, after a load or a save (which may have clamped a value).
@@ -3469,6 +3499,21 @@
                     $('md-alert-restart').checked = pick(s, 'AlertRestartNeeded') !== false;
                     medicSettingsLoaded = true;
                     tracksSaved = JSON.stringify(tracksForm());
+                    medicShown = medicFormState();
+                }
+
+                // Puts back each box that differs between state and base, after fillMedicSettings showed the server's
+                // values. Returns how many there were.
+                function putBackEdits(state, base) {
+                    const edited = Object.keys(state).filter(function (id) { return state[id] !== base[id]; });
+                    edited.forEach(function (id) {
+                        if (id === 'mode') scheduleMode = state[id];
+                        else if ($(id).type === 'checkbox') $(id).checked = state[id];
+                        else $(id).value = state[id];
+                    });
+                    showMode();
+                    syncSubtitleOptions();
+                    return edited.length;
                 }
 
                 // The two subtitle sub-options only apply when untagged subtitles are being removed.
@@ -3492,6 +3537,12 @@
                 }
 
                 let medicSettingsLoaded = false;
+
+                // Why the last settings read failed, shown when saving is off because of it.
+                let medicReadError = null;
+
+                // The form as fillMedicSettings last left it, to tell the admin's unsaved edits from what the server sent.
+                let medicShown = null;
 
                 // The track settings as last loaded or saved, to tell whether the form has changes.
                 let tracksSaved = null;
@@ -3536,7 +3587,7 @@
 
                 async function saveMedicSettings(statusEl, okMessage) {
                     if (!medicSettingsLoaded) {
-                        statusEl.textContent = 'Settings are still loading. Try again in a moment.';
+                        statusEl.textContent = medicReadError || 'Settings are still loading. Try again in a moment.';
                         return false;
                     }
                     const tracks = tracksForm();
@@ -3560,15 +3611,8 @@
                         // what the server kept.
                         const now = medicFormState();
                         fillMedicSettings(saved);
-                        const edited = Object.keys(now).filter(function (id) { return now[id] !== sent[id]; });
-                        edited.forEach(function (id) {
-                            if (id === 'mode') scheduleMode = now[id];
-                            else if ($(id).type === 'checkbox') $(id).checked = now[id];
-                            else $(id).value = now[id];
-                        });
-                        showMode();
-                        syncSubtitleOptions();
-                        statusEl.textContent = okMessage + (edited.length ? ' What you changed since isn\'t saved yet.' : '');
+                        const edited = putBackEdits(now, sent);
+                        statusEl.textContent = okMessage + (edited ? ' What you changed since isn\'t saved yet.' : '');
                         return true;
                     } catch (e) {
                         statusEl.textContent = 'Couldn\'t save. ' + (await reasonOf(e) || 'Check the Jellyfin log.');
@@ -3599,6 +3643,11 @@
                 // Scan and runs use the saved settings, so changes still on screen are saved first.
                 // False when that save fails, and then nothing should start.
                 async function saveTracksIfChanged() {
+                    // After a failed read the form may not show what's saved, and the scan or run would use something else.
+                    if (medicReadError) {
+                        showStatus(medicReadError, 'error');
+                        return false;
+                    }
                     if (!tracksChanged()) return true;
                     if (!await saveMedicSettings($('md-tracks-saved'), 'Saved your track settings first.')) {
                         showStatus('Your track settings couldn\'t be saved, so nothing was started.', 'error');

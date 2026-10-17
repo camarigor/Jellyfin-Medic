@@ -582,19 +582,50 @@ await check('schedule apply changes nothing when Medic can\'t save its schedule,
     const before = await triggers();
     // A folder where Medic first writes its schedule file makes that write fail, as a full disk would.
     execFileSync('docker', ['exec', CONTAINER, 'mkdir', '-p', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
+    // Apply takes only the plan a preview showed.
+    const apply = async () => api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule?planHash='
+        + encodeURIComponent((await ok('/JellyfinMedic/Schedule/PreviewScheduleDiff')).PlanHash));
     try {
-        const blocked = await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
+        const blocked = await apply();
         expect(blocked.json?.Success === false && /nothing was changed/.test(blocked.json.Message), `blocked apply: ${blocked.status} ${blocked.text.slice(0, 200)}`);
         expect(await triggers() === before, 'triggers changed although the apply failed');
     } finally {
         execFileSync('docker', ['exec', CONTAINER, 'rmdir', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
     }
 
-    const applied = (await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule')).json;
+    const applied = (await apply()).json;
     expect(applied?.Success && applied.AppliedTasks > 0 && await triggers() !== before, 'apply: ' + JSON.stringify(applied));
     const restored = (await api('POST', `/JellyfinMedic/Schedule/RestorePreviousSchedule?backupFileName=${encodeURIComponent(applied.BackupFile)}`)).json;
     expect(restored?.Success && await triggers() === before, 'restore: ' + JSON.stringify(restored));
     return `${applied.AppliedTasks} tasks applied, then put back`;
+});
+
+await check('schedule Apply without a previewed plan changes nothing', async () => {
+    const triggers = async () => JSON.stringify((await ok('/ScheduledTasks')).map((t) => [t.Id, t.Triggers]).sort((a, b) => a[0].localeCompare(b[0])));
+    const before = await triggers();
+    const backups = (await ok('/JellyfinMedic/Schedule/ListBackups')).length;
+    const r = await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
+    expect(r.status === 400 && /Preview/.test(r.text), `apply with no plan: ${r.status} ${r.text.slice(0, 200)}`);
+    expect(await triggers() === before, 'triggers changed');
+    expect((await ok('/JellyfinMedic/Schedule/ListBackups')).length === backups, 'a backup was written');
+    return 'refused with 400';
+});
+
+await check('a settings save that changes no track setting keeps the finished track scan', async () => {
+    const s = await ok('/JellyfinMedic/MedicSettings');
+    const status = () => ok('/JellyfinMedic/Tracks/Scan/Status');
+    expect((await api('POST', '/JellyfinMedic/Tracks/Scan/Start')).status === 200, 'the scan didn\'t start');
+    for (let i = 0; i < 120 && (await status()).Running; i++) await sleep(1000);
+    expect((await status()).Result, 'the scan left no result');
+    try {
+        await api('POST', '/JellyfinMedic/MedicSettings', { ...s, InactiveUserDays: s.InactiveUserDays === 45 ? 46 : 45, MemoryCeilingPercent: s.MemoryCeilingPercent === 80 ? 81 : 80, TracksWindowEnabled: !s.TracksWindowEnabled, TracksConcurrentFiles: s.TracksConcurrentFiles === 2 ? 1 : 2 });
+        expect((await status()).Result, 'a save that changed no scan setting threw the scan away');
+        await api('POST', '/JellyfinMedic/MedicSettings', { ...s, TracksExclude: 'E2E scan setting' });
+        expect(!(await status()).Result, 'a changed exclusion kept the old scan');
+    } finally {
+        await api('POST', '/JellyfinMedic/MedicSettings', s);
+    }
+    return 'kept after a settings save, cleared after a track change';
 });
 
 await check('schedule backups each get their own name, and the newest 50 are kept', async () => {
@@ -3556,6 +3587,115 @@ await check('Medic page actions: a track setting changed while a save is on its 
         return 'kept, and saved before the scan';
     } finally {
         await ctx.close();
+        await api('POST', '/JellyfinMedic/MedicSettings', before);
+    }
+});
+
+await check('Schedule: Apply recommended shows the plan first and applies nothing on its own', async () => {
+    const posts = [];
+    const dialogs = [];
+    const accept = (dialog) => { dialogs.push(dialog.message()); dialog.accept(); };
+    const applyRoute = '**/JellyfinMedic/Schedule/ApplyRecommendedSchedule*';
+    // Answered here, so nothing is applied even when the page sends it.
+    await page.route(applyRoute, (route) => { posts.push(route.request().url()); route.fulfill({ json: { Success: true, AppliedTasks: 0, Message: 'E2E' } }); });
+    page.on('dialog', accept);
+    try {
+        await medicTab('schedule');
+        await page.click('#md-apply');
+        const applyHere = page.locator('#md-preview-box button:has-text("Apply these changes")');
+        await applyHere.waitFor({ timeout: 30000 });
+        await sleep(1000);
+        expect(posts.length === 0, 'the toolbar button applied without a preview: ' + posts.join(', '));
+        if (await applyHere.isEnabled()) {
+            await applyHere.click();
+            for (let i = 0; i < 50 && posts.length === 0; i++) await sleep(100);
+            expect(posts.length === 1 && /planHash=/.test(posts[0]), 'the preview\'s Apply didn\'t send its plan: ' + posts.join(', '));
+        }
+        return posts.length ? 'preview shown, then applied with its plan' : 'preview shown; nothing to change';
+    } finally {
+        page.off('dialog', accept);
+        await page.unroute(applyRoute);
+    }
+});
+
+await check('Settings: a failed settings read keeps both time windows, and saving waits for a read that works', async () => {
+    const before = await ok('/JellyfinMedic/MedicSettings');
+    const posts = [];
+    const watch = (req) => { if (req.method() === 'POST' && /\/JellyfinMedic\/(MedicSettings|Tracks\/Scan\/Start)\b/.test(req.url())) posts.push(req.url()); };
+    const settingsRoute = /\/JellyfinMedic\/MedicSettings(\?|$)/;
+    try {
+        await api('POST', '/JellyfinMedic/MedicSettings', { ...before, AvoidEnabled: true, AvoidStartMinute: 1200, AvoidEndMinute: 120, TracksWindowStartHour: 2, TracksWindowEndHour: 6 });
+        await medicTab('settings', true);
+        await page.waitForFunction(() => document.getElementById('md-avoid-from')?.value === '1200', null, { timeout: 30000 });
+        await page.route(settingsRoute, (route) => (route.request().method() === 'GET' ? route.fulfill({ status: 500, body: '' }) : route.continue()));
+        page.on('request', watch);
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await sleep(1000);
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="settings"]');
+        await sleep(1000);
+        const shown = await page.evaluate(() => ['md-avoid-from', 'md-avoid-to', 'md-tracks-window-from', 'md-tracks-window-to'].map((id) => document.getElementById(id).value).join(' '));
+        expect(shown === '1200 120 2 6', 'after a failed read the windows show ' + shown);
+        await page.click('#md-save-settings');
+        await sleep(1000);
+        expect(posts.length === 0, 'a save went out without a settings read: ' + posts.join(', '));
+        expect(/couldn't read/i.test(await page.textContent('#md-settings-saved')), 'no note that the settings couldn\'t be read: ' + await page.textContent('#md-settings-saved'));
+        expect(await page.isDisabled('#md-tracks-save'), 'Save track settings stayed on');
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await sleep(1000);
+        await page.click('#md-tracks-scan');
+        await sleep(1000);
+        expect(posts.length === 0, 'Scan and preview went ahead without a settings read: ' + posts.join(', '));
+        await page.unroute(settingsRoute);
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await page.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 15000 });
+        const saved = await ok('/JellyfinMedic/MedicSettings');
+        expect(saved.AvoidStartMinute === 1200 && saved.AvoidEndMinute === 120 && saved.TracksWindowStartHour === 2, 'saved: ' + JSON.stringify(saved));
+        return 'windows kept, nothing saved, saving back on after a good read';
+    } finally {
+        page.off('request', watch);
+        await page.unroute(settingsRoute);
+        await api('POST', '/JellyfinMedic/MedicSettings', before);
+    }
+});
+
+await check('Settings: unsaved edits survive a trip to the Tracks tab and back', async () => {
+    const before = await ok('/JellyfinMedic/MedicSettings');
+    const edited = String(before.InactiveUserDays === 123 ? 124 : 123);
+    const reads = () => page.waitForResponse((r) => r.request().method() === 'GET' && /\/JellyfinMedic\/MedicSettings(\?|$)/.test(r.url()), { timeout: 30000 });
+    try {
+        await medicTab('settings', true);
+        await page.waitForFunction((v) => document.getElementById('md-inactive')?.value === v, String(before.InactiveUserDays), { timeout: 30000 });
+        await page.fill('#md-inactive', edited);
+        let read = reads();
+        await page.click('#md-goto-tracks');
+        await read;
+        await page.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 15000 });
+        await page.fill('#md-tracks-exclude-in', 'E2E unsaved');
+        read = reads();
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="settings"]');
+        await read;
+        await sleep(300);
+        expect(await page.inputValue('#md-inactive') === edited, 'the edit in Settings was lost: ' + await page.inputValue('#md-inactive'));
+        read = reads();
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await read;
+        await sleep(300);
+        expect(await page.inputValue('#md-tracks-exclude-in') === 'E2E unsaved', 'the edit in Tracks was lost: ' + await page.inputValue('#md-tracks-exclude-in'));
+        // Still counted as unsaved: a scan saves it first.
+        const posts = [];
+        await page.route(/\/JellyfinMedic\/Tracks\/Scan\/Start(\?|$)/, (route) => route.fulfill({ json: {} }));
+        const watch = (req) => { if (req.method() === 'POST' && /\/JellyfinMedic\/MedicSettings\b/.test(req.url())) posts.push(req.postDataJSON()); };
+        page.on('request', watch);
+        try {
+            await page.click('#md-tracks-scan');
+            for (let i = 0; i < 50 && posts.length === 0; i++) await sleep(100);
+        } finally {
+            page.off('request', watch);
+            await page.unroute(/\/JellyfinMedic\/Tracks\/Scan\/Start(\?|$)/);
+        }
+        expect(posts[0]?.TracksExclude === 'E2E unsaved' && String(posts[0]?.InactiveUserDays) === edited, 'the scan didn\'t save the edits first: ' + JSON.stringify(posts[0] || null));
+        return 'both edits kept and saved before the scan';
+    } finally {
         await api('POST', '/JellyfinMedic/MedicSettings', before);
     }
 });

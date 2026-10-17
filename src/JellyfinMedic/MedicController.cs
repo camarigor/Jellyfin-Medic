@@ -610,6 +610,7 @@ public class MedicController : ControllerBase
         }
 
         var c = Plugin.Instance.Configuration;
+        string scanInputs = TrackScanInputs(c);
         c.AvoidEnabled = settings.AvoidEnabled;
         int avoidStart = Math.Clamp(settings.AvoidStartMinute ?? settings.AvoidStartHour * 60, 0, 1439) / 15 * 15;
         int avoidEnd = (Math.Clamp(settings.AvoidEndMinute ?? settings.AvoidEndHour * 60, 0, 1440) % 1440) / 15 * 15;
@@ -637,9 +638,25 @@ public class MedicController : ControllerBase
         c.AlertCriticalErrors = settings.AlertCriticalErrors;
         c.AlertRestartNeeded = settings.AlertRestartNeeded;
         Plugin.Instance.SaveConfiguration();
-        TrackCleaner.ClearScan(); // the last track scan was made with the old settings
+
+        // A finished scan can take hours on a big library, so it's only dropped when it no longer matches.
+        if (!string.Equals(scanInputs, TrackScanInputs(c), StringComparison.Ordinal))
+        {
+            TrackCleaner.ClearScan();
+        }
+
         return GetMedicSettings();
     }
+
+    /// <summary>The settings a track scan's plan is made from (TrackCleaner.Scan and PlanForItem), in one comparable string.</summary>
+    private static string TrackScanInputs(PluginConfiguration c) => string.Join(
+        '\u0001',
+        string.Join(',', TrackCleaner.KeepLanguages(c).Order(StringComparer.Ordinal)),
+        string.Join('\n', TrackCleaner.ExcludeList(c.TracksExclude)),
+        c.TracksRemoveUndetermined,
+        c.TracksRemoveUntaggedSubtitles,
+        c.TracksKeepFirstUntaggedSubtitle,
+        c.TracksAllowRemovingOnlySubtitle);
 
     /// <summary>Every installed plugin with its status, settings (secrets hidden) and findings.</summary>
     [HttpGet("Plugins")]
