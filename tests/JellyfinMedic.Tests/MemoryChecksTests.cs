@@ -22,14 +22,15 @@ public sealed class MemoryChecksTests
         var finding = Assert.Single(DiagnosticsEngine.LoadGuardFindings(NightlyPostponements(5), Now, ceilingPercent: 85, isContainer: true));
 
         Assert.Equal(Sev.Improve, finding.Severity);
-        Assert.Equal("The server's memory sits above Medic's memory ceiling", finding.Title);
+        Assert.Equal("The server's memory often climbs past Medic's memory ceiling", finding.Title);
         Assert.Contains("postponed 5 heavy task run(s) on 5 of the last 7 days", finding.Current, StringComparison.Ordinal);
         Assert.Contains("ceiling is 85%", finding.Current, StringComparison.Ordinal);
         Assert.Contains("up to 89%", finding.Current, StringComparison.Ordinal); // 24 of 27 GB, the highest reading
         Assert.Contains("Raise the memory ceiling to 91%", finding.Recommended, StringComparison.Ordinal);
         Assert.Contains("free memory", finding.Recommended, StringComparison.Ordinal);
         Assert.Contains("other programs", finding.Why, StringComparison.Ordinal);
-        Assert.Contains("73%", finding.Why, StringComparison.Ordinal); // the restart mark, ceiling minus 12
+        Assert.Contains("usual level", finding.Why, StringComparison.Ordinal); // what LoadGuard compares against now
+        Assert.Contains("started by hand always run", finding.Why, StringComparison.Ordinal);
         Assert.StartsWith("Medic → Settings", finding.Where, StringComparison.Ordinal);
     }
 
@@ -77,7 +78,7 @@ public sealed class MemoryChecksTests
 
         var titles = DiagnosticsEngine.LoadGuardFindings(events, Now, ceilingPercent: 85, isContainer: true).Select(f => f.Title).ToList();
 
-        Assert.Equal(new[] { "Tasks have been overloading memory", "The server's memory sits above Medic's memory ceiling" }, titles);
+        Assert.Equal(new[] { "Tasks have been overloading memory", "The server's memory often climbs past Medic's memory ceiling" }, titles);
     }
 
     [Theory]

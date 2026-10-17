@@ -247,7 +247,8 @@ public sealed class DiagnosticsEngine
                 "Medic → Schedule"));
         }
 
-        // A postponement on most days means memory sits there normally, so holding tasks back protects nothing.
+        // LoadGuard only holds a task back on a rise above the usual level, so postponements on most days mean memory climbs
+        // past the ceiling that often: tasks keep running late, and the ceiling may sit below what the machine needs.
         var postponed = events.Where(e => e.Action == "postponed" && e.TimestampUtc > nowUtc.AddDays(-7) && e.TimestampUtc <= nowUtc).ToList();
         int days = postponed.Select(e => (int)(nowUtc - e.TimestampUtc).TotalDays).Distinct().Count();
         if (ceilingPercent is { } ceiling && days >= 3)
@@ -255,12 +256,12 @@ public sealed class DiagnosticsEngine
             var last = postponed[0];
             double highest = postponed.Where(e => e.MemoryLimitGb > 0).Select(e => e.MemoryUsedGb / e.MemoryLimitGb * 100).DefaultIfEmpty(ceiling).Max();
             int above = (int)Math.Ceiling(highest) + 2;
-            findings.Add(NewFinding(AreaTasks, Sev.Improve, "The server's memory sits above Medic's memory ceiling",
+            findings.Add(NewFinding(AreaTasks, Sev.Improve, "The server's memory often climbs past Medic's memory ceiling",
                 $"Medic postponed {postponed.Count} heavy task run(s) on {days} of the last 7 days: the whole server's memory was up to {highest:0}% and the ceiling is {ceiling}% (last: {last.TaskName}, {last.MemoryUsedGb:0.#} of {last.MemoryLimitGb:0.#} GB)",
                 above <= 95
                     ? $"Raise the memory ceiling to {above}% if this is the server's normal use, or free memory other programs use"
                     : "Free memory other programs use: the ceiling can't go above 95%",
-                $"Medic holds back any heavy task (library scans, metadata refreshes, trickplay and the like, including ones started by hand) that starts while the whole server's memory, other programs included, is at or above the ceiling. It starts it again once memory falls to {ceiling - 12}%, or after two hours. On a server whose memory normally sits above the ceiling, it doesn't fall, so each task just runs two hours late at the same level, and scheduled tasks drift out of the quiet hours. If this is normal for the machine, raise the ceiling just above it so Medic only acts on real spikes; if not, find which program fills the memory.",
+                "Medic holds back a heavy task its schedule starts (library scans, metadata refreshes, trickplay and the like) while the whole server's memory, other programs included, is past the ceiling and has risen above its usual level, or while Jellyfin itself is past the ceiling. Tasks started by hand always run. A held task starts again once memory settles, or after two hours at most, but not in your avoided hours or while someone is watching. Postponements on most days mean memory climbs past the ceiling that often, so tasks keep running late and can leave the quiet hours. If these levels are normal for the machine, raise the ceiling just above them so Medic only acts on real spikes; if not, find which program fills the memory.",
                 "Medic → Settings → Memory ceiling"));
         }
 
