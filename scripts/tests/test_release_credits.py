@@ -41,6 +41,19 @@ class PluginTests(unittest.TestCase):
         self.assertTrue(rc.belongs_to("film-posters-v", "tests/MedicPosters.Tests/PosterMakerTests.cs"))
         self.assertFalse(rc.belongs_to("v", "Jellyfin.Plugin.MedicPosters/Plugin.cs"))
 
+    def test_profiles_tests_belong_to_profiles(self):
+        self.assertTrue(rc.belongs_to("profiles-v", "tests/MedicProfiles.Tests/ProfileTests.cs"))
+        self.assertFalse(rc.belongs_to("v", "tests/MedicProfiles.Tests/ProfileTests.cs"))
+        self.assertFalse(rc.belongs_to("picks-v", "tests/MedicProfiles.Tests/ProfileTests.cs"))
+
+    def test_shared_code_belongs_to_picks_and_profiles(self):
+        # Both plugins compile shared/Medic.Shared into their DLL, and tests/Shared into their tests.
+        for path in ("shared/Medic.Shared/Log.cs", "tests/MedicShared.Tests/LogTests.cs", "tests/Shared/TestSupport.cs"):
+            self.assertTrue(rc.belongs_to("picks-v", path), path)
+            self.assertTrue(rc.belongs_to("profiles-v", path), path)
+            self.assertFalse(rc.belongs_to("v", path), path)
+            self.assertFalse(rc.belongs_to("film-posters-v", path), path)
+
 
 class WindowTests(unittest.TestCase):
     def test_merged_after_the_last_release_and_by_this_one(self):
