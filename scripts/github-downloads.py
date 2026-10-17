@@ -4,7 +4,8 @@
 Counts two things:
   - container images (ghcr.io): total pulls, read off each public package page,
     because GitHub's packages API doesn't expose download counts
-  - release downloads: the download_count of every release asset, per repo
+  - release downloads: the download_count of every release asset, per repo, split per plugin
+    when a repo releases several under different tag prefixes
 
 Usage: github-downloads.py <user> <csv file>
 Env: GITHUB_TOKEN (optional, raises the API rate limit),
@@ -57,14 +58,36 @@ def package_downloads(user, name):
     return int(m.group(1))
 
 
+def release_product(release):
+    """Which product a release belongs to, from its tag: picks-v1.2.4 -> picks, v1.0.22 -> ''."""
+    m = re.match(r"(.*?)-?v?\d", release["tag_name"])
+    return m.group(1) if m else release["tag_name"]
+
+
+def product_label(repo, prefix, releases):
+    """A readable name for one product in a repo, taken from its asset names:
+    MedicPicks-v1.2.4.zip -> Medic Picks. Falls back to the repo name and tag prefix."""
+    for r in releases:
+        for a in r["assets"]:
+            stem = re.split(r"[-_. ]v?\d", a["name"])[0]
+            if stem:
+                return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", stem)
+    return f"{repo} {prefix}".strip()
+
+
 def release_downloads(user):
+    """Downloads per product. A repo that releases several plugins under different tag
+    prefixes (v1.x, picks-v1.x, profiles-v1.x...) gets one line per plugin."""
     counts = {}
     for repo in api_pages(f"https://api.github.com/users/{user}/repos?type=owner"):
         if repo["fork"]:
             continue
-        releases = list(api_pages(f"https://api.github.com/repos/{user}/{repo['name']}/releases"))
-        if releases:
-            counts[repo["name"]] = sum(a["download_count"] for r in releases for a in r["assets"])
+        groups = {}
+        for r in api_pages(f"https://api.github.com/repos/{user}/{repo['name']}/releases"):
+            groups.setdefault(release_product(r), []).append(r)
+        for prefix, releases in groups.items():
+            name = repo["name"] if len(groups) == 1 else product_label(repo["name"], prefix, releases)
+            counts[name] = counts.get(name, 0) + sum(a["download_count"] for r in releases for a in r["assets"])
     return counts
 
 
@@ -123,7 +146,7 @@ def main():
         before = last.get((kind, name))
         return f"• {name}: {n:,}" + (f" (+{n - before:,})" if before is not None else " (new)")
 
-    lines = [f"📊 GitHub downloads, {now:%d %b %Y}"]
+    lines = [f"📊 GitHub downloads, {now:%d %b %Y %H:%M} UTC"]
     for kind, title in (("image", "📦 Container images"), ("release", "🏷️ Release downloads")):
         rows = [line(*c) for c in counts if c[0] == kind]
         if rows:

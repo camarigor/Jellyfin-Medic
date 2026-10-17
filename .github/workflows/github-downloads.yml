@@ -1,4 +1,4 @@
-# Once a day, logs the downloads of every container image and every repo's releases
+# Every 4 hours, logs the downloads of every container image and every repo's releases
 # under the account, and sends a summary to Telegram.
 # The history lives in downloads.csv on the package-stats branch, so main stays clean.
 # Needs two repo secrets: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.
@@ -8,7 +8,9 @@ name: GitHub downloads
 
 on:
   schedule:
-    - cron: '17 8 * * *'
+    # 03:00, 07:00, 11:00, 15:00, 19:00 and 23:00 UK winter time (GMT). Cron runs in UTC, so in
+    # summer (BST) these land an hour later, at 04:00, 08:00 and so on.
+    - cron: '0 3,7,11,15,19,23 * * *'
   workflow_dispatch:
 
 permissions:
