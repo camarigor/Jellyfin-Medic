@@ -73,6 +73,20 @@ public class MedicController : ControllerBase
     [HttpGet("Report")]
     public async Task<ActionResult<DiagnosticReport>> GetReport(CancellationToken cancellationToken)
     {
+        try
+        {
+            return Ok(await BuildReportAsync(cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The browser closed the connection, so nobody reads the answer. Letting the exception out would
+            // have Jellyfin log it as a Medic error. 499 is the usual code for a request the client gave up on.
+            return StatusCode(StatusCodes.Status499ClientClosedRequest);
+        }
+    }
+
+    private async Task<DiagnosticReport> BuildReportAsync(CancellationToken cancellationToken)
+    {
         var usage = UsageAnalyzer.Summarise(UsageStore.Load(_paths));
         var plugins = PluginAuditor.Audit(_pluginManager, _paths, _engine.CreatePluginContext());
         var links = _engine.LinksToCheck();
@@ -124,7 +138,7 @@ public class MedicController : ControllerBase
         report.Users = userSummary;
         report.Updates = updates;
         report.RepeatedErrors = repeated;
-        return Ok(report);
+        return report;
     }
 
     /// <summary>Every core and library setting, with passwords and keys hidden.</summary>
