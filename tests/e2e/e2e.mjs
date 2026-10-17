@@ -2125,7 +2125,9 @@ async function medicTab(name, fresh, p = page) {
         // a 401), so this page and every later check land on the sign-in screen. The page showing means the
         // check is done.
         await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-        await p.reload();
+        // Only the page's own markup is needed, which the wait below checks: waiting for "load" also waits for every
+        // image and plugin script, and one slow request on a busy machine held a reload past 30 s.
+        await p.reload({ waitUntil: 'domcontentloaded' });
     }
     await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
     await settleWhatsNew(p);
@@ -2668,10 +2670,12 @@ await check('Dashboard panels: Load names a whole-card GPU figure as such, with 
             { ...last, GpuPercent: 40, GpuWholeDevice: whole }, { ...last, GpuPercent: 60, GpuWholeDevice: whole }] } }));
         try {
             await medicTab('dashboard', true);
-            await page.waitForFunction(() => document.querySelectorAll('#md-load .md-meter').length === 4
-                && !!document.querySelectorAll('#md-load .md-meter')[3].querySelector('svg'), null, { timeout: 30000 });
+            // Found by its name, so a meter added beside it doesn't move it.
+            await page.waitForFunction(() => Array.from(document.querySelectorAll('#md-load .md-meter'))
+                .some((m) => /^GPU/.test(m.querySelector('.md-meter-head span')?.textContent || '') && m.querySelector('svg')), null, { timeout: 30000 });
             return await page.evaluate(() => {
-                const meter = document.querySelectorAll('#md-load .md-meter')[3];
+                const meter = Array.from(document.querySelectorAll('#md-load .md-meter'))
+                    .find((m) => /^GPU/.test(m.querySelector('.md-meter-head span')?.textContent || ''));
                 return { name: meter.querySelector('.md-meter-head span').textContent, alert: !!meter.querySelector('.md-line-alert'),
                     label: meter.querySelector('svg').getAttribute('aria-label') };
             });
