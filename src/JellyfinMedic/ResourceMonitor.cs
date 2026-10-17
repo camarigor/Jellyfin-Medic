@@ -21,6 +21,9 @@ public sealed class ResourceSample
 
     public double MemoryPercent { get; set; }
 
+    // The whole server's memory in use, other programs included: the figure LoadGuard's server check acts on. Null off Linux.
+    public double? ServerMemoryPercent { get; set; }
+
     // Disk reads and writes by Jellyfin and FFmpeg, in MB a second. Null where it can't be read.
     public double? DiskMBps { get; set; }
 
@@ -303,6 +306,7 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
             CpuPercent = Math.Round(Math.Clamp((cpuSeconds - prev.CpuSeconds) / wall / Environment.ProcessorCount * 100, 0, 100), 1),
             MemoryGb = Math.Round(memoryBytes / 1073741824d, 2),
             MemoryPercent = limit > 0 ? Math.Round(Math.Clamp(memoryBytes / limit * 100, 0, 100), 1) : 0,
+            ServerMemoryPercent = ServerMemory.UsedPercent(out _, out _),
             DiskMBps = ioBytes is { } io2 && prev.IoBytes >= 0 && io2 >= prev.IoBytes ? Math.Round((io2 - prev.IoBytes) / wall / 1048576d, 1) : null,
             GpuPercent = GpuBusy(),
             FfmpegProcesses = ffmpeg.Count
@@ -452,7 +456,16 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
         }
     }
 
-    private static double MemoryLimitBytes() => LoadGuard.CgroupLimit() ?? GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+    /// <summary>What Jellyfin's memory is measured against on the Dashboard and in Checks, in bytes.</summary>
+    internal static double MemoryLimitBytes() =>
+        MemoryBase(LoadGuard.CgroupLimit(), HostCounters.MemoryKb(HostPlatform.Lines("/proc/meminfo"))?.Total * 1024d, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes);
+
+    /// <summary>
+    /// The container's memory limit when it has one, else the server's memory. .NET's own available figure is the last
+    /// resort only: under a container limit it is the heap limit, 75% of the container's, which nothing holds FFmpeg to.
+    /// </summary>
+    internal static double MemoryBase(double? cgroupLimit, double? hostTotal, double dotnetAvailable) =>
+        cgroupLimit ?? (hostTotal is > 0 ? hostTotal.Value : dotnetAvailable);
 
     private static DateTime _nvidiaRetryUtc = DateTime.MinValue;
 

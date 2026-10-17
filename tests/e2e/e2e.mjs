@@ -356,6 +356,12 @@ await check('Dashboard data: both routes answer an admin with every section, and
     expect(live.Resources.length > 0 && 'CpuPercent' in live.Resources[0], 'no resource readings');
     expect(JSON.stringify(live.Limits) === JSON.stringify({ CpuPercent: 90, MemoryPercent: 90, DiskMBps: 150, GpuPercent: 95 }), 'limits: ' + JSON.stringify(live.Limits));
     expect(Array.isArray(live.Paused), 'paused: ' + JSON.stringify(live.Paused));
+    // The whole server's memory, which LoadGuard's server check acts on, beside the ceiling it acts at (85 by default).
+    const server = live.Now.ServerMemoryPercent;
+    expect(typeof server === 'number' && server > 0 && live.Now.ServerMemoryTotalGb > 0
+        && Math.abs(server - live.Now.ServerMemoryGb / live.Now.ServerMemoryTotalGb * 100) <= 1, 'server memory: ' + JSON.stringify(live.Now));
+    expect(live.Now.GuardCeilingPercent === 85, 'guard ceiling: ' + live.Now.GuardCeilingPercent);
+    expect(typeof live.Resources.at(-1).ServerMemoryPercent === 'number', 'server memory reading: ' + JSON.stringify(live.Resources.at(-1)));
 
     // An account that isn't an administrator, on its own device so the admin's session stays signed in.
     const name = 'e2e-not-admin';
@@ -2462,12 +2468,16 @@ await check('Dashboard panels: fixture data written, and the Dashboard built aga
 
 await check('Dashboard panels: Right now, Disks and Load show the live readings, the drive with least room and the alert lines', async () => {
     await medicTab('dashboard', true);
-    await page.waitForFunction(() => document.querySelectorAll('#md-load .md-meter').length === 4, null, { timeout: 30000 });
+    await page.waitForFunction(() => document.querySelectorAll('#md-load .md-meter').length === 5, null, { timeout: 30000 });
     const data = await ok('/JellyfinMedic/Dashboard');
     const disks = await page.textContent('#md-disks-big');
     expect(/\d+% free|GB free|TB free/.test(disks), 'Disks: ' + disks);
+    const names = await page.$$eval('#md-load .md-meter-head span', (spans) => spans.map((s) => s.textContent));
+    expect(JSON.stringify(names) === JSON.stringify(['CPU with FFmpeg', 'Memory with FFmpeg', 'Disk', 'GPU', 'Server memory']), 'meters: ' + JSON.stringify(names));
     const charts = await page.evaluate(() => Array.from(document.querySelectorAll('#md-load .md-meter svg[role="img"]')).map((s) => s.getAttribute('aria-label')));
-    expect(charts.length >= 2 && charts.every((l) => /alert at/.test(l)), 'Load charts: ' + JSON.stringify(charts));
+    expect(charts.length >= 3 && charts.every((l) => /alert at|LoadGuard's ceiling at/.test(l)), 'Load charts: ' + JSON.stringify(charts));
+    // The server's memory is drawn against the ceiling LoadGuard pauses heavy tasks at, not the 90% alert for Jellyfin's own.
+    expect(charts.some((l) => /^Server memory: now [\d.]+%.*; LoadGuard's ceiling at 85%\.$/.test(l)), 'no server memory chart: ' + JSON.stringify(charts));
     const ffmpeg = await page.textContent('#md-load-ffmpeg');
     expect(/FFmpeg/.test(ffmpeg), 'FFmpeg line: ' + ffmpeg);
     return `${charts.length} charts; ${disks.trim()} on ${data.Disks.Drives.length} drives`;
@@ -2475,13 +2485,15 @@ await check('Dashboard panels: Right now, Disks and Load show the live readings,
 
 await check('Dashboard panels: Right now shows CPU, memory and who is watching, and leaves the rest to the Load panel', async () => {
     await medicTab('dashboard', true);
-    await page.waitForFunction(() => /Memory/.test(document.getElementById('md-now')?.textContent || ''), null, { timeout: 30000 });
+    await page.waitForFunction(() => /Memory/i.test(document.getElementById('md-now')?.textContent || ''), null, { timeout: 30000 });
     const seen = await page.evaluate(() => ({
         rows: Array.from(document.querySelectorAll('#md-now dt')).map((d) => d.textContent),
+        values: Array.from(document.querySelectorAll('#md-now dd')).map((d) => d.textContent),
         chart: !!document.getElementById('md-spark'),
         cpu: document.getElementById('md-cpu').textContent
     }));
-    expect(JSON.stringify(seen.rows) === JSON.stringify(['Memory', 'Watching']) && !seen.chart && /^\d+%$/.test(seen.cpu), 'Right now: ' + JSON.stringify(seen));
+    expect(JSON.stringify(seen.rows) === JSON.stringify(['Jellyfin memory', 'Server memory', 'Watching']) && !seen.chart && /^\d+%$/.test(seen.cpu), 'Right now: ' + JSON.stringify(seen));
+    expect(/^[\d.]+ GB of [\d.]+ GB \([\d.]+%\); LoadGuard's ceiling is 85%$/.test(seen.values[1]), 'server memory: ' + seen.values[1]);
     return `CPU ${seen.cpu}; ${seen.rows.join(', ')}`;
 });
 

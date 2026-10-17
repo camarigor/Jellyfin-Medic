@@ -1585,9 +1585,19 @@
                     const dl = $('md-now');
                     dl.innerHTML = '';
                     const memPct = pick(nowData, 'MemoryPercent') || 0;
-                    dl.appendChild(el('dt', null, 'Memory'));
+                    dl.appendChild(el('dt', null, 'Jellyfin memory'));
                     dl.appendChild(el('dd', memPct >= 85 ? 'md-bad-text' : (memPct >= 70 ? 'md-warn-text' : null),
                         (pick(nowData, 'MemoryGb') || 0) + ' GB of ' + (pick(nowData, 'MemoryLimitGb') || '?') + ' GB (' + memPct + '%)'));
+                    // Other programs included: the figure LoadGuard holds heavy tasks back on, coloured against its ceiling.
+                    const serverPct = pick(nowData, 'ServerMemoryPercent');
+                    if (serverPct !== null && serverPct !== undefined) {
+                        const ceiling = pick(nowData, 'GuardCeilingPercent');
+                        const high = ceiling || 85;
+                        dl.appendChild(el('dt', null, 'Server memory'));
+                        dl.appendChild(el('dd', serverPct >= high ? 'md-bad-text' : (serverPct >= high - 12 ? 'md-warn-text' : null),
+                            pick(nowData, 'ServerMemoryGb') + ' GB of ' + pick(nowData, 'ServerMemoryTotalGb') + ' GB (' + serverPct + '%)'
+                            + (ceiling ? '; LoadGuard\'s ceiling is ' + ceiling + '%' : '')));
+                    }
                     const watching = pick(nowData, 'Watching') || 0;
                     const transcoding = pick(nowData, 'Transcoding') || 0;
                     dl.appendChild(el('dt', null, 'Watching'));
@@ -1746,9 +1756,11 @@
 
                 const METERS = [
                     { name: 'CPU with FFmpeg', field: 'CpuPercent', unit: '%', top: 100 },
-                    { name: 'Memory', field: 'MemoryPercent', unit: '%', top: 100 },
+                    { name: 'Memory with FFmpeg', field: 'MemoryPercent', unit: '%', top: 100 },
                     { name: 'Disk', field: 'DiskMBps', unit: ' MB/s', top: null },
-                    { name: 'GPU', field: 'GpuPercent', unit: '%', top: 100 }
+                    { name: 'GPU', field: 'GpuPercent', unit: '%', top: 100 },
+                    // Last, beside the tasks LoadGuard has paused, with its ceiling as the line they are measured against.
+                    { name: 'Server memory', field: 'ServerMemoryPercent', unit: '%', top: 100, guard: true }
                 ];
 
                 function renderLoad() {
@@ -1758,7 +1770,7 @@
                     const limits = pick(live, 'Limits') || {};
                     METERS.forEach(function (m) {
                         const values = readings.map(function (r) { return pick(r, m.field); }).filter(function (v) { return v !== null && v !== undefined; });
-                        const alert = pick(limits, m.field);
+                        const alert = m.guard ? pick(nowData, 'GuardCeilingPercent') : pick(limits, m.field);
                         const meter = el('div', 'md-meter');
                         const head = el('div', 'md-meter-head');
                         head.appendChild(el('span', null, m.name));
@@ -1771,7 +1783,8 @@
                             const top = m.top || Math.max((alert || 0) * 1.2, highest * 1.1, 1);
                             const minutes = Math.max(1, Math.round(values.length / 4));
                             meter.appendChild(spark(160, 36, values, top, alert, m.name + ': now ' + fmtNum(values[values.length - 1]) + m.unit +
-                                ', highest ' + fmtNum(highest) + m.unit + ' in the last ' + minutes + (minutes === 1 ? ' minute' : ' minutes') + '; alert at ' + fmtNum(alert || 0) + m.unit + '.'));
+                                ', highest ' + fmtNum(highest) + m.unit + ' in the last ' + minutes + (minutes === 1 ? ' minute' : ' minutes') +
+                                (!m.guard ? '; alert at ' + fmtNum(alert || 0) + m.unit + '.' : alert ? '; LoadGuard\'s ceiling at ' + fmtNum(alert) + m.unit + '.' : '; LoadGuard is off.')));
                         }
                         box.appendChild(meter);
                     });

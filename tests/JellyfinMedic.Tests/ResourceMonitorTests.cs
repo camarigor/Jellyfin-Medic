@@ -4,6 +4,8 @@ namespace JellyfinMedic.Tests;
 
 public sealed class ResourceMonitorTests
 {
+    private const double GiB = 1024d * 1024 * 1024;
+
     private static readonly DateTime Noon = new(2026, 10, 16, 12, 0, 0, DateTimeKind.Utc);
 
     [Fact]
@@ -74,6 +76,28 @@ public sealed class ResourceMonitorTests
     public void Other_processes_have_no_ffmpeg_role()
     {
         Assert.Null(ResourceMonitor.FfmpegRole("jellyfin", () => "/jellyfin/jellyfin --datadir /config"));
+    }
+
+    [Fact]
+    public void Jellyfins_memory_is_measured_against_the_container_limit_not_the_heap_limit_dotnet_derives_from_it()
+    {
+        // In a 4 GB container .NET reports 3 GB (75% of the limit) as available, which nothing holds FFmpeg to.
+        Assert.Equal(4 * GiB, ResourceMonitor.MemoryBase(cgroupLimit: 4 * GiB, hostTotal: 27 * GiB, dotnetAvailable: 3 * GiB));
+    }
+
+    [Fact]
+    public void Without_a_container_limit_jellyfins_memory_is_measured_against_all_the_servers_memory()
+    {
+        Assert.Equal(27 * GiB, ResourceMonitor.MemoryBase(cgroupLimit: null, hostTotal: 27 * GiB, dotnetAvailable: 20 * GiB));
+        Assert.Equal(16 * GiB, ResourceMonitor.MemoryBase(cgroupLimit: null, hostTotal: null, dotnetAvailable: 16 * GiB));
+    }
+
+    [Fact]
+    public void The_dashboard_shows_the_ceiling_LoadGuard_holds_heavy_tasks_at_only_while_the_guard_is_on()
+    {
+        Assert.Equal(85, ServerNow.GuardCeiling(enabled: true, ceilingPercent: 85));
+        Assert.Equal(95, ServerNow.GuardCeiling(enabled: true, ceilingPercent: 99));
+        Assert.Null(ServerNow.GuardCeiling(enabled: false, ceilingPercent: 85));
     }
 
     // A /proc/<pid>/stat line as Linux writes it, up to rsslim. Times are in ticks, 100 a second.
