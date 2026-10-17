@@ -400,7 +400,7 @@ public class ScheduleController : ControllerBase
             var managedRuns = current.Where(m => !backup.TriggersByTaskId.Keys.Any(k => ScheduleStorage.SameId(k, m.TaskId))).ToList();
             foreach (var target in targets.Where(t => t.Then is not null))
             {
-                target.Then!.LastStartedLocal = DateTime.Now; // Don't fire straight away after a restore.
+                target.Then!.LastStartedLocal = RestoredLastStart(target.Then, target.Now, DateTime.Now);
                 managedRuns.Add(target.Then);
             }
 
@@ -534,6 +534,14 @@ public class ScheduleController : ControllerBase
             _logger.LogError(ex, "Jellyfin Medic: could not add {Count} entries to the schedule changes log", audits.Count);
         }
     }
+
+    // While this month's run of a restored monthly task is still ahead, its real last start (the later of the
+    // current record's and the backup's) decides, so it runs then unless it already ran this month. Once that
+    // run has passed, it counts as started now, so it doesn't fire straight away and first runs next month.
+    internal static DateTime? RestoredLastStart(ManagedRun restored, ManagedRun? current, DateTime now) =>
+        now < ManagedScheduleRunner.DueThisMonth(restored, now)
+            ? Later(current?.LastStartedLocal, restored.LastStartedLocal)
+            : now;
 
     private static DateTime? Later(DateTime? a, DateTime? b) => a is null ? b : b is null ? a : (a > b ? a : b);
 }

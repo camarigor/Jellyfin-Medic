@@ -1,7 +1,7 @@
 # Medic Posters changelog
 
 All notable changes to Medic Posters are recorded here. The newest version is at the top.
-Jellyfin Medic, Medic Picks, Medic Profiles and Animated Posters have their own changelogs.
+Jellyfin Medic, Medic Picks and Medic Profiles have their own changelogs.
 
 ## [1.0.0] – 2026-10-17
 

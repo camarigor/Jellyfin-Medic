@@ -3,6 +3,9 @@ using Jellyfin.Plugin.MedicPicks.Configuration;
 using Jellyfin.Plugin.MedicPicks.Picks;
 using Microsoft.Extensions.Logging.Abstractions;
 
+// Plugin.Instance is static, so tests that make a plugin can't run beside each other.
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
+
 namespace MedicPicks.Tests;
 
 public sealed class SeerrKeyGuardTests : IDisposable
@@ -75,6 +78,47 @@ public sealed class SeerrKeyGuardTests : IDisposable
         Save("http://elsewhere:5055");
 
         Assert.Equal(("http://seerr:5055", (string?)null), seen);
+    }
+
+    [Theory]
+    [InlineData("seerr:5055", "http://seerr:5055")]
+    [InlineData(" seerr:5055/seerr/ ", "http://seerr:5055/seerr/")]
+    [InlineData("seerr", "http://seerr")]
+    [InlineData("192.168.1.20:5055", "http://192.168.1.20:5055")]
+    public void An_address_saved_without_a_scheme_gets_http(string typed, string saved)
+    {
+        _plugin.UpdateConfiguration(new PluginConfiguration { JellyseerrUrl = typed, SeerrLinkUrl = typed });
+
+        Assert.Equal(saved, _plugin.Configuration.JellyseerrUrl);
+        Assert.Equal(saved, _plugin.Configuration.SeerrLinkUrl);
+    }
+
+    [Theory]
+    [InlineData("http://seerr:5055")]
+    [InlineData("https://seerr.example.com/")]
+    [InlineData("")]
+    // Adding http:// doesn't make these addresses, so they're left for the Seerr calls to refuse.
+    [InlineData("javascript:alert(1)//")]
+    [InlineData("/seerr")]
+    [InlineData(":5055")]
+    public void An_address_with_a_scheme_or_none_at_all_is_saved_as_typed(string typed)
+    {
+        _plugin.UpdateConfiguration(new PluginConfiguration { JellyseerrUrl = typed, SeerrLinkUrl = typed });
+
+        Assert.Equal(typed, _plugin.Configuration.JellyseerrUrl);
+        Assert.Equal(typed, _plugin.Configuration.SeerrLinkUrl);
+    }
+
+    [Fact]
+    public void Adding_http_to_an_address_saved_without_it_keeps_the_saved_key()
+    {
+        // An address saved before http:// was added on save is still in the settings file as typed.
+        _plugin.Configuration.JellyseerrUrl = "seerr:5055";
+        _store.SetSeerrKey("seerr-key");
+
+        Save("http://seerr:5055");
+
+        Assert.Equal("seerr-key", _store.GetSeerrKey());
     }
 
     public void Dispose()

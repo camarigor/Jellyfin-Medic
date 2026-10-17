@@ -629,35 +629,66 @@ public sealed class DiagnosticsEngine
         return _drives;
     }
 
-    private static string Weeks(double days) =>
-        days < 14 ? $"about {Math.Max(1, Math.Round(days)):0} days" : days < 120 ? $"about {Math.Round(days / 7):0} weeks" : $"about {Math.Round(days / 30):0} months";
+    internal static string Weeks(double days) =>
+        days < 14 ? (Math.Round(days) <= 1 ? "about 1 day" : $"about {Math.Round(days):0} days")
+        : days < 120 ? $"about {Math.Round(days / 7):0} weeks" : $"about {Math.Round(days / 30):0} months";
 
-    private void CheckStorage(List<LibraryFacts> libraries, object? encoding)
+    /// <summary>"Full", "nearly full" and "will be full" for each drive.</summary>
+    internal static List<Finding> DriveSpaceFindings(IEnumerable<DriveStatus> drives)
     {
-        foreach (var d in WatchedDrives(libraries, encoding))
+        var findings = new List<Finding>();
+        // A drive that holds only transcodes is Jellyfin's scratch space, often a small RAM folder that reads as full
+        // when empty and as filling up mid-transcode. CheckTranscoding judges its size.
+        foreach (var d in drives.Where(d => d.Holds != "transcodes"))
         {
-            bool holdsConfig = d.Holds.Contains("config & database", StringComparison.Ordinal) || d.Holds.Contains("cache", StringComparison.Ordinal);
-            double freePct = d.TotalGb > 0 ? d.FreeGb / d.TotalGb * 100 : 100;
-            if (!holdsConfig && (freePct < 1 || d.FreeGb < 5))
+            string? verdict = SpaceVerdict(d.FreeGb, d.TotalGb, d.Holds);
+            if (verdict == Sev.Problem)
             {
-                Add(AreaStorage, Sev.Problem, $"The drive for {d.Holds} is full", $"{SystemProbe.Gb(d.FreeGb)} free of {SystemProbe.Gb(d.TotalGb)}",
-                    "Free some space or add a drive", "New downloads and track cleanup will fail, and Jellyfin can't save images or subtitles next to your files.", d.ExamplePath);
+                findings.Add(NewFinding(AreaStorage, Sev.Problem, $"The drive for {d.Holds} is full", $"{SystemProbe.Gb(d.FreeGb)} free of {SystemProbe.Gb(d.TotalGb)}",
+                    "Free some space or add a drive", "New downloads and track cleanup will fail, and Jellyfin can't save images or subtitles next to your files.", d.ExamplePath));
             }
-            else if (!holdsConfig && (freePct < 3 || d.FreeGb < 25))
+            else if (verdict == Sev.Improve)
             {
-                Add(AreaStorage, Sev.Improve, $"The drive for {d.Holds} is nearly full", $"{SystemProbe.Gb(d.FreeGb)} free of {SystemProbe.Gb(d.TotalGb)}",
-                    "Keep at least 3% or 25 GB free", "A full drive stops new files arriving and can stop Jellyfin saving artwork and subtitles.", d.ExamplePath);
+                findings.Add(NewFinding(AreaStorage, Sev.Improve, $"The drive for {d.Holds} is nearly full", $"{SystemProbe.Gb(d.FreeGb)} free of {SystemProbe.Gb(d.TotalGb)}",
+                    "Keep at least 25 GB free, or 3% of the drive up to 150 GB", "A full drive stops new files arriving and can stop Jellyfin saving artwork and subtitles.", d.ExamplePath));
             }
 
             if (d.DaysToFull is { } days && days < 30)
             {
-                Add(AreaStorage, days < 7 ? Sev.Problem : Sev.Improve, $"The drive for {d.Holds} will be full in {Weeks(days)}",
+                findings.Add(NewFinding(AreaStorage, days < 7 ? Sev.Problem : Sev.Improve, $"The drive for {d.Holds} will be full in {Weeks(days)}",
                     $"{SystemProbe.Gb(d.FreeGb)} free, using about {SystemProbe.Gb(d.GbPerDay!.Value)} a day",
                     "Free some space, add a drive, or find what's filling it (for example trickplay images or old downloads)",
                     "At this rate the drive runs out soon, and Jellyfin, downloads and track cleanup all need room to write.", d.ExamplePath,
-                    id: "storage.filling-up:" + d.StableName);
+                    id: "storage.filling-up:" + d.StableName));
             }
         }
+
+        return findings;
+    }
+
+    /// <summary>
+    /// Problem when the drive is full, Improve when nearly full, else null. Sizes are in GiB, as SystemProbe reads them.
+    /// The share of the drive is capped so a 16 TB drive with 150 GB free isn't called full.
+    /// </summary>
+    internal static string? SpaceVerdict(double freeGb, double totalGb, string holds)
+    {
+        // The config and cache drives have their own checks in CheckStorage; the transcode drive has CheckTranscoding's.
+        if (holds.Contains("config & database", StringComparison.Ordinal) || holds.Contains("cache", StringComparison.Ordinal) || holds == "transcodes")
+        {
+            return null;
+        }
+
+        if (freeGb < Math.Max(5, Math.Min(totalGb * 0.01, 50)))
+        {
+            return Sev.Problem;
+        }
+
+        return freeGb < Math.Max(25, Math.Min(totalGb * 0.03, 150)) ? Sev.Improve : null;
+    }
+
+    private void CheckStorage(List<LibraryFacts> libraries, object? encoding)
+    {
+        _report.Findings.AddRange(DriveSpaceFindings(WatchedDrives(libraries, encoding)));
 
         if (SystemProbe.Space(_paths.DataPath) is { } data)
         {
@@ -682,7 +713,7 @@ public sealed class DiagnosticsEngine
                 WhereDocker);
         }
 
-        if (!SameDrive(_paths.CachePath, _paths.DataPath) && SystemProbe.Space(_paths.CachePath) is { } cache && cache.FreeGb < 10)
+        if (!SameDrive(StorageWatch.DriveOf(_paths.CachePath), StorageWatch.DriveOf(_paths.DataPath)) && SystemProbe.Space(_paths.CachePath) is { } cache && cache.FreeGb < 10)
         {
             Add(AreaStorage, Sev.Improve, "Low space on the cache drive", $"{SystemProbe.Gb(cache.FreeGb)} free", "At least 10 GB free",
                 "Images and metadata are cached here; when it's full, artwork stops loading.", WhereDocker);
@@ -892,10 +923,10 @@ public sealed class DiagnosticsEngine
 
         CheckBitrateAgainstSpeedTest(bitrate ?? 0);
 
-        if (hw.InDocker && string.IsNullOrWhiteSpace(_config.Configuration.ServerName))
+        if (hw.RandomHostname && string.IsNullOrWhiteSpace(_config.Configuration.ServerName))
         {
             Add(AreaServer, Sev.Tip, "The server has no name", "(not set)", "A name such as \"Tower Jellyfin\"",
-                "In Docker an unnamed server shows the container's random ID in apps, which also changes if the container is recreated.",
+                "In a container an unnamed server shows the container's random ID in apps, which also changes if the container is recreated.",
                 WhereGeneral);
         }
 
@@ -1526,7 +1557,12 @@ public sealed class DiagnosticsEngine
         return null;
     }
 
-    private static string Shorten(string text) => text.Length <= 600 ? text : text[..600] + "…";
+    internal static string Shorten(string text)
+    {
+        // Masked before the cut, which can leave too little of a token for it to be recognised.
+        string masked = SettingsReader.MaskSecrets(text);
+        return masked.Length <= 600 ? masked : masked[..600] + "…";
+    }
 
     /// <summary>Heavy maintenance scheduled during the day, when people are likely to be watching.</summary>
     private void CheckDaytimeTasks(List<IScheduledTaskWorker> workers)
@@ -1617,8 +1653,8 @@ public sealed class DiagnosticsEngine
     }
 
 
-    private static bool SameDrive(string a, string b) =>
-        SystemProbe.Mount(a)?.MountPoint == SystemProbe.Mount(b)?.MountPoint;
+    // A drive that can't be named counts as another drive: one warning too many beats none.
+    internal static bool SameDrive(string? driveA, string? driveB) => driveA is not null && driveA == driveB;
 
     private static string? Nice(string? hwType) => hwType?.ToLowerInvariant() switch
     {

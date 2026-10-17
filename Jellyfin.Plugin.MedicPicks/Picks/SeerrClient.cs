@@ -52,7 +52,8 @@ public class SeerrClient
     private static readonly TimeSpan TitleCacheTime = TimeSpan.FromDays(1);
 
     private readonly ConcurrentDictionary<Guid, List<DateTime>> _recent = new();
-    private readonly ConcurrentDictionary<Guid, (int? SeerrId, DateTime At)> _accounts = new();
+    // Kept per Seerr server too: an id from the server used before belongs to someone else on the new one.
+    private readonly ConcurrentDictionary<(string Server, Guid User), (int? SeerrId, DateTime At)> _accounts = new();
     private readonly ConcurrentDictionary<string, (SeerrTitle Title, DateTime At)> _titles = new();
 
     public SeerrClient(IHttpClientFactory httpClientFactory, PicksStore store, ILogger<SeerrClient> logger)
@@ -182,8 +183,16 @@ public class SeerrClient
             return null;
         }
 
+        string? server = Server(baseUrl);
+        if (server is null)
+        {
+            _logger.LogWarning("Medic Picks: the Seerr address {Address} doesn't start with http:// or https://", baseUrl);
+            throw new HttpRequestException("The Seerr address must start with http:// or https://");
+        }
+
         // Someone not found may sign in to Seerr any moment, so that answer is only kept briefly.
-        if (_accounts.TryGetValue(jellyfinUserId, out var cached)
+        var account = (server, jellyfinUserId);
+        if (_accounts.TryGetValue(account, out var cached)
             && DateTime.UtcNow - cached.At < (cached.SeerrId is null ? TimeSpan.FromMinutes(1) : AccountCacheTime))
         {
             return cached.SeerrId;
@@ -200,7 +209,7 @@ public class SeerrClient
             throw;
         }
 
-        _accounts[jellyfinUserId] = (found, DateTime.UtcNow);
+        _accounts[account] = (found, DateTime.UtcNow);
         return found;
     }
 
@@ -419,6 +428,12 @@ public class SeerrClient
         ServiceHttp.SendAsync(Client(), request, CallTimeout, "Seerr", ct);
 
     private static string Url(string baseUrl, string path) => baseUrl.TrimEnd('/') + path;
+
+    // One server written two ways ("HTTP://Seerr:5055/", say) shares its remembered ids; null when it isn't an http address.
+    private static string? Server(string baseUrl) =>
+        Uri.TryCreate(baseUrl.Trim(), UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            ? $"{uri.Scheme}://{uri.Host}:{uri.Port}{uri.AbsolutePath.TrimEnd('/')}"
+            : null;
 
     private static int? StatusFrom(string json)
     {

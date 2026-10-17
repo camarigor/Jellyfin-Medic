@@ -2,7 +2,7 @@
          JELLYFIN MEDIC, MEDIC PICKS, MEDIC PROFILES AND THE POSTER PLUGINS
 ===============================================================================
 
-This repository contains five Jellyfin plugins:
+This repository contains four Jellyfin plugins:
 
   1. JELLYFIN MEDIC
      For the person who runs the server. Health checks, performance tests,
@@ -19,11 +19,7 @@ This repository contains five Jellyfin plugins:
      dashboard: downloads, fixes, and quality profile advice.
      Needs Jellyfin 12.0 or later. Administrators only.
 
-  4. ANIMATED POSTERS
-     Library cards on the home screen that fade between artwork from each
-     library, in the browser and desktop apps. See its section in README.md.
-
-  5. MEDIC POSTERS
+  4. MEDIC POSTERS
      For everyone who uses the server, set up by the person who runs it.
      Animated posters for every film, cut from moments of the film.
      Needs Jellyfin 12.0 or later. Settings are for administrators only.
@@ -32,7 +28,7 @@ Each plugin's current version and what changed are in its changelog (CHANGELOG.m
 Jellyfin.Plugin.MedicPicks/CHANGELOG.md, Jellyfin.Plugin.MedicProfiles/CHANGELOG.md,
 Jellyfin.Plugin.MedicPosters/CHANGELOG.md).
 
-All five are installed from the same plugin repository:
+All four are installed from the same plugin repository:
   https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/manifest.json
 
 
@@ -150,8 +146,8 @@ shows:
   - why it matters,
   - a "Where" link that opens the right Jellyfin page in a new tab (for
     plugin issues, that plugin's own settings page), with directions worded
-    for your platform (Unraid, TrueNAS SCALE, Proxmox, Docker, Linux, Windows
-    or macOS),
+    for your platform (Unraid, TrueNAS SCALE, Proxmox, Docker, Kubernetes,
+    Linux, Windows or macOS),
   - Ignore: drops it out of the counts. Findings come back on their own if
     the situation changes.
   - Long error messages can be expanded and scrolled in full.
@@ -183,9 +179,11 @@ HARDWARE AND TRANSCODING
 
 STORAGE
   - Low space for transcodes, on the cache drive, or on the config drive.
-  - Every library drive: nearly full or full, and how fast each drive is
-    filling (one reading a day), with a warning when one will be full
-    within a month.
+  - Every library drive: nearly full (under 25 GB free, or 3% of the drive
+    up to 150 GB) or full (under 5 GB, or 1% up to 50 GB), and how fast
+    each drive is filling (one reading a day), with a warning when one will
+    be full within a month. A drive that holds only transcodes is left to
+    the transcoding checks.
   - Specs list each drive and the size of the metadata folder, trickplay
     images and image cache (measured in the background).
   - Almost no space left for the database.
@@ -326,8 +324,9 @@ What it leaves alone:
     Windows only the link count isn't checked.
 
 What it keeps:
-  - Your chosen languages (default: eng). Codes with two forms (fre/fra,
-    ger/deu, dut/nld, chi/zho) are treated as the same language.
+  - Your chosen languages (default: eng). Every ISO 639-2 code is matched
+    in either form (gre/ell, fre/fra) and as its 2-letter code (el, fr),
+    with or without a region (pt-BR).
   - Forced subtitles.
   - The last audio track in a file (never removed).
   - Subtitles in films whose audio isn't in your languages, so foreign films
@@ -439,7 +438,8 @@ Running it:
 -------------------------------------------------------------------------------
 
   - Detects where Jellyfin is running (Unraid, TrueNAS SCALE, Proxmox,
-    Docker, Linux, Windows or macOS) and words its advice to match.
+    Docker, Kubernetes, Linux, Windows or macOS) and words its advice to
+    match.
     GPU device checks need Linux (containers included); disk health uses
     Unraid's own disk data.
   - Developed and tested on Unraid with the binhex and linuxserver.io
@@ -757,7 +757,7 @@ press a button. Tabs: Downloads, Blocked, Indexers, Profiles, History, Settings.
 
 
 ===============================================================================
-PART 4: MEDIC POSTERS (PLUGIN 5)
+PART 4: MEDIC POSTERS (PLUGIN 4)
 ===============================================================================
 
 Found under Plugins -> Medic Posters. Settings are for administrators only.

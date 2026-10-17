@@ -28,6 +28,12 @@ public class ExposureResult
     public string Protocol { get; set; } = "https";
 
     /// <summary>
+    /// The address the result is about, as protocol://host:port with Jellyfin's base URL when it was asked for:
+    /// where Jellyfin answered, or else the first address tried. Empty when the input was refused.
+    /// </summary>
+    public string Url { get; set; } = string.Empty;
+
+    /// <summary>
     /// True when the answer came from connecting from this server itself, not from a check out on the internet.
     /// That can differ: a router may not reach its own public address from inside, or a domain may point home.
     /// </summary>
@@ -41,10 +47,13 @@ public class ExposureResult
 /// connects from this server and sees whether the address responds as a Jellyfin server; for an IP over
 /// https, or when that fails, it asks a public port-checker. Only the address and port are sent out; no
 /// server data leaves your network. Nothing goes out until the admin asks: the check runs on "Check now",
-/// and the public IP is looked up (at most once an hour) only for "Use my IP".
+/// and the public IP is looked up (at most once an hour) only for "Use my IP". From this server, Jellyfin
+/// is looked for under its base URL and, if it isn't there, once at the root.
 /// </summary>
 public static class ExposureChecker
 {
+    private const string InfoPath = "/System/Info/Public";
+
     // Redirects aren't followed: an answer of any kind already means something is listening there.
     private static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(12) };
     private static readonly TimeSpan PublicIpCacheTime = TimeSpan.FromHours(1);
@@ -66,19 +75,37 @@ public static class ExposureChecker
             PublicIp = lookUpPublicIp ? await PublicIpAsync(ct).ConfigureAwait(false) : null
         };
 
-        // Try to suggest the domain from the published server URL, if one is set.
-        string? published = SettingsReader.Text(networkConfig, "PublishedServerUriBySubnet")
-                            ?? SettingsReader.Text(networkConfig, "CertificateHost")
-                            ?? SettingsReader.Text(networkConfig, "BaseUrl");
-        if (!string.IsNullOrWhiteSpace(published) && Uri.TryCreate(published.Contains("://") ? published : "https://" + published, UriKind.Absolute, out var uri))
+        if (PublishedAddress(networkConfig) is { } published)
         {
-            defaults.Domain = uri.Host;
+            defaults.Domain = published.Host;
+            defaults.Protocol = published.Scheme;
+            defaults.Port = published.Port;
         }
 
         return defaults;
     }
 
-    public static async Task<ExposureResult> CheckAsync(string host, int port, string protocol, CancellationToken ct)
+    // The address Jellyfin gives clients outside your network, read from its "Published Server URI" entries ("identifier=url").
+    // An "all" entry overrides every other one in Jellyfin, so it comes first; "internal" and subnet entries
+    // point at the local network, so they don't count.
+    private static Uri? PublishedAddress(object? networkConfig) =>
+        (SettingsReader.List(networkConfig, "PublishedServerUriBySubnet") ?? new List<string>())
+            .Select(entry => entry.Split('='))
+            .Where(parts => parts.Length == 2)
+            .Select(parts => (Identifier: parts[0].Trim().ToLowerInvariant(), Address: parts[1].Trim()))
+            .Where(entry => entry.Identifier is "all" or "external")
+            .OrderBy(entry => entry.Identifier == "all" ? 0 : 1)
+            .Select(entry => WebAddress(entry.Address))
+            .FirstOrDefault(url => url is not null);
+
+    // Jellyfin takes an address without http:// or https:// as a host name or IP.
+    private static Uri? WebAddress(string address) =>
+        Uri.TryCreate(address.Contains("://") ? address : "https://" + address, UriKind.Absolute, out var url)
+        && (url.Scheme == Uri.UriSchemeHttps || url.Scheme == Uri.UriSchemeHttp)
+            ? url
+            : null;
+
+    public static async Task<ExposureResult> CheckAsync(string host, int port, string protocol, string? baseUrl, CancellationToken ct)
     {
         protocol = protocol?.ToLowerInvariant() == "http" ? "http" : "https";
         var result = new ExposureResult { Host = host?.Trim() ?? string.Empty, Port = port, Protocol = protocol };
@@ -99,11 +126,16 @@ public static class ExposureChecker
         // instead of ending up in the URL.
         string bare = result.Host.Trim('[', ']');
         if (Uri.CheckHostName(bare) == UriHostNameType.Unknown
-            || !Uri.TryCreate(new UriBuilder(protocol, bare, port, "/System/Info/Public").ToString(), UriKind.Absolute, out var url))
+            || !Uri.TryCreate(new UriBuilder(protocol, bare, port, InfoPath).ToString(), UriKind.Absolute, out var atRoot))
         {
             result.Error = "That doesn't look like a domain or IP address.";
             return result;
         }
+
+        // Jellyfin with a base URL (such as /jellyfin) answers only under it: any other path is redirected to its web page.
+        string basePath = baseUrl?.Trim().Trim('/') ?? string.Empty;
+        var url = basePath.Length == 0 ? atRoot : new UriBuilder(atRoot) { Path = $"/{basePath}{InfoPath}" }.Uri;
+        result.Url = Address(atRoot, basePath);
 
         // A domain (or plain http): connect from this server, the way a viewer's app would.
         bool looksLikeIp = IPAddress.TryParse(bare, out _);
@@ -112,12 +144,20 @@ public static class ExposureChecker
             result.FromThisServer = true;
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+                result.RespondedAsJellyfin = await AnswersAsJellyfinAsync(url, ct).ConfigureAwait(false);
                 result.Checked = true;
                 result.Reachable = true;
-                string body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-                result.RespondedAsJellyfin = body.Contains("\"ServerName\"", StringComparison.OrdinalIgnoreCase) || body.Contains("\"Version\"", StringComparison.OrdinalIgnoreCase) || body.Contains("\"Id\"", StringComparison.OrdinalIgnoreCase);
+
+                // A reverse proxy can serve Jellyfin's base URL at the root of its own address.
+                if (!result.RespondedAsJellyfin && basePath.Length > 0)
+                {
+                    result.RespondedAsJellyfin = await AnswersAsJellyfinAsync(atRoot, ct).ConfigureAwait(false);
+                    if (result.RespondedAsJellyfin)
+                    {
+                        result.Url = Address(atRoot, string.Empty);
+                    }
+                }
+
                 return result;
             }
             catch (HttpRequestException ex) when (ex.HttpRequestError == HttpRequestError.SecureConnectionError)
@@ -129,6 +169,12 @@ public static class ExposureChecker
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
             {
+                // Only the try at the root failed: the address had already answered.
+                if (result.Reachable)
+                {
+                    return result;
+                }
+
                 // Nothing answered from here. For a domain that is the result, though it only tells about this server's view.
                 if (!looksLikeIp)
                 {
@@ -142,7 +188,8 @@ public static class ExposureChecker
             }
         }
 
-        // A raw IP and port: ask a public port-checker whether it answers.
+        // A raw IP and port: ask a public port-checker whether it answers. It only sees the port, never a path.
+        result.Url = Address(atRoot, string.Empty);
         try
         {
             string query = System.Text.Json.JsonSerializer.Serialize(new { host = bare, ports = new[] { port.ToString(System.Globalization.CultureInfo.InvariantCulture) } });
@@ -176,6 +223,19 @@ public static class ExposureChecker
 
         result.Error = "Couldn't test that address, so this isn't conclusive. Your network may block the check, or the port-check service may be down. Try again later.";
         return result;
+    }
+
+    // The port is always written out, so the page shows the one that was tested even when it is the scheme's default.
+    private static string Address(Uri url, string basePath) =>
+        $"{url.Scheme}://{url.Host}:{url.Port.ToString(System.Globalization.CultureInfo.InvariantCulture)}{(basePath.Length == 0 ? string.Empty : "/" + basePath)}";
+
+    // Throws, as HttpClient does, when nothing answers: the caller tells that apart from an answer that isn't Jellyfin.
+    private static async Task<bool> AnswersAsJellyfinAsync(Uri url, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+        string body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        return body.Contains("\"ServerName\"", StringComparison.OrdinalIgnoreCase) || body.Contains("\"Version\"", StringComparison.OrdinalIgnoreCase) || body.Contains("\"Id\"", StringComparison.OrdinalIgnoreCase);
     }
 
     // Kept for a while so pressing the button again doesn't ask an outside service each time. A failed

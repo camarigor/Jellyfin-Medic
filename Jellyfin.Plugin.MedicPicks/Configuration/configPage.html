@@ -180,8 +180,9 @@
 
             function $(id) { return page.querySelector('#' + id); }
 
-            // Whether Discover was on when the page loaded or last saved, to spot it being switched on.
+            // Who got Discover picks when the page loaded or last saved, to spot a change in either direction.
             var savedDiscover = false;
+            var savedDisabled = [];
 
             function refreshStatus() {
                 ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl('MedicPicks/Admin/Status'), dataType: 'json' })
@@ -241,6 +242,7 @@
                         $('PlaylistName').value = config.PlaylistName || '';
                         $('EnableDiscover').checked = config.EnableDiscover;
                         savedDiscover = config.EnableDiscover;
+                        savedDisabled = (config.DiscoverDisabledUserIds || []).map(norm);
                         $('DiscoverPickCount').value = config.DiscoverPickCount;
                         $('TmdbLanguage').value = config.TmdbLanguage || 'en-GB';
                         $('JellyseerrUrl').value = config.JellyseerrUrl || '';
@@ -280,12 +282,25 @@
                         .call(page.querySelectorAll('.discoverUser'))
                         .filter(function (box) { return !box.checked; })
                         .map(function (box) { return box.getAttribute('data-userid'); });
-                    var discoverTurnedOn = config.EnableDiscover && !savedDiscover;
+                    var disabled = config.DiscoverDisabledUserIds.map(norm);
+                    var discoverChanged = config.EnableDiscover !== savedDiscover;
+                    // Only people ticked or unticked since the last save; with Discover off for everyone, nobody's picks change.
+                    var peopleChanged = !config.EnableDiscover ? [] : disabled
+                        .filter(function (id) { return savedDisabled.indexOf(id) === -1; })
+                        .concat(savedDisabled.filter(function (id) { return disabled.indexOf(id) === -1; }));
                     return ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
                         savedDiscover = config.EnableDiscover;
-                        // Discover picks only appear after a build, so start one rather than wait for tonight.
-                        if (discoverTurnedOn) {
+                        savedDisabled = disabled;
+                        // Discover picks only change at a build, so start one for those affected rather than wait for tonight.
+                        if (discoverChanged) {
                             ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('MedicPicks/Admin/Refresh') });
+                        } else if (peopleChanged.length) {
+                            ApiClient.ajax({
+                                type: 'POST',
+                                url: ApiClient.getUrl('MedicPicks/Admin/Rebuild'),
+                                data: JSON.stringify({ userIds: peopleChanged }),
+                                contentType: 'application/json'
+                            });
                         }
                         return result;
                     });

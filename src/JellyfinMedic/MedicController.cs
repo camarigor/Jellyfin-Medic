@@ -73,6 +73,20 @@ public class MedicController : ControllerBase
     [HttpGet("Report")]
     public async Task<ActionResult<DiagnosticReport>> GetReport(CancellationToken cancellationToken)
     {
+        try
+        {
+            return Ok(await BuildReportAsync(cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The browser closed the connection, so nobody reads the answer. Letting the exception out would
+            // have Jellyfin log it as a Medic error. 499 is the usual code for a request the client gave up on.
+            return StatusCode(StatusCodes.Status499ClientClosedRequest);
+        }
+    }
+
+    private async Task<DiagnosticReport> BuildReportAsync(CancellationToken cancellationToken)
+    {
         var usage = UsageAnalyzer.Summarise(UsageStore.Load(_paths));
         var plugins = PluginAuditor.Audit(_pluginManager, _paths, _engine.CreatePluginContext());
         var links = _engine.LinksToCheck();
@@ -86,7 +100,7 @@ public class MedicController : ControllerBase
 
         var extra = new List<Finding>();
         extra.AddRange(userFindings);
-        extra.AddRange(SecurityAuditor.Audit(_activity, _users, userList));
+        extra.AddRange(await SecurityAuditor.AuditAsync(_activity, _users, userList, cancellationToken).ConfigureAwait(false));
         extra.AddRange(LogScanner.Findings(repeated, LogScanner.CountingFrom(_paths.PluginConfigurationsPath)));
         extra.AddRange(IptvAnalyzer.Findings());
         if (updates.Count > 0)
@@ -124,7 +138,7 @@ public class MedicController : ControllerBase
         report.Users = userSummary;
         report.Updates = updates;
         report.RepeatedErrors = repeated;
-        return Ok(report);
+        return report;
     }
 
     /// <summary>Every core and library setting, with passwords and keys hidden.</summary>
@@ -357,17 +371,25 @@ public class MedicController : ControllerBase
 
     /// <summary>Puts titles left with several copies by earlier versions back to a single file.</summary>
     [HttpPost("Tracks/TidyCopies")]
-    public ActionResult<object> TracksTidyCopies([FromQuery] bool deleteOriginals = false)
+    public async Task<ActionResult<object>> TracksTidyCopies([FromQuery] bool deleteOriginals = false)
     {
         if (TrackCleaner.CurrentProgress().Running)
         {
             return StatusCode(StatusCodes.Status409Conflict, "Wait for the track run to finish first.");
         }
 
-        var (titles, copies, freed) = TrackCleaner.TidyEarlierCopies(_library, _engine.Libraries, deleteOriginals);
+        // Each earlier copy is read before it takes the original's place, and that needs FFprobe.
+        string? ffmpeg = FfmpegPath();
+        string? ffprobe = ffmpeg is null ? null : TrackCleaner.FfprobePath(ffmpeg);
+        if (ffprobe is null)
+        {
+            return Problem("FFprobe couldn't be found, so the earlier copies can't be checked and nothing was tidied.");
+        }
+
+        var (titles, copies, freed, left) = await TrackCleaner.TidyEarlierCopies(_library, _engine.Libraries, ffprobe, deleteOriginals).ConfigureAwait(false);
         WeeklyLedger.AddFreed("Duplicate files", freed);
         TrackCleaner.ClearScan();
-        return Ok(new { Titles = titles, CopiesDeleted = copies, Freed = freed, FreedText = SystemProbe.Size(freed) });
+        return Ok(new { Titles = titles, CopiesDeleted = copies, Freed = freed, FreedText = SystemProbe.Size(freed), LeftTitles = left });
     }
 
     /// <summary>How many originals Medic is keeping, and how much space they take.</summary>
@@ -530,7 +552,8 @@ public class MedicController : ControllerBase
             AvoidStartMinute = BusyProfile.AvoidStartMinute(c), AvoidEndMinute = BusyProfile.AvoidEndMinute(c),
             InactiveUserDays = c.InactiveUserDays, LoadGuardEnabled = c.LoadGuardEnabled,
             MemoryCeilingPercent = c.MemoryCeilingPercent, ScheduleMode = c.ScheduleMode,
-            TracksKeepLanguages = c.TracksKeepLanguages, TracksRemoveUndetermined = c.TracksRemoveUndetermined,
+            TracksKeepLanguages = c.TracksKeepLanguages, TracksUnknownLanguages = UnknownLanguages(c),
+            TracksRemoveUndetermined = c.TracksRemoveUndetermined,
             TracksRemoveUntaggedSubtitles = c.TracksRemoveUntaggedSubtitles,
             TracksKeepFirstUntaggedSubtitle = c.TracksKeepFirstUntaggedSubtitle,
             TracksAllowRemovingOnlySubtitle = c.TracksAllowRemovingOnlySubtitle,
@@ -545,6 +568,13 @@ public class MedicController : ControllerBase
             AlertRestartNeeded = c.AlertRestartNeeded
         });
     }
+
+    /// <summary>
+    /// Keep languages Medic doesn't know, as track cleanup compares them. They're saved anyway and still match a
+    /// track tagged exactly the same, so the page only warns, in case one is a typo.
+    /// </summary>
+    private static List<string> UnknownLanguages(PluginConfiguration c) =>
+        TrackCleaner.KeepLanguages(c).Where(code => code.Length > 0 && !LanguageCodes.IsKnown(code)).Order(StringComparer.Ordinal).ToList();
 
     [HttpPost("MedicSettings")]
     public ActionResult<MedicSettingsDto> SaveMedicSettings([FromBody] MedicSettingsDto settings)
@@ -772,7 +802,8 @@ public class MedicController : ControllerBase
     [HttpPost("ExposureCheck")]
     public async Task<ActionResult<ExposureResult>> ExposureCheck([FromQuery] string host, [FromQuery] int port = 443, [FromQuery] string protocol = "https", CancellationToken cancellationToken = default)
     {
-        return Ok(await ExposureChecker.CheckAsync(host, port, protocol, cancellationToken).ConfigureAwait(false));
+        string? baseUrl = SettingsReader.Text(TryNetwork(), "BaseUrl");
+        return Ok(await ExposureChecker.CheckAsync(host, port, protocol, baseUrl, cancellationToken).ConfigureAwait(false));
     }
 
     private object? TryNetwork()

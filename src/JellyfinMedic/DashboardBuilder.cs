@@ -145,7 +145,20 @@ internal sealed class DashboardBuilder
             data.Network = DashboardCorrelations.Network(SpeedStore.Load(_paths), _config.Configuration.RemoteClientBitrateLimit, usage.Value.Summary.MaxStreams));
         Section(data, nameof(DashboardData.RepeatedErrors), _logger, () =>
             data.RepeatedErrors = LogScanner.Scan(_paths.LogDirectoryPath, _paths.PluginConfigurationsPath).Take(5).ToList());
-        Section(data, nameof(DashboardData.People), _logger, () => data.People = People());
+
+        // Awaited here rather than inside People's section, so no thread waits while the activity log answers. If it
+        // fails, People still arrives, with sign-ins from several places shown as not checked.
+        List<RoamingAccount>? roaming = null;
+        try
+        {
+            roaming = await SecurityAuditor.RoamingAccountsAsync(SecurityAuditor.ResolveActivityManager(_services), UserList.All(_users), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Jellyfin Medic: the Dashboard couldn't check sign-ins from several places.");
+        }
+
+        Section(data, nameof(DashboardData.People), _logger, () => data.People = People(roaming));
 
         try
         {
@@ -167,7 +180,7 @@ internal sealed class DashboardBuilder
         }
     }
 
-    private PeopleSection People()
+    private PeopleSection People(List<RoamingAccount>? roaming)
     {
         var settings = Plugin.Instance?.Configuration ?? new PluginConfiguration();
         var (summary, _) = UserAuditor.Audit(_users, settings.InactiveUserDays);
@@ -177,7 +190,7 @@ internal sealed class DashboardBuilder
             AdminNames = summary.AdminNames,
             Inactive = summary.Inactive,
             NoPassword = summary.NoPassword,
-            Roaming = SecurityAuditor.RoamingAccounts(SecurityAuditor.ResolveActivityManager(_services), UserList.All(_users))
+            Roaming = roaming
         };
     }
 

@@ -102,13 +102,7 @@ public static class LogScanner
         var counts = new Dictionary<string, RepeatedError>(StringComparer.Ordinal);
         try
         {
-            var today = DateTime.Now.Date;
-            var files = new DirectoryInfo(logDirectory).GetFiles("log_*.log")
-                .Where(f => f.LastWriteTime.Date == today)
-                .OrderByDescending(f => f.LastWriteTimeUtc)
-                .Take(3);
-
-            foreach (var file in files)
+            foreach (var file in ServerLogs(logDirectory, DateTime.Now.Date.ToUniversalTime(), 3))
             {
                 ScanFile(file.FullName, counts, from);
             }
@@ -126,6 +120,18 @@ public static class LogScanner
 
         return result;
     }
+
+    /// <summary>
+    /// The server's own log files written since <paramref name="sinceUtc"/>, newest first. FFmpeg
+    /// keeps a log per stream in the same folder and writes to it all the time, so "the newest
+    /// files" would mostly be those while anyone is watching.
+    /// </summary>
+    internal static List<FileInfo> ServerLogs(string logDirectory, DateTime sinceUtc, int max) =>
+        new DirectoryInfo(logDirectory).GetFiles("log_*.log")
+            .Where(f => f.LastWriteTimeUtc >= sinceUtc)
+            .OrderByDescending(f => f.LastWriteTimeUtc)
+            .Take(max)
+            .ToList();
 
     public static List<Finding> Findings(List<RepeatedError> repeated, DateTimeOffset? countingFrom = null) =>
         repeated.Where(r => r.Count >= 100).Take(5).Select(r => new Finding

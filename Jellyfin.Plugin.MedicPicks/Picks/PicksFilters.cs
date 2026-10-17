@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using MediaBrowser.Model.Globalization;
 
 namespace Jellyfin.Plugin.MedicPicks.Picks;
 
@@ -150,25 +151,8 @@ public static class Genres
 /// <summary>The language "dubbed audio" means: the one picks are shown in (from the TMDb language setting).</summary>
 public sealed class AudioLanguage
 {
-    private static readonly Dictionary<string, (string Name, string[] Codes)> Known = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["en"] = ("English", new[] { "en", "eng", "english" }),
-        ["fr"] = ("French", new[] { "fr", "fre", "fra", "french" }),
-        ["de"] = ("German", new[] { "de", "ger", "deu", "german" }),
-        ["es"] = ("Spanish", new[] { "es", "spa", "spanish" }),
-        ["it"] = ("Italian", new[] { "it", "ita", "italian" }),
-        ["nl"] = ("Dutch", new[] { "nl", "dut", "nld", "dutch" }),
-        ["pt"] = ("Portuguese", new[] { "pt", "por", "portuguese" }),
-        ["sv"] = ("Swedish", new[] { "sv", "swe", "swedish" }),
-        ["da"] = ("Danish", new[] { "da", "dan", "danish" }),
-        ["no"] = ("Norwegian", new[] { "no", "nor", "nob", "nno", "norwegian" }),
-        ["fi"] = ("Finnish", new[] { "fi", "fin", "finnish" }),
-        ["pl"] = ("Polish", new[] { "pl", "pol", "polish" }),
-        ["ru"] = ("Russian", new[] { "ru", "rus", "russian" }),
-        ["ja"] = ("Japanese", new[] { "ja", "jpn", "japanese" }),
-        ["ko"] = ("Korean", new[] { "ko", "kor", "korean" }),
-        ["zh"] = ("Chinese", new[] { "zh", "chi", "zho", "chinese" })
-    };
+    // Jellyfin lists Norwegian three times, and a Norwegian track can carry any of the three codes.
+    private static readonly string[] Norwegian = { "no", "nb", "nn" };
 
     private readonly HashSet<string> _codes;
 
@@ -176,24 +160,44 @@ public sealed class AudioLanguage
     {
         TwoLetter = twoLetter;
         Name = name;
-        _codes = new HashSet<string>(codes, StringComparer.OrdinalIgnoreCase);
+        _codes = new HashSet<string>(codes.Where(c => !string.IsNullOrWhiteSpace(c)), StringComparer.OrdinalIgnoreCase);
     }
 
-    /// <summary>e.g. "en".</summary>
+    /// <summary>e.g. "en", from the TMDb setting: the page compares it with TMDb's original language.</summary>
     public string TwoLetter { get; }
 
     /// <summary>e.g. "English".</summary>
     public string Name { get; }
 
-    /// <summary>From a TMDb language such as "en-GB". Unknown languages fall back to English.</summary>
-    public static AudioLanguage FromTmdb(string? tmdbLanguage)
+    /// <summary>
+    /// From a TMDb language such as "en-GB", named and coded from Jellyfin's language list
+    /// (ILocalizationManager.FindLanguageInfo). A code the list doesn't have matches only itself.
+    /// </summary>
+    public static AudioLanguage FromTmdb(string? tmdbLanguage, Func<string, CultureDto?> findLanguage)
     {
-        string two = (tmdbLanguage ?? "en").Split('-')[0].Trim().ToLowerInvariant();
-        return Known.TryGetValue(two, out var lang)
-            ? new AudioLanguage(two, lang.Name, lang.Codes)
-            : new AudioLanguage("en", "English", Known["en"].Codes);
+        string two = LanguagePart(tmdbLanguage ?? string.Empty);
+        if (two.Length == 0)
+        {
+            // TmdbClient asks TMDb in en-GB when the setting is blank.
+            two = "en";
+        }
+
+        var cultures = (Norwegian.Contains(two) ? Norwegian : new[] { two })
+            .Select(findLanguage)
+            .OfType<CultureDto>()
+            .ToList();
+
+        // Jellyfin's names can list alternatives ("Spanish; Castilian"), too long for the page.
+        string name = cultures.Count > 0 ? cultures[0].DisplayName.Split(';', ',')[0].Trim() : two;
+        var codes = cultures
+            .SelectMany(c => c.ThreeLetterISOLanguageNames.Append(c.TwoLetterISOLanguageName))
+            .Append(two)
+            .Append(name);
+        return new AudioLanguage(two, name, codes);
     }
 
-    /// <summary>True when a track's language tag (any common form) is this language.</summary>
-    public bool Matches(string? tag) => !string.IsNullOrWhiteSpace(tag) && _codes.Contains(tag.Trim());
+    /// <summary>True when a track's language tag ("tur", "tr", "tr-TR" or "Turkish") is this language.</summary>
+    public bool Matches(string? tag) => !string.IsNullOrWhiteSpace(tag) && _codes.Contains(LanguagePart(tag));
+
+    private static string LanguagePart(string tag) => tag.Split('-')[0].Trim().ToLowerInvariant();
 }

@@ -41,13 +41,33 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
     {
-        // Raised before the new address is in use, so no request can pair it with the old server's key.
-        if (configuration is PluginConfiguration next && SeerrKeyGuard.HostChanged(Configuration.JellyseerrUrl, next.JellyseerrUrl))
+        if (configuration is PluginConfiguration next)
         {
-            SeerrServerChanging?.Invoke(this, EventArgs.Empty);
+            next.JellyseerrUrl = WithScheme(next.JellyseerrUrl);
+            next.SeerrLinkUrl = WithScheme(next.SeerrLinkUrl);
+
+            // Raised before the new address is in use, so no request can pair it with the old server's key. The old
+            // address gets http:// too, or adding it to one saved without it would look like another server.
+            if (SeerrKeyGuard.HostChanged(WithScheme(Configuration.JellyseerrUrl), next.JellyseerrUrl))
+            {
+                SeerrServerChanging?.Invoke(this, EventArgs.Empty);
+            }
         }
 
         base.UpdateConfiguration(configuration);
+    }
+
+    // "seerr:5055" reads as an address with the scheme "seerr", which no call to Seerr can use; the generic settings
+    // endpoint can't explain a refusal, so http:// is added instead. Anything that still isn't an address is left as typed.
+    private static string WithScheme(string address)
+    {
+        if (string.IsNullOrWhiteSpace(address) || address.Contains("://", StringComparison.Ordinal))
+        {
+            return address;
+        }
+
+        string withScheme = "http://" + address.Trim();
+        return Uri.TryCreate(withScheme, UriKind.Absolute, out _) ? withScheme : address;
     }
 
     public IEnumerable<PluginPageInfo> GetPages()

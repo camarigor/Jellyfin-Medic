@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using JellyfinMedic.Services;
 
 namespace JellyfinMedic.Tests;
@@ -57,5 +58,58 @@ public sealed class SecretMaskingTests
     public void The_support_export_leaves_code_and_text_that_only_name_a_secret(string script)
     {
         Assert.Equal(script, SettingsExporter.Mask("Script", script));
+    }
+
+    [Theory]
+    [InlineData("const cfg = { apiKey: 'a1b2c3' };", "const cfg = { apiKey: '••••' };")]
+    [InlineData("const cfg = { \"apiKey\": \"a1b2c3\" };", "const cfg = { \"apiKey\": \"••••\" };")]
+    [InlineData("fetch(url, { headers: { 'X-Api-Key': 'a1b2c3' } });", "fetch(url, { headers: { 'X-Api-Key': '••••' } });")]
+    public void The_plugins_view_hides_a_secret_in_a_script_as_the_export_does(string script, string shown)
+    {
+        Assert.Equal(shown, PluginAuditor.ShownSetting("PluginConfiguration.CustomJavaScriptEntries.CustomJavaScriptEntry[0].Script", new XElement("Script", script)));
+    }
+
+    [Theory]
+    [InlineData("PluginConfiguration.ApiKey", "a1b2c3", "•••• (hidden)")]
+    [InlineData("PluginConfiguration.UseApiKey", "true", "On")]
+    [InlineData("PluginConfiguration.Script", "", "(empty)")]
+    [InlineData("PluginConfiguration.Script", "token: getToken()", "token: getToken()")]
+    public void The_plugins_view_shows_other_settings_as_before(string path, string value, string shown)
+    {
+        Assert.Equal(shown, PluginAuditor.ShownSetting(path, new XElement(SettingsReader.LeafName(path), value)));
+    }
+
+    [Theory]
+    [InlineData("X-Api-Key", "a1b2c3", "•••• (hidden)")]
+    [InlineData("Title", "Seerr", "Seerr")]
+    public void The_plugins_view_hides_the_value_of_a_pair_whose_label_is_secret(string label, string value, string shown)
+    {
+        var header = new XElement("Header", new XElement("Name", label), new XElement("Value", value));
+
+        Assert.Equal(shown, PluginAuditor.ShownSetting("PluginConfiguration.Headers.Header.Value", header.Element("Value")!));
+    }
+
+    [Fact]
+    public void The_support_export_still_writes_its_own_mask_for_a_secret_setting()
+    {
+        Assert.Equal("****", SettingsExporter.Mask("ApiKey", "a1b2c3"));
+    }
+
+    [Theory]
+    [InlineData("Request failed: Authorization: Bearer abc123def456", "abc123def456")]
+    [InlineData("Response status code does not indicate success: 401 (Unauthorized) for http://sonarr:8989/api/v3/series?apikey=0123456789abcdef0123456789abcdef", "0123456789abcdef")]
+    public void A_failed_task_error_in_checks_hides_a_token_or_key(string error, string secret)
+    {
+        Assert.DoesNotContain(secret, DiagnosticsEngine.Shorten(error));
+    }
+
+    [Fact]
+    public void A_failed_task_error_hides_a_token_that_starts_just_before_it_is_cut()
+    {
+        // The token starts 13 characters before the cut at 600: cut first, its start would still show.
+        string shown = DiagnosticsEngine.Shorten(new string('x', 580) + " token " + Jwt);
+
+        Assert.DoesNotContain("eyJhbGci", shown);
+        Assert.EndsWith(" token ••••", shown);
     }
 }
