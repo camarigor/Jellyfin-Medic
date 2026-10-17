@@ -33,6 +33,9 @@ public static class ScheduleStorage
 
     // Runs that finish this close together are written to disk together.
     private static readonly TimeSpan RunWriteDelay = TimeSpan.FromSeconds(5);
+
+    // Runs kept in memory while the history can't be written (a full disk, a locked file). The oldest go first.
+    internal const int MaxPendingRuns = 4000;
     private const int MaxAuditEntries = 1000; // the page shows the newest 200
     private const int MaxBackups = 50;
     private const int MaxErrorDetailsLength = 4000;
@@ -235,6 +238,12 @@ public static class ScheduleStorage
     // Finished runs not written to disk yet, by history file. Readers see them through ReadRuns.
     private static readonly Dictionary<string, List<RunRecord>> PendingRuns = new(StringComparer.Ordinal);
 
+    // History files with a write already on its way, so a run that finishes meanwhile joins it.
+    private static readonly HashSet<string> FlushScheduled = new(StringComparer.Ordinal);
+
+    // History files whose last write failed, so the failure is logged once and its recovery once.
+    private static readonly HashSet<string> FailingRunWrites = new(StringComparer.Ordinal);
+
     /// <summary>
     /// Records a finished run. It's written a few seconds later, together with any other run that finishes
     /// meanwhile, so a burst of runs (the night's tasks, say) rewrites the history once, not once per run.
@@ -245,13 +254,19 @@ public static class ScheduleStorage
         bool schedule;
         lock (SyncRoot)
         {
-            schedule = !PendingRuns.ContainsKey(path);
-            if (schedule)
+            if (!PendingRuns.TryGetValue(path, out var pending))
             {
-                PendingRuns[path] = new List<RunRecord>();
+                pending = new List<RunRecord>();
+                PendingRuns[path] = pending;
             }
 
-            PendingRuns[path].Add(run);
+            pending.Add(run);
+            if (pending.Count > MaxPendingRuns)
+            {
+                pending.RemoveRange(0, pending.Count - MaxPendingRuns);
+            }
+
+            schedule = FlushScheduled.Add(path);
         }
 
         if (schedule)
@@ -260,27 +275,42 @@ public static class ScheduleStorage
         }
     }
 
-    /// <summary>Writes the runs still waiting to be written. Also called when the plugin stops.</summary>
+    /// <summary>
+    /// Writes the runs still waiting to be written. Also called when the plugin stops. If the write fails they
+    /// stay waiting, and the next run's write or the plugin stopping tries them again.
+    /// </summary>
     public static void FlushRuns(IApplicationPaths paths)
     {
         string path = RunHistoryPath(paths);
-        try
+        lock (SyncRoot)
         {
-            lock (SyncRoot)
+            FlushScheduled.Remove(path);
+            if (!PendingRuns.TryGetValue(path, out var pending) || pending.Count == 0)
             {
-                if (!PendingRuns.Remove(path, out var pending) || pending.Count == 0)
-                {
-                    return;
-                }
+                return;
+            }
 
+            try
+            {
                 var runs = ReadList<RunRecord>(path);
                 runs.AddRange(pending);
                 WriteJson(path, Trim(runs, DateTime.UtcNow));
             }
-        }
-        catch (Exception ex)
-        {
-            Logger?.LogWarning(ex, "Jellyfin Medic: couldn't save the latest task runs to the run history");
+            catch (Exception ex)
+            {
+                if (FailingRunWrites.Add(path))
+                {
+                    Logger?.LogWarning(ex, "Jellyfin Medic: couldn't save the latest task runs to the run history; they're kept and saved with the next run");
+                }
+
+                return;
+            }
+
+            PendingRuns.Remove(path);
+            if (FailingRunWrites.Remove(path))
+            {
+                Logger?.LogInformation("Jellyfin Medic: the run history is being saved again");
+            }
         }
     }
 
