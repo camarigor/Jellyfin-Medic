@@ -338,7 +338,8 @@
                             <p class="md-help-text" data-help-for="tracks" hidden></p>
                             <div class="md-row md-wrap">
                                 <label for="md-tracks-langs-in">Keep languages</label>
-                                <input type="text" id="md-tracks-langs-in" class="so-input" style="width:160px" placeholder="eng">
+                                <input type="text" id="md-tracks-langs-in" class="so-input" style="width:160px" placeholder="eng" aria-describedby="md-tracks-langs-note">
+                                <span id="md-tracks-langs-note" class="so-small md-warn-text" style="flex-basis:100%" hidden></span>
                             </div>
                             <div class="md-row md-wrap" style="align-items:flex-start">
                                 <label for="md-tracks-exclude-in">Leave these alone</label>
@@ -3174,7 +3175,7 @@
                     avoid: 'A time window Medic will always keep free, on top of what it learns from your viewing. Use it if you know a period should never have maintenance in it — for example a daily family viewing slot — even if the data looks quiet. Leave it off to let Medic choose purely from your real viewing pattern. It can wrap past midnight (e.g. 22:00 to 02:00).',
                     inactive: 'How long an account can go unused before Medic lists it as inactive in Checks and on the Dashboard. Inactive accounts are worth disabling because their old passwords still work. This only reports them; it never disables anyone. Default 90 days.',
                     guard: 'A safety net against the server running out of memory. If memory climbs past the ceiling while more than one heavy task (a scan, image extraction, a big sync) is running, Medic stops the extra heavy ones to keep the server up, then restarts them one at a time once memory recovers. It also watches the whole server\'s memory, other programs included (on Linux): a heavy task that starts while the server is past the ceiling waits until memory is back, or two hours at most, and work already under way is left to finish. It only ever stops heavy tasks, never light upkeep, and it records every action on the Dashboard. The real fix is spacing tasks out (the Schedule does this); the guard catches times when something unexpected stacks them anyway.',
-                    tracks: 'Settings for the Tracks tab, which removes unwanted audio and subtitle tracks from your LOCAL files by remuxing (no re-encode, no quality loss, so the GPU isn\'t used). "Keep languages": 3-letter codes, comma-separated (eng, jpn...). It always keeps forced subtitles and never removes the last audio track. "Remove untagged subtitles" clears subtitle tracks with no language tag (often a whole disc\'s worth of foreign subtitles) while keeping untagged audio, which is often the main soundtrack. With it, "Keep the first untagged subtitle" keeps one in films that have no subtitle in your languages, because the first subtitle on most discs is the film\'s own language. "Also remove a film\'s only subtitle" lets a lone untagged subtitle go too, except in films whose audio is tagged as a language you don\'t keep. "Remove all untagged tracks" also removes untagged audio, which can take out a film\'s main soundtrack, so preview first. "Files at once" and "FFmpeg threads": remuxing is disk-bound, so 1 of each is usually best; higher just thrashes the disk. By default each original is kept in a hidden .medic-originals folder next to it, which Jellyfin, Sonarr and Radarr ignore, until you delete the kept originals.',
+                    tracks: 'Settings for the Tracks tab, which removes unwanted audio and subtitle tracks from your LOCAL files by remuxing (no re-encode, no quality loss, so the GPU isn\'t used). "Keep languages": any ISO 639 code, 2 or 3 letters, in either form (eng or en, gre or ell...), comma-separated. It always keeps forced subtitles and never removes the last audio track. "Remove untagged subtitles" clears subtitle tracks with no language tag (often a whole disc\'s worth of foreign subtitles) while keeping untagged audio, which is often the main soundtrack. With it, "Keep the first untagged subtitle" keeps one in films that have no subtitle in your languages, because the first subtitle on most discs is the film\'s own language. "Also remove a film\'s only subtitle" lets a lone untagged subtitle go too, except in films whose audio is tagged as a language you don\'t keep. "Remove all untagged tracks" also removes untagged audio, which can take out a film\'s main soundtrack, so preview first. "Files at once" and "FFmpeg threads": remuxing is disk-bound, so 1 of each is usually best; higher just thrashes the disk. By default each original is kept in a hidden .medic-originals folder next to it, which Jellyfin, Sonarr and Radarr ignore, until you delete the kept originals.',
                     ceiling: 'How full memory has to get before the guard steps in, as a percentage: of what Jellyfin is allowed to use (its container limit) for its own tasks, and of all the server\'s memory for the server check, where caches the system can free, ZFS\'s included, count as free. Lower means it acts sooner and more cautiously; higher means it waits longer. 85% suits most servers. Below about 70% it may act when there was no real danger.'
                 };
 
@@ -3217,6 +3218,7 @@
                         scheduleMode = pick(s, 'ScheduleMode') === 'off' ? 'off' : 'suggest';
                         showMode();
                         $('md-tracks-langs-in').value = pick(s, 'TracksKeepLanguages') || 'eng';
+                        showUnknownLanguages(s);
                         $('md-tracks-undet-in').checked = !!pick(s, 'TracksRemoveUndetermined');
                         $('md-tracks-untagsubs-in').checked = !!pick(s, 'TracksRemoveUntaggedSubtitles');
                         $('md-tracks-keepfirst-in').checked = pick(s, 'TracksKeepFirstUntaggedSubtitle') !== false;
@@ -3245,6 +3247,17 @@
                 }
                 $('md-tracks-untagsubs-in').addEventListener('change', syncSubtitleOptions);
                 $('md-tracks-undet-in').addEventListener('change', syncSubtitleOptions);
+
+                // A code Medic doesn't know is saved anyway and still matches a track tagged exactly the same,
+                // so this only warns, in case it's a typo.
+                function showUnknownLanguages(s) {
+                    const unknown = pick(s, 'TracksUnknownLanguages') || [];
+                    const one = unknown.length === 1;
+                    const note = $('md-tracks-langs-note');
+                    note.hidden = unknown.length === 0;
+                    note.textContent = unknown.length === 0 ? '' : 'Medic doesn\'t know ' + unknown.join(', ') + '. ' + (one ? 'It\'s' : 'They\'re')
+                        + ' saved, but only ' + (one ? 'matches' : 'match') + ' a track tagged exactly the same way, so check for a typo.';
+                }
 
                 let medicSettingsLoaded = false;
 
@@ -3280,7 +3293,8 @@
                         AlertRestartNeeded: $('md-alert-restart').checked
                     };
                     try {
-                        await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('JellyfinMedic/MedicSettings'), data: JSON.stringify(body), contentType: 'application/json', dataType: 'json' });
+                        const saved = await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('JellyfinMedic/MedicSettings'), data: JSON.stringify(body), contentType: 'application/json', dataType: 'json' });
+                        showUnknownLanguages(saved);
                         statusEl.textContent = okMessage;
                         return true;
                     } catch (e) {

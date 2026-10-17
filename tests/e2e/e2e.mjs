@@ -2151,6 +2151,44 @@ await check('Medic page: Off/Suggest and the time range are separate buttons, an
     return 'Off kept the range; Night kept Off; Tracks then Media report';
 });
 
+await check('Tracks settings: a keep language Medic doesn\'t know is still saved, and a note names it', async () => {
+    const s = await ok('/JellyfinMedic/MedicSettings');
+    const note = page.locator('#md-tracks-langs-note');
+    // Saving is switched on once the settings have loaded, so they can't overwrite what's typed after that.
+    const loaded = () => page.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 30000 });
+    errors.length = 0;
+    try {
+        await medicTab('tracks', true);
+        await loaded();
+        await page.fill('#md-tracks-langs-in', 'eng, xx');
+        await page.click('#md-tracks-save');
+        await note.filter({ hasText: 'xx' }).waitFor({ timeout: 15000 });
+        expect(!/\beng\b/.test(await note.textContent()), 'the note names a code Medic knows: ' + await note.textContent());
+
+        await medicTab('tracks', true);
+        await loaded();
+        const typed = await page.inputValue('#md-tracks-langs-in');
+        expect(typed === 'eng, xx', 'after a reload the box holds ' + typed);
+        await note.filter({ hasText: 'xx' }).waitFor({ timeout: 15000 });
+        const shown = await note.textContent();
+        const saved = await ok('/JellyfinMedic/MedicSettings');
+        expect(saved.TracksKeepLanguages === 'eng, xx' && (saved.TracksUnknownLanguages || []).join() === 'xx',
+            `saved ${saved.TracksKeepLanguages}, unknown ${JSON.stringify(saved.TracksUnknownLanguages)}`);
+        // The list is worked out by the server: settings posted back as read still save, and a list in them is ignored.
+        const again = await api('POST', '/JellyfinMedic/MedicSettings', { ...saved, TracksUnknownLanguages: ['yy'] });
+        expect(again.status === 200 && (again.json?.TracksUnknownLanguages || []).join() === 'xx', `posting the settings back: ${again.status} ${again.text.slice(0, 200)}`);
+
+        await page.fill('#md-tracks-langs-in', 'eng');
+        await page.click('#md-tracks-save');
+        await note.waitFor({ state: 'hidden', timeout: 15000 });
+        const ours = errors.filter((e) => !/ResizeObserver|^CancelledError/i.test(e));
+        expect(ours.length === 0, ours.join(' | '));
+        return shown;
+    } finally {
+        await api('POST', '/JellyfinMedic/MedicSettings', s);
+    }
+});
+
 await check('"What\'s new" takes the focus, closes with Escape and gives the focus back', async () => {
     await medicTab('settings');
     await page.click('#md-changelog-all');

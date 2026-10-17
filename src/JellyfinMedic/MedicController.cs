@@ -530,7 +530,8 @@ public class MedicController : ControllerBase
             AvoidStartMinute = BusyProfile.AvoidStartMinute(c), AvoidEndMinute = BusyProfile.AvoidEndMinute(c),
             InactiveUserDays = c.InactiveUserDays, LoadGuardEnabled = c.LoadGuardEnabled,
             MemoryCeilingPercent = c.MemoryCeilingPercent, ScheduleMode = c.ScheduleMode,
-            TracksKeepLanguages = c.TracksKeepLanguages, TracksRemoveUndetermined = c.TracksRemoveUndetermined,
+            TracksKeepLanguages = c.TracksKeepLanguages, TracksUnknownLanguages = UnknownLanguages(c),
+            TracksRemoveUndetermined = c.TracksRemoveUndetermined,
             TracksRemoveUntaggedSubtitles = c.TracksRemoveUntaggedSubtitles,
             TracksKeepFirstUntaggedSubtitle = c.TracksKeepFirstUntaggedSubtitle,
             TracksAllowRemovingOnlySubtitle = c.TracksAllowRemovingOnlySubtitle,
@@ -545,6 +546,13 @@ public class MedicController : ControllerBase
             AlertRestartNeeded = c.AlertRestartNeeded
         });
     }
+
+    /// <summary>
+    /// Keep languages Medic doesn't know, as track cleanup compares them. They're saved anyway and still match a
+    /// track tagged exactly the same, so the page only warns, in case one is a typo.
+    /// </summary>
+    private static List<string> UnknownLanguages(PluginConfiguration c) =>
+        TrackCleaner.KeepLanguages(c).Where(code => code.Length > 0 && !LanguageCodes.IsKnown(code)).Order(StringComparer.Ordinal).ToList();
 
     [HttpPost("MedicSettings")]
     public ActionResult<MedicSettingsDto> SaveMedicSettings([FromBody] MedicSettingsDto settings)
