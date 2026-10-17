@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Mime;
 using System.Text.Json;
@@ -8,6 +9,7 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.MedicProfiles.Arr;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicProfiles.Api;
 
@@ -27,9 +29,11 @@ public class ProfilesController : ControllerBase
     private readonly ProfileAdvisor _advisor;
     private readonly IndexersService _indexers;
     private readonly QbitFileFilter _qbit;
+    private readonly ILogger<ProfilesController> _logger;
 
-    public ProfilesController(ArrStore store, ArrClient arr, DownloadsService downloads, ProfileAdvisor advisor, IndexersService indexers, QbitFileFilter qbit)
+    public ProfilesController(ArrStore store, ArrClient arr, DownloadsService downloads, ProfileAdvisor advisor, IndexersService indexers, QbitFileFilter qbit, ILogger<ProfilesController> logger)
     {
+        _logger = logger;
         _indexers = indexers;
         _qbit = qbit;
         _store = store;
@@ -70,6 +74,45 @@ public class ProfilesController : ControllerBase
         bool newRadarrHost = HostChanged(plugin.Configuration.RadarrUrl, radarrUrl);
         bool newQbitHost = request.QbitUrl is not null && HostChanged(plugin.Configuration.QbitUrl, CleanUrl(request.QbitUrl));
 
+        // The keys and password are written before the new addresses are saved: if a write fails, the settings stay
+        // as they were, and a secret for a server that changed is removed rather than left paired with the old one.
+        try
+        {
+            if (request.ClearQbitPassword || (newQbitHost && string.IsNullOrEmpty(request.QbitPassword)))
+            {
+                _store.SetQbitPassword(null);
+            }
+            else if (!string.IsNullOrEmpty(request.QbitPassword))
+            {
+                _store.SetQbitPassword(request.QbitPassword);
+            }
+
+            // A blank key box means "keep the saved key" (for the same server); Remove clears it.
+            if (request.ClearSonarrKey || (newSonarrHost && string.IsNullOrWhiteSpace(request.SonarrKey)))
+            {
+                _store.SetKey(ArrApp.Sonarr, null);
+            }
+            else if (!string.IsNullOrWhiteSpace(request.SonarrKey))
+            {
+                _store.SetKey(ArrApp.Sonarr, request.SonarrKey);
+            }
+
+            if (request.ClearRadarrKey || (newRadarrHost && string.IsNullOrWhiteSpace(request.RadarrKey)))
+            {
+                _store.SetKey(ArrApp.Radarr, null);
+            }
+            else if (!string.IsNullOrWhiteSpace(request.RadarrKey))
+            {
+                _store.SetKey(ArrApp.Radarr, request.RadarrKey);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
+        {
+            _logger.LogWarning(ex, "Medic Profiles: couldn't save a key or password, so the settings weren't changed");
+            ForgetSecretsFor(newSonarrHost, newRadarrHost, newQbitHost);
+            return Problem("Couldn't save the key or password, so nothing was changed. Check the Jellyfin log for Medic Profiles errors.");
+        }
+
         plugin.Configuration.SonarrUrl = sonarrUrl;
         plugin.Configuration.RadarrUrl = radarrUrl;
         plugin.Configuration.StuckAfterHours = Math.Clamp(request.StuckAfterHours ?? plugin.Configuration.StuckAfterHours, 1, 168);
@@ -79,35 +122,17 @@ public class ProfilesController : ControllerBase
             plugin.Configuration.QbitUser = (request.QbitUser ?? string.Empty).Trim();
         }
 
-        if (request.ClearQbitPassword || (newQbitHost && string.IsNullOrEmpty(request.QbitPassword)))
+        if (newQbitHost)
         {
-            _store.SetQbitPassword(null);
-        }
-        else if (!string.IsNullOrEmpty(request.QbitPassword))
-        {
-            _store.SetQbitPassword(request.QbitPassword);
+            // What Medic added to the old qBittorrent's exclusions says nothing about this one: Stop blocking there
+            // must not take out the owner's own entries.
+            plugin.Configuration.QbitPatternsAdded = Array.Empty<string>();
+            plugin.Configuration.QbitListWasOn = null;
+            plugin.Configuration.QbitPatternsHost = Authority(plugin.Configuration.QbitUrl);
         }
 
         plugin.SaveConfiguration();
-
-        // A blank key box means "keep the saved key" (for the same server); Remove clears it.
-        if (request.ClearSonarrKey || (newSonarrHost && string.IsNullOrWhiteSpace(request.SonarrKey)))
-        {
-            _store.SetKey(ArrApp.Sonarr, null);
-        }
-        else if (!string.IsNullOrWhiteSpace(request.SonarrKey))
-        {
-            _store.SetKey(ArrApp.Sonarr, request.SonarrKey);
-        }
-
-        if (request.ClearRadarrKey || (newRadarrHost && string.IsNullOrWhiteSpace(request.RadarrKey)))
-        {
-            _store.SetKey(ArrApp.Radarr, null);
-        }
-        else if (!string.IsNullOrWhiteSpace(request.RadarrKey))
-        {
-            _store.SetKey(ArrApp.Radarr, request.RadarrKey);
-        }
+        _advisor.Forget();
 
         return NoContent();
     }
@@ -197,8 +222,8 @@ public class ProfilesController : ControllerBase
     [HttpGet("Blocked")]
     public async Task<ActionResult> GetBlocked(CancellationToken ct)
     {
-        var (rows, errors) = await _downloads.BlockedAsync(ct).ConfigureAwait(false);
-        return Json(new { configured = Configured(), rows, errors });
+        var (rows, errors, notes) = await _downloads.BlockedAsync(ct).ConfigureAwait(false);
+        return Json(new { configured = Configured(), rows, errors, notes });
     }
 
     [HttpPost("Blocked/Unblock")]
@@ -226,7 +251,7 @@ public class ProfilesController : ControllerBase
     }
 
     [HttpGet("Library/{app}")]
-    public async Task<ActionResult> SearchLibrary([FromRoute] string app, [FromQuery] string q, CancellationToken ct)
+    public async Task<ActionResult> SearchLibrary([FromRoute] string app, [FromQuery] string? q, CancellationToken ct)
     {
         if (ParseApp(app) is not { } a)
         {
@@ -287,10 +312,36 @@ public class ProfilesController : ControllerBase
     };
 
     // A different scheme, host or port; a first address (nothing saved before) isn't a change.
+    // Best effort, after a failed write: a secret is never left for a server other than the one it was typed for.
+    private void ForgetSecretsFor(bool sonarr, bool radarr, bool qbit)
+    {
+        foreach (var (changed, forget) in new (bool, Action)[]
+        {
+            (sonarr, () => _store.SetKey(ArrApp.Sonarr, null)),
+            (radarr, () => _store.SetKey(ArrApp.Radarr, null)),
+            (qbit, () => _store.SetQbitPassword(null))
+        })
+        {
+            if (!changed)
+            {
+                continue;
+            }
+
+            try
+            {
+                forget();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Medic Profiles: couldn't remove a key saved for the old server");
+            }
+        }
+    }
+
     private static bool HostChanged(string? oldUrl, string newUrl) =>
         !string.IsNullOrWhiteSpace(oldUrl) && !string.Equals(Authority(oldUrl), Authority(newUrl), StringComparison.OrdinalIgnoreCase);
 
-    private static string Authority(string url) =>
+    internal static string Authority(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var u) ? $"{u.Scheme}://{u.Host}:{u.Port}" : url;
 
     private static string CleanUrl(string? url)

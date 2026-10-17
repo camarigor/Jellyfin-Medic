@@ -124,8 +124,12 @@ public class QbitFileFilter
 
         var list = Split(current.GetString());
         bool wasOn = prefs.Value.TryGetProperty("excluded_file_names_enabled", out var enabled) && enabled.ValueKind == JsonValueKind.True;
-        var added = new HashSet<string>(config.QbitPatternsAdded ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
-        if (config.QbitListWasOn is null && added.Count == 0)
+        // A record made on another qBittorrent says nothing about this one.
+        string host = Api.ProfilesController.Authority(BaseUrl() ?? string.Empty);
+        bool sameServer = config.QbitPatternsHost.Length == 0 || string.Equals(config.QbitPatternsHost, host, StringComparison.OrdinalIgnoreCase);
+        var added = new HashSet<string>(sameServer ? config.QbitPatternsAdded ?? Array.Empty<string>() : Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        bool? recordedWasOn = sameServer ? config.QbitListWasOn : null;
+        if (config.QbitPatternsHost.Length == 0 && config.QbitListWasOn is null && added.Count == 0)
         {
             // Medic Profiles 1.1.0 and 1.1.1 didn't record what they added: their full set counts as theirs.
             var present = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);
@@ -148,7 +152,7 @@ public class QbitFileFilter
             added.Add(pattern);
         }
 
-        bool listWasOn = config.QbitListWasOn ?? wasOn;
+        bool listWasOn = recordedWasOn ?? wasOn;
         bool on = block || (listWasOn && list.Count > 0);
         string json = JsonSerializer.Serialize(new Dictionary<string, object>
         {
@@ -169,6 +173,7 @@ public class QbitFileFilter
 
         config.QbitPatternsAdded = block ? added.ToArray() : Array.Empty<string>();
         config.QbitListWasOn = block ? listWasOn : null;
+        config.QbitPatternsHost = host;
         Plugin.Instance.SaveConfiguration();
 
         return (true, block

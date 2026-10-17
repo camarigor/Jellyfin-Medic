@@ -3,6 +3,20 @@
 All notable changes to Medic Profiles are recorded here. The newest version is at the top.
 Jellyfin Medic and Medic Picks have their own changelogs.
 
+## Unreleased
+
+### Fixed
+- **Import by hand leaves rejected files unticked.** Every matched file started ticked, including ones Sonarr or Radarr had rejected (as "not an upgrade", say), and a manual import doesn't check them again, so pressing Import could replace a better copy in the library. Rejected files now start unticked, with the reason shown, and can still be ticked to import them anyway.
+- **"HEVC plays fine here" needs real playback.** The tip took an empty transcode log as proof that HEVC plays everywhere, so it showed a few minutes after installing. It now waits until the log holds at least 20 transcodes, and no longer lists 4K profiles, where nearly every release is HEVC.
+- **Advice follows its evidence.** Any transcode for bitrate led to "untick Remux"; now only transcodes of Remux-sized files (25 Mbps or more) do. The DTS and TrueHD advice no longer reaches profiles that only allow Remux, since a Remux always keeps the disc's own audio.
+- **The Blocked tab says when it shows only the newest 100.** With more blocked releases than that in Sonarr or Radarr, the tab now says how many there are in all.
+- **The advice report doesn't keep errors.** A report with an error was kept for an hour, and saving the settings didn't clear it. Reports with errors aren't kept now, and saving the settings starts a fresh one.
+- **Odd answers and failed saves give a clear error.** A Sonarr or Radarr answer that wasn't the expected JSON made the page fail with a server error; it now says what came back. Saving writes the keys and password before the new addresses, so a failed key write leaves the old settings in place, instead of pairing the old key with the new server.
+- **Changing the qBittorrent address forgets what was added to the old one.** The record of which exclusions Medic Profiles added was kept when the address changed, so Stop blocking on the new qBittorrent could remove entries its owner had added there.
+- **An empty library search no longer fails.** Clearing the search box and searching answered with an error.
+
+Thanks @camarigor for reporting these (#159).
+
 ## [1.1.4] – 2026-10-17
 
 ### Changed

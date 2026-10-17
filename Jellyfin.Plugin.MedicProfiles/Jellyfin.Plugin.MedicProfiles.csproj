@@ -41,6 +41,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="MedicProfiles.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="Web\profiles.html" />
     <EmbeddedResource Include="Web\profiles.html" />
   </ItemGroup>

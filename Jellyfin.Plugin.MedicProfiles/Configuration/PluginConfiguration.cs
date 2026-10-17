@@ -27,4 +27,10 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Whether that list was switched on before Medic Profiles first blocked anything; null while nothing is blocked.</summary>
     public bool? QbitListWasOn { get; set; }
+
+    /// <summary>
+    /// The qBittorrent (scheme, host and port) the two above were recorded on. Empty in settings saved before it was
+    /// recorded, when the record is taken as this qBittorrent's.
+    /// </summary>
+    public string QbitPatternsHost { get; set; } = string.Empty;
 }
