@@ -272,9 +272,9 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
                     ioBytes += io;
                 }
 
-                if (stat.Value.Name.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase))
+                if (FfmpegRole(stat.Value.Name, () => CommandLine(pid)) is { } role)
                 {
-                    ffmpeg.Add((pid, FfmpegRole(pid), stat.Value.CpuSeconds));
+                    ffmpeg.Add((pid, role, stat.Value.CpuSeconds));
                 }
             }
 
@@ -403,37 +403,52 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
         }
     }
 
-    /// <summary>What an FFmpeg process is doing, from its command line.</summary>
-    private static string FfmpegRole(int pid)
+    /// <summary>What an FFmpeg process is doing, from its name and command line; null for any other process.</summary>
+    internal static string? FfmpegRole(string name, Func<string> commandLine)
+    {
+        // Jellyfin probes media with FFprobe, never with FFmpeg.
+        if (name.Contains("ffprobe", StringComparison.OrdinalIgnoreCase))
+        {
+            return "media probing";
+        }
+
+        if (!name.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        // Jellyfin's trickplay writes numbered images (-f image2 ".../%08d.jpg") into a temporary folder, and the word
+        // "trickplay" is in none of its arguments.
+        string cmd = commandLine();
+        if ((cmd.Contains("-f image2", StringComparison.Ordinal) && cmd.Contains("%08d.jpg", StringComparison.Ordinal))
+            || cmd.Contains("trickplay", StringComparison.OrdinalIgnoreCase))
+        {
+            return "trickplay images";
+        }
+
+        if (cmd.Contains("-f hls", StringComparison.Ordinal) || cmd.Contains("transcodes", StringComparison.OrdinalIgnoreCase))
+        {
+            return "transcode";
+        }
+
+        if (cmd.Contains("-vframes 1", StringComparison.Ordinal) || cmd.Contains("-frames:v 1", StringComparison.Ordinal))
+        {
+            return "chapter or thumbnail images";
+        }
+
+        return "other work";
+    }
+
+    // A process that has already exited reads as an empty command line.
+    private static string CommandLine(int pid)
     {
         try
         {
-            string cmd = File.ReadAllText($"/proc/{pid}/cmdline").Replace('\0', ' ');
-            if (cmd.Contains("trickplay", StringComparison.OrdinalIgnoreCase))
-            {
-                return "trickplay images";
-            }
-
-            if (cmd.Contains("-f hls", StringComparison.Ordinal) || cmd.Contains("transcodes", StringComparison.OrdinalIgnoreCase))
-            {
-                return "transcode";
-            }
-
-            if (cmd.Contains("-vframes 1", StringComparison.Ordinal) || cmd.Contains("-frames:v 1", StringComparison.Ordinal))
-            {
-                return "chapter or thumbnail images";
-            }
-
-            if (cmd.Contains("keyframe", StringComparison.OrdinalIgnoreCase) || cmd.Contains("-show_", StringComparison.Ordinal))
-            {
-                return "media probing";
-            }
-
-            return "other work";
+            return File.ReadAllText($"/proc/{pid}/cmdline").Replace('\0', ' ');
         }
         catch
         {
-            return "other work";
+            return string.Empty;
         }
     }
 
