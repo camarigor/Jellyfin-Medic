@@ -2714,6 +2714,26 @@ await check('Dashboard panels: the 15-second refresh leaves alone what has not c
     }
 });
 
+await check('LoadGuard words: the paused list and the help say when held tasks really start again', async () => {
+    const live = await ok('/JellyfinMedic/Dashboard/Live');
+    const paused = [{ TaskId: 'e2e-fixture-trickplay', TaskName: 'Fixture trickplay', StoppedUtc: new Date().toISOString() }];
+    await page.route('**/JellyfinMedic/Dashboard/Live', (route) => route.fulfill({ json: { ...live, Paused: paused } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForSelector('#md-paused strong', { timeout: 30000 });
+        const heading = await page.$eval('#md-paused strong', (s) => s.textContent);
+        // LoadGuard starts a held task after two hours whether or not memory recovered, and never while people watch.
+        expect(!/until memory recovers/i.test(heading) && /two hours/.test(heading) && /avoided hours/.test(heading) && /watching/.test(heading), 'paused heading: ' + heading);
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard/Live');
+    }
+    await medicTab('settings');
+    await page.click('#JellyfinMedicPage .md-help[data-help="guard"]');
+    const help = await page.$eval('#JellyfinMedicPage .md-help-text[data-help-for="guard"]', (p) => p.textContent);
+    expect(/Run button/.test(help) && /always run/.test(help) && /usual level/.test(help) && /avoided hours/.test(help), 'guard help: ' + help);
+    return 'heading and help name the real rules';
+});
+
 await check('Dashboard panels: the 5-minute refresh keeps the keyboard on the run or the hour it was on', async () => {
     const ctx = await browser.newContext({ locale: 'en-GB' });
     await ctx.clock.install();
