@@ -8,6 +8,8 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const JF = process.env.JF || 'http://127.0.0.1:8096';
+// The pretend Sonarr, Seerr and the rest listen on fixed ports, moved by FAKE_PORT_OFFSET so two runs can go side by side.
+const P = (port) => port + Number(process.env.FAKE_PORT_OFFSET || 0);
 const AUTH = 'MediaBrowser Client="e2e", Device="e2e", DeviceId="medic-e2e", Version="1.0"';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -366,6 +368,62 @@ await check('Dashboard data: both routes answer an admin with every section, and
         await api('DELETE', `/Users/${made.json.Id}`);
     }
     return `${fields.length} fields, ${data.Disks.Drives.length} drives, ${live.Resources.length} readings; 403 and 401 for the others`;
+});
+
+// Every admin route in the plugins' controllers, read from the source so a new one is covered without a change here.
+// Medic Picks marks admin routes one by one, all under Admin/; its unit tests check that the two go together.
+function adminRoutes() {
+    const root = new URL('../../', import.meta.url);
+    const files = [
+        ['src/JellyfinMedic/MedicController.cs'], ['src/JellyfinMedic/ScheduleController.cs'], ['src/JellyfinMedic/MedicDashboardController.cs'],
+        ['Jellyfin.Plugin.MedicProfiles/Api/ProfilesController.cs'], ['Jellyfin.Plugin.MedicPosters/Api/PostersController.cs'],
+        ['Jellyfin.Plugin.MedicPicks/Api/PicksController.cs', (route) => route.startsWith('Admin/')]
+    ];
+    // Values that fit each route's parameters, so the request reaches the sign-in check rather than a 404.
+    const values = { app: 'sonarr', itemId: '00000000-0000-0000-0000-000000000000', requestId: '1', name: 'e2e' };
+    const routes = [];
+    for (const [file, include = () => true] of files) {
+        const code = require('node:fs').readFileSync(new URL(file, root), 'utf8');
+        const prefix = code.match(/^\[Route\("([^"]+)"\)\]/m)[1];
+        for (const m of code.matchAll(/\[Http(Get|Post|Put|Delete)(?:\("([^"]*)"\))?\]/g)) {
+            const route = m[2] || '';
+            if (!include(route)) continue;
+            const path = '/' + [prefix, route].filter(Boolean).join('/').replace(/\{(\w+)[^}]*\}/g, (_, p) => values[p] ?? '1');
+            routes.push([m[1].toUpperCase(), path]);
+        }
+    }
+    return routes;
+}
+
+await check('every admin route refuses an account that isn\'t an administrator', async () => {
+    const routes = adminRoutes();
+    expect(routes.length > 80, `only ${routes.length} admin routes found; has a controller moved?`);
+    const name = 'e2e-not-admin-routes';
+    const device = AUTH.replace('medic-e2e', name);
+    const made = await api('POST', '/Users/New', { Name: name, Password: 'e2e-pass' });
+    expect(made.status === 200, 'user not created: ' + made.text);
+    try {
+        const signIn = await fetch(JF + '/Users/AuthenticateByName', {
+            method: 'POST',
+            headers: { Authorization: device, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ Username: name, Pw: 'e2e-pass' })
+        });
+        expect(signIn.status === 200, 'sign-in: ' + signIn.status);
+        const userToken = (await signIn.json()).AccessToken;
+        const answered = [];
+        for (const [method, path] of routes) {
+            const res = await fetch(JF + path, {
+                method,
+                headers: { Authorization: `${device}, Token="${userToken}"`, 'Content-Type': 'application/json' },
+                body: method === 'GET' ? undefined : '{}'
+            });
+            if (res.status !== 403) answered.push(`${method} ${path}: ${res.status}`);
+        }
+        expect(answered.length === 0, 'answered an account that isn\'t an administrator: ' + answered.join(', '));
+    } finally {
+        await api('DELETE', `/Users/${made.json.Id}`);
+    }
+    return `${routes.length} routes, each 403`;
 });
 
 await check('Jellyfin\'s API document still builds with Medic installed', async () => {
@@ -873,7 +931,7 @@ await check('Medic Picks "My requests" says Seerr is out of reach instead of fai
     // reachable:false, which the page shows, and the second within the time limit per call.
     const http = await import('node:http');
     const silent = http.createServer(() => { /* never answers */ });
-    await new Promise((resolve) => silent.listen(18991, '0.0.0.0', resolve));
+    await new Promise((resolve) => silent.listen(P(18991), '0.0.0.0', resolve));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
     const myRequests = async (url) => {
@@ -887,7 +945,7 @@ await check('Medic Picks "My requests" says Seerr is out of reach instead of fai
     try {
         const refused = await myRequests('http://host.docker.internal:9');
         expect(refused.status === 200 && refused.json?.reachable === false, `refused: ${refused.status} ${refused.text.slice(0, 200)}`);
-        const silentSeerr = await myRequests('http://host.docker.internal:18991');
+        const silentSeerr = await myRequests(`http://host.docker.internal:${P(18991)}`);
         expect(silentSeerr.status === 200 && silentSeerr.json?.reachable === false, `no answer: ${silentSeerr.status} ${silentSeerr.text.slice(0, 200)}`);
         expect(silentSeerr.seconds < 30, `took ${silentSeerr.seconds} s`);
         return `both reported as out of reach (the silent one after ${silentSeerr.seconds.toFixed(0)} s)`;
@@ -916,10 +974,10 @@ await check('Medic Picks "My requests" says Seerr is out of reach when something
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html><body>Sign in</body></html>');
     });
-    await new Promise((resolve) => signIn.listen(18996, '0.0.0.0', resolve));
+    await new Promise((resolve) => signIn.listen(P(18996), '0.0.0.0', resolve));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18996', ShowRequests: true });
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18996)}`, ShowRequests: true });
     await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     try {
         const mine = await api('GET', '/MedicPicks/Me/Requests');
@@ -984,15 +1042,15 @@ await check('Medic Picks removes the saved Seerr key when the Seerr address move
 // ---------- Medic Profiles, against a pretend Sonarr ----------
 
 const fakeArr = await import('./fake-arr.mjs');
-const arrServer = await fakeArr.start(18989);
-const ARR = process.env.ARR_URL || 'http://host.docker.internal:18989';
+const arrServer = await fakeArr.start(P(18989));
+const ARR = process.env.ARR_URL || `http://host.docker.internal:${P(18989)}`;
 
 await check('Medic Picks approves and declines requests as the admin\'s own Seerr account', async () => {
     // Without X-API-User, Seerr acts as its owner account for any call made with the API key.
-    const seerrServer = await fakeArr.startSeerr(18992);
+    const seerrServer = await fakeArr.startSeerr(P(18992));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18992', ShowRequests: true });
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18992)}`, ShowRequests: true });
     await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     try {
         const approved = await api('POST', '/MedicPicks/Admin/Requests/7/Approve');
@@ -1010,10 +1068,10 @@ await check('Medic Picks approves and declines requests as the admin\'s own Seer
 
 await check('Medic Picks "My requests" skips a season entry it can\'t read instead of failing', async () => {
     // A season list holding something other than season entries; only season 2 is one, so only its download counts.
-    const seerrServer = await fakeArr.startSeerr(18995);
+    const seerrServer = await fakeArr.startSeerr(P(18995));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18995', ShowRequests: true });
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18995)}`, ShowRequests: true });
     await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     fakeArr.seerr.extraRequests.push({
         id: 13, status: 2, type: 'tv', createdAt: '2026-10-03T10:00:00.000Z', requestedBy: { id: 42 },
@@ -1044,10 +1102,10 @@ await check('Medic Picks "My requests" skips a season entry it can\'t read inste
 
 await check('Medic Picks shows only your own requests and keeps Discover-off accounts from requesting', async () => {
     // This Seerr ignores ?requestedBy= and lists someone else's request too; Medic Picks must drop it.
-    const seerrServer = await fakeArr.startSeerr(18993);
+    const seerrServer = await fakeArr.startSeerr(P(18993));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    const setCfg = (changes) => api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18993', ShowRequests: true, SeerrDirectRequests: true, ...changes });
+    const setCfg = (changes) => api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18993)}`, ShowRequests: true, SeerrDirectRequests: true, ...changes });
     await setCfg({});
     await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     try {
@@ -1083,7 +1141,7 @@ await check('Medic Profiles never sends a saved key to a new server, and keeps a
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR + '/', RadarrUrl: '' });
         expect(await keySet(), 'the key was dropped although the server is the same');
         // Another server, key box left blank: the key must be typed again.
-        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: 'http://host.docker.internal:18994', RadarrUrl: '' });
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: `http://host.docker.internal:${P(18994)}`, RadarrUrl: '' });
         expect(!(await keySet()), 'the saved key was kept for a different server');
     } finally {
         // Back to the pretend Sonarr whatever happened, so a failure here doesn't also fail the checks after it.
@@ -1131,7 +1189,7 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
     // The owner's own list, switched off on purpose, holding *.zip, which is also one of Medic Profiles' patterns.
     Object.assign(fakeArr.qbit.prefs, { excluded_file_names_enabled: false, excluded_file_names: '*.nfo\n*.zip' });
     try {
-        const QB = ARR.replace('18989', '18080');
+        const QB = ARR.replace(`:${P(18989)}`, `:${P(18080)}`);
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'secret' });
         let state = await ok('/MedicProfiles/FileFilter');
         expect(state.reachable && !state.blocksPrograms, 'before: ' + JSON.stringify(state));
@@ -1174,7 +1232,7 @@ await check('Medic Profiles signs in to qBittorrent 5.2, and tries a refused sig
     const qbitServer = await fakeArr.startQbit(18080);
     Object.assign(fakeArr.qbit, { v52: true, banned: true, logins: 0, failedLogins: 0 });
     try {
-        const QB = ARR.replace('18989', '18080');
+        const QB = ARR.replace(`:${P(18989)}`, `:${P(18080)}`);
         const save = () => api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'secret' });
         // Banned: the page says so, and opening it again doesn't knock on qBittorrent's door.
         await save();
@@ -1205,7 +1263,7 @@ await check('Medic Profiles spends no qBittorrent sign-in on save, Test or block
     const qbitServer = await fakeArr.startQbit(18080);
     Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
     try {
-        const QB = ARR.replace('18989', '18080');
+        const QB = ARR.replace(`:${P(18989)}`, `:${P(18080)}`);
         // What the page sends: the password box is empty unless a new one was typed.
         const save = (password, extra) => api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: password, ...extra });
         // Start signed in, so the wrong password below is new to Medic and not one an earlier check left refused.
@@ -1620,7 +1678,7 @@ await check('Medic Profiles settings: Try qBittorrent again shows after a refusa
     const qbitServer = await fakeArr.startQbit(18080);
     Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
     try {
-        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: ARR.replace('18989', '18080'), QbitUser: 'admin', QbitPassword: 'wrong' });
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: ARR.replace(`:${P(18989)}`, `:${P(18080)}`), QbitUser: 'admin', QbitPassword: 'wrong' });
         await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
         await page.reload();
         await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
@@ -1875,9 +1933,9 @@ await check('Medic report load: a report request the browser drops writes no err
     const http = await import('node:http');
     let reached = 0;
     const silent = http.createServer(() => { reached++; });
-    await new Promise((resolve) => silent.listen(18981, '0.0.0.0', resolve));
+    await new Promise((resolve) => silent.listen(P(18981), '0.0.0.0', resolve));
     const cfg = await ok('/System/Configuration');
-    const repo = { Name: 'E2E silent repository', Url: `http://host.docker.internal:18981/manifest-${Date.now()}.json`, Enabled: true };
+    const repo = { Name: 'E2E silent repository', Url: `http://host.docker.internal:${P(18981)}/manifest-${Date.now()}.json`, Enabled: true };
     await api('POST', '/System/Configuration', { ...cfg, PluginRepositories: [...(cfg.PluginRepositories || []), repo] });
     const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
     const from = Number(execFileSync('docker', ['exec', 'medic-e2e', 'stat', '-c', '%s', newest]).toString().trim());
