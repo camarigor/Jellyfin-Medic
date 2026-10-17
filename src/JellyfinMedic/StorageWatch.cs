@@ -163,8 +163,9 @@ public static class StorageWatch
             return;
         }
 
-        _recordedDay = today;
+        // Only once it worked: a reading that failed is tried again in 5 minutes, not tomorrow.
         RecordKnownNow(pluginConfigDir);
+        _recordedDay = today;
     }
 
     /// <summary>Reads the drives seen before again and saves today's reading of each, whatever the day.</summary>

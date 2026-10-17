@@ -343,7 +343,7 @@ public static class HostLoadStore
     {
         lock (Sync)
         {
-            return LoadFrom(FilePath(paths));
+            return LoadFrom(FilePath(paths), forReading: true);
         }
     }
 
@@ -352,7 +352,7 @@ public static class HostLoadStore
         lock (Sync)
         {
             string path = FilePath(paths);
-            var profile = LoadFrom(path);
+            var profile = LoadFrom(path, forReading: false);
             Add(profile, localNow, reading);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             ScheduleStorage.WriteText(path, JsonSerializer.Serialize(profile, Indented));
@@ -388,7 +388,7 @@ public static class HostLoadStore
         profile.LastSampleUtc = DateTime.UtcNow;
     }
 
-    private static HostLoadProfile LoadFrom(string path)
+    private static HostLoadProfile LoadFrom(string path, bool forReading)
     {
         HostLoadProfile? profile = null;
         try
@@ -400,7 +400,17 @@ public static class HostLoadStore
         }
         catch (JsonException ex)
         {
-            ScheduleStorage.SetAside(path, ex);
+            try
+            {
+                ScheduleStorage.SetAside(path, ex);
+            }
+            catch (Exception moveFailed) when (forReading && moveFailed is IOException or UnauthorizedAccessException)
+            {
+                // Reading only shows the profile, so the report, the usage page and the planner get an empty one and
+                // carry on. Recording still fails, so nothing writes over the damaged file before it's set aside.
+                ScheduleStorage.Logger?.LogWarning(moveFailed, "Jellyfin Medic: {File} couldn't be read or kept aside as .bad, so it reads as empty", Path.GetFileName(path));
+            }
+
             profile = null;
         }
 
