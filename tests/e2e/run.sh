@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end tests: builds the five plugins, starts a real Jellyfin in Docker with them
+# End-to-end tests: builds the four plugins, starts a real Jellyfin in Docker with them
 # installed and some sample films, then runs e2e.mjs against it.
 #
 #   tests/e2e/run.sh            build, start, test, stop
@@ -29,7 +29,6 @@ build() { # project, folder, dll
 build src/JellyfinMedic/JellyfinMedic.csproj JellyfinMedic JellyfinMedic.dll
 build Jellyfin.Plugin.MedicPicks/Jellyfin.Plugin.MedicPicks.csproj MedicPicks Jellyfin.Plugin.MedicPicks.dll
 build Jellyfin.Plugin.MedicProfiles/Jellyfin.Plugin.MedicProfiles.csproj MedicProfiles Jellyfin.Plugin.MedicProfiles.dll
-build Jellyfin.Plugin.AnimatedPosters/Jellyfin.Plugin.AnimatedPosters.csproj AnimatedPosters Jellyfin.Plugin.AnimatedPosters.dll
 build Jellyfin.Plugin.MedicPosters/Jellyfin.Plugin.MedicPosters.csproj MedicPosters Jellyfin.Plugin.MedicPosters.dll
 
 echo "== Making sample films"
@@ -39,9 +38,12 @@ for i in $(seq 1 12); do
   ffmpeg -loglevel error -f lavfi -i "testsrc=size=320x180:rate=10:duration=4" -f lavfi -i "sine=frequency=$((200 + i * 20)):duration=4" \
     -c:v libx264 -preset ultrafast -c:a aac -metadata:s:a:0 language=eng "$dir/Sample $i ($year).mkv"
   g1=${GENRES[$((i % 8))]}; g2=${GENRES[$(((i + 3) % 8))]}
+  # One director shared by two films the Picks check watches and one it expects to rank higher for it.
+  director=""
+  case $i in 1 | 2 | 11) director="<director>Ada Example</director>" ;; esac
   cat > "$dir/Sample $i ($year).nfo" <<NFO
 <?xml version="1.0" encoding="utf-8"?>
-<movie><title>Sample $i</title><year>$year</year><genre>$g1</genre><genre>$g2</genre><lockdata>true</lockdata></movie>
+<movie><title>Sample $i</title><year>$year</year><genre>$g1</genre><genre>$g2</genre>$director<lockdata>true</lockdata></movie>
 NFO
 done
 # Two films with a French audio track that track cleanup would remove.

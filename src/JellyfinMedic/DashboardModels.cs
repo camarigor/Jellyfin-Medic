@@ -334,8 +334,8 @@ public sealed class PeopleSection
 
     public List<string> NoPassword { get; set; } = new();
 
-    // Accounts that signed in from 3 or more addresses in 7 days, most first. Null when the activity log
-    // didn't answer in time.
+    // Accounts that signed in from 3 or more places in 7 days, most first. Null when the activity log
+    // couldn't be read.
     public List<RoamingAccount>? Roaming { get; set; }
 }
 

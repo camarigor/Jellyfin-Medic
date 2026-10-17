@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.MedicPicks.Picks;
 using Jellyfin.Plugin.MedicPicks.ScheduledTasks;
 using MediaBrowser.Controller.Net;
+using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -34,17 +35,19 @@ public class PicksController : ControllerBase
     private readonly PicksStore _store;
     private readonly ITaskManager _taskManager;
     private readonly IAuthorizationContext _authContext;
+    private readonly ILocalizationManager _localization;
     private readonly PicksEngine _engine;
     private readonly SeerrClient _seerr;
     private readonly RequestTracker _requests;
     private readonly ILogger<PicksController> _logger;
 
-    public PicksController(PicksStore store, ITaskManager taskManager, IAuthorizationContext authContext, PicksEngine engine, SeerrClient seerr, RequestTracker requests, ILogger<PicksController> logger)
+    public PicksController(PicksStore store, ITaskManager taskManager, IAuthorizationContext authContext, ILocalizationManager localization, PicksEngine engine, SeerrClient seerr, RequestTracker requests, ILogger<PicksController> logger)
     {
         _requests = requests;
         _store = store;
         _taskManager = taskManager;
         _authContext = authContext;
+        _localization = localization;
         _engine = engine;
         _seerr = seerr;
         _logger = logger;
@@ -63,6 +66,8 @@ public class PicksController : ControllerBase
 
         var config = Plugin.Instance!.Configuration;
         var picks = _store.Load(userId);
+        var dub = AudioLanguage.FromTmdb(config.TmdbLanguage, _localization.FindLanguageInfo);
+        string requestMode = RequestMode(config);
 
         var body = new
         {
@@ -71,20 +76,22 @@ public class PicksController : ControllerBase
             note = picks is null
                 ? "Your picks haven't been built yet. They're made overnight, so check back tomorrow."
                 : picks.Note,
-            seerrUrl = SeerrLink(config),
+            // Only links open Seerr; otherwise its address (often one inside Docker) stays on the server.
+            seerrUrl = requestMode == "link" ? SeerrLink(config) : null,
             // "direct": the button makes the request; "link": it opens Seerr; "none": it opens TMDb.
-            requestMode = RequestMode(config),
+            requestMode,
             preferences = _store.LoadPreferences(userId),
             availableGenres = Genres.ForChoices(picks?.AvailableGenres),
             seasonalGenres = Genres.Seasonal,
             countChoices = UserPreferences.CountChoices,
             defaultCount = Math.Clamp(config.LibraryPickCount, 1, 100),
-            dubLanguage = AudioLanguage.FromTmdb(config.TmdbLanguage).Name,
-            dubLanguageCode = AudioLanguage.FromTmdb(config.TmdbLanguage).TwoLetter,
+            dubLanguage = dub.Name,
+            dubLanguageCode = dub.TwoLetter,
             playlistName = config.CreatePlaylists && picks?.PlaylistId is not null ? config.PlaylistName : null,
             inLibrary = picks?.InLibrary ?? new System.Collections.Generic.List<LibraryPick>(),
             linked = picks?.Linked ?? new System.Collections.Generic.List<LibraryPick>(),
-            discover = picks?.Discover ?? new System.Collections.Generic.List<DiscoverPick>()
+            // Saved picks stay until the next build, so Discover being switched off since then is checked here.
+            discover = picks is not null && DiscoverShownTo(config, userId) ? picks.Discover : new System.Collections.Generic.List<DiscoverPick>()
         };
 
         return Content(JsonSerializer.Serialize(body, PicksStore.JsonOptions), MediaTypeNames.Application.Json);
@@ -132,12 +139,17 @@ public class PicksController : ControllerBase
         }
 
         var picks = _store.Load(userId);
+        // Discover picks that weren't on the page weren't seen, so they stay for when Discover is back.
+        bool discoverShown = DiscoverShownTo(Plugin.Instance!.Configuration, userId);
         _store.UpdatePreferences(userId, prefs =>
         {
             if (picks is not null)
             {
                 prefs.SeenItems.AddRange(picks.InLibrary.Concat(picks.Linked).Select(p => p.ItemId));
-                prefs.SeenTmdb.AddRange(picks.Discover.Select(p => PicksStore.TmdbKey(p.MediaType, p.TmdbId)));
+                if (discoverShown)
+                {
+                    prefs.SeenTmdb.AddRange(picks.Discover.Select(p => PicksStore.TmdbKey(p.MediaType, p.TmdbId)));
+                }
             }
 
             return prefs;
@@ -283,8 +295,9 @@ public class PicksController : ControllerBase
             return BadRequest("Requests from this page aren't switched on.");
         }
 
-        // Accounts with Discover turned off (a child's, say) don't get suggestions, so they don't request from here either.
-        if (config.DiscoverDisabledUserIds.Any(id => Guid.TryParse(id, out var g) && g == userId))
+        // People without Discover (a child's account, say, or everyone when it's off) get no suggestions,
+        // so they don't request from here either.
+        if (!DiscoverShownTo(config, userId))
         {
             return StatusCode(Microsoft.AspNetCore.Http.StatusCodes.Status403Forbidden, "Requests from this page are turned off for your account.");
         }
@@ -450,6 +463,26 @@ public class PicksController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>Rebuilds only these people's picks, for a settings change that affects nobody else.</summary>
+    [HttpPost("Admin/Rebuild")]
+    [Authorize(Policy = AdminPolicy)]
+    public ActionResult Rebuild([FromBody] RebuildRequest request)
+    {
+        // Strings, as the settings page has the ids without dashes, the way Jellyfin lists users.
+        var userIds = (request?.UserIds ?? Array.Empty<string>())
+            .Select(id => Guid.TryParse(id, out var g) ? g : Guid.Empty)
+            .Where(g => g != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (userIds.Count == 0)
+        {
+            return BadRequest();
+        }
+
+        userIds.ForEach(StartRebuild);
+        return NoContent();
+    }
+
     private async Task<Guid> GetUserIdAsync()
     {
         var claim = User.Claims.FirstOrDefault(c => c.Type == UserIdClaim)?.Value;
@@ -476,12 +509,21 @@ public class PicksController : ControllerBase
         public string? MediaType { get; set; }
     }
 
+    public class RebuildRequest
+    {
+        public string[]? UserIds { get; set; }
+    }
+
     public class TitleRequest
     {
         public int TmdbId { get; set; }
 
         public string? MediaType { get; set; }
     }
+
+    /// <summary>Whether this person gets Discover picks: switched on for the server, and not unticked for them.</summary>
+    private static bool DiscoverShownTo(Configuration.PluginConfiguration config, Guid userId) =>
+        config.EnableDiscover && !config.DiscoverDisabledUserIds.Any(id => Guid.TryParse(id, out var g) && g == userId);
 
     private string RequestMode(Configuration.PluginConfiguration config)
     {

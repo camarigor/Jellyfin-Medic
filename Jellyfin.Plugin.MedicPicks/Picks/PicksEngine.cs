@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Playlists;
 using Microsoft.Extensions.Logging;
 
@@ -30,6 +31,7 @@ public class PicksEngine
     private readonly IUserManager _userManager;
     private readonly IUserDataManager _userDataManager;
     private readonly IPlaylistManager _playlistManager;
+    private readonly ILocalizationManager _localization;
     private readonly TmdbClient _tmdb;
     private readonly PicksStore _store;
     private readonly ILogger<PicksEngine> _logger;
@@ -39,6 +41,7 @@ public class PicksEngine
         IUserManager userManager,
         IUserDataManager userDataManager,
         IPlaylistManager playlistManager,
+        ILocalizationManager localization,
         TmdbClient tmdb,
         PicksStore store,
         ILogger<PicksEngine> logger)
@@ -47,6 +50,7 @@ public class PicksEngine
         _userManager = userManager;
         _userDataManager = userDataManager;
         _playlistManager = playlistManager;
+        _localization = localization;
         _tmdb = tmdb;
         _store = store;
         _logger = logger;
@@ -108,7 +112,7 @@ public class PicksEngine
 
         var previous = _store.Load(userId);
         var prefs = _store.LoadPreferences(userId);
-        var language = AudioLanguage.FromTmdb(config.TmdbLanguage);
+        var language = AudioLanguage.FromTmdb(config.TmdbLanguage, _localization.FindLanguageInfo);
         var picks = new UserPicks { GeneratedUtc = DateTime.UtcNow, PlaylistId = previous?.PlaylistId };
         picks.AvailableGenres = LibraryGenres(userQuery);
 
@@ -118,41 +122,10 @@ public class PicksEngine
         watchedQuery.IsPlayed = true;
         watchedQuery.Recursive = true;
         watchedQuery.IsVirtualItem = false;
-        var watchedItems = _libraryManager.GetItemList(watchedQuery);
-
-        var titles = new Dictionary<Guid, WatchedTitle>();
-        var seriesCache = new Dictionary<Guid, BaseItem?>();
-
-        foreach (var item in watchedItems)
-        {
-            BaseItem? title = item;
-            if (item is Episode episode)
-            {
-                if (!seriesCache.TryGetValue(episode.SeriesId, out title))
-                {
-                    title = _libraryManager.GetItemById(episode.SeriesId);
-                    seriesCache[episode.SeriesId] = title;
-                }
-            }
-
-            if (title is null)
-            {
-                continue;
-            }
-
-            if (!titles.TryGetValue(title.Id, out var watched))
-            {
-                watched = new WatchedTitle(title);
-                titles[title.Id] = watched;
-            }
-
-            watched.Count++;
-            var lastPlayed = _userDataManager.GetUserData(user, item)?.LastPlayedDate;
-            if (lastPlayed.HasValue && (!watched.LastPlayed.HasValue || lastPlayed > watched.LastPlayed))
-            {
-                watched.LastPlayed = lastPlayed;
-            }
-        }
+        var titles = RollUpWatched(
+            _libraryManager.GetItemList(watchedQuery),
+            id => _libraryManager.GetItemById(id),
+            item => _userDataManager.GetUserData(user, item)?.LastPlayedDate);
 
         if (titles.Count < Math.Max(1, config.MinimumWatchedTitles))
         {
@@ -258,6 +231,56 @@ public class PicksEngine
         }
 
         _store.SaveWithoutHidden(userId, picks);
+    }
+
+    /// <summary>Each title watched, once: episodes count towards their series, and the latest play is kept.</summary>
+    public static Dictionary<Guid, WatchedTitle> RollUpWatched(
+        IEnumerable<BaseItem> watchedItems,
+        Func<Guid, BaseItem?> getSeries,
+        Func<BaseItem, DateTime?> lastPlayed)
+    {
+        var titles = new Dictionary<Guid, WatchedTitle>();
+        var seriesCache = new Dictionary<Guid, BaseItem?>();
+
+        foreach (var item in watchedItems)
+        {
+            BaseItem? title = item;
+            if (item is Episode episode)
+            {
+                // A video at the root of a TV library is an episode of no series, and Jellyfin 12.2 throws when
+                // asked for the empty id, which would end this person's whole build.
+                if (episode.SeriesId == Guid.Empty)
+                {
+                    continue;
+                }
+
+                if (!seriesCache.TryGetValue(episode.SeriesId, out title))
+                {
+                    title = getSeries(episode.SeriesId);
+                    seriesCache[episode.SeriesId] = title;
+                }
+            }
+
+            if (title is null)
+            {
+                continue;
+            }
+
+            if (!titles.TryGetValue(title.Id, out var watched))
+            {
+                watched = new WatchedTitle(title);
+                titles[title.Id] = watched;
+            }
+
+            watched.Count++;
+            var played = lastPlayed(item);
+            if (played.HasValue && (!watched.LastPlayed.HasValue || played > watched.LastPlayed))
+            {
+                watched.LastPlayed = played;
+            }
+        }
+
+        return titles;
     }
 
     /// <summary>
@@ -739,7 +762,7 @@ public class PicksEngine
         }
         catch
         {
-            // Unknown counts as no English audio.
+            // Unknown counts as not having the language.
         }
 
         return false;
@@ -904,7 +927,7 @@ public class PicksEngine
         return text[..(cut > 0 ? cut : max)] + "…";
     }
 
-    private sealed class WatchedTitle
+    public sealed class WatchedTitle
     {
         public WatchedTitle(BaseItem item) => Item = item;
 
