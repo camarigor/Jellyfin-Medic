@@ -220,7 +220,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
 
             // Memory has recovered and nothing heavy is running: restart one deferred task.
             bool settled = now - _lastActionUtc > TimeSpan.FromMinutes(2);
-            if (_deferred.Count > 0 && settled && CanRestart(usedPercent, serverPercent, clearMark, heavyRunning.Count, now - _deferred[0].StoppedUtc))
+            if (_deferred.Count > 0 && settled && CanRestart(usedPercent, serverPercent, highMark, clearMark, heavyRunning.Count, now - _deferred[0].StoppedUtc))
             {
                 string id = _deferred[0].TaskId;
                 var worker = _tasks.ScheduledTasks.FirstOrDefault(t => t.Id.ToString() == id);
@@ -267,10 +267,13 @@ public sealed class LoadGuard : IHostedService, IDisposable
 
     /// <summary>
     /// Whether the oldest waiting task can start again: nothing heavy runs, Jellyfin's own memory is below the restart
-    /// mark, and so is the whole server's, unless the task has already waited MaxWait.
+    /// mark, and so is the whole server's. Once the task has waited MaxWait, the server's memory no longer counts and
+    /// Jellyfin's only has to be below the ceiling, so a Jellyfin that settles between the two marks can't hold it for ever.
     /// </summary>
-    internal static bool CanRestart(double jellyfinPercent, double? serverPercent, int clearMark, int heavyRunning, TimeSpan waited) =>
-        heavyRunning == 0 && jellyfinPercent <= clearMark && (serverPercent is not { } server || server <= clearMark || waited >= MaxWait);
+    internal static bool CanRestart(double jellyfinPercent, double? serverPercent, int highMark, int clearMark, int heavyRunning, TimeSpan waited) =>
+        heavyRunning == 0 && (waited >= MaxWait
+            ? jellyfinPercent < highMark
+            : jellyfinPercent <= clearMark && (serverPercent is not { } server || server <= clearMark));
 
     private static bool IsHeavy(IScheduledTaskWorker task) =>
         HeavyKeys.Contains(task.ScheduledTask.Key) || HeavyWords.Any(w => task.Name.Contains(w, StringComparison.OrdinalIgnoreCase));
