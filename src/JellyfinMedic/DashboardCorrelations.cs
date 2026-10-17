@@ -16,6 +16,7 @@ internal static class DashboardCorrelations
     // A planned run's status.
     internal const string Ran = "ran";
     internal const string Late = "late";
+    internal const string Cancelled = "cancelled";
     internal const string NotRun = "not run";
     internal const string Waiting = "waiting";
 
@@ -97,9 +98,10 @@ internal static class DashboardCorrelations
 
     /// <summary>
     /// Today's planned runs next to the runs that happened (see <see cref="Match"/>), with the day's resource
-    /// spikes and LoadGuard actions, each placed by server local minute. A task still running has no run record
-    /// yet, so <paramref name="running"/> adds it as a run that ends now. Tasks that run many times a day have
-    /// no planned time and stay out of the plan.
+    /// spikes and LoadGuard actions, each placed by server local minute. A run still going at midnight stays,
+    /// from minute 0 and marked <see cref="ActualRun.StartedBeforeToday"/>. A task still running has no run
+    /// record yet, so <paramref name="running"/> adds it as a run that ends now. Tasks that run many times a day
+    /// have no planned time and stay out of the plan.
     /// </summary>
     internal static TodaySection Today(
         DateTime nowUtc,
@@ -115,6 +117,24 @@ internal static class DashboardCorrelations
         int MinuteOf(DateTime utc) => (int)Math.Floor((TimeZoneInfo.ConvertTimeFromUtc(ScheduleStorage.AsUtc(utc), zone) - today).TotalMinutes);
         static bool IsToday(int minute) => minute is >= 0 and < MinutesInDay;
 
+        // Each run keeps its real start for Match: one still going at midnight is drawn from minute 0.
+        var actual = runs
+            .Select(r => (r.TaskId, r.TaskName, Start: MinuteOf(r.StartUtc), End: MinuteOf(r.EndUtc), r.Status, r.ErrorMessage))
+            .Concat(running.Select(r => (r.TaskId, r.TaskName, Start: MinuteOf(r.StartUtc), End: (int)now.TimeOfDay.TotalMinutes, Status: RunningStatus, ErrorMessage: (string?)null)))
+            .Where(r => IsToday(r.Start) || (r.Start < 0 && r.End >= 0))
+            .OrderBy(r => r.Start)
+            .Select(r => (Run: new ActualRun
+            {
+                TaskId = r.TaskId,
+                TaskName = r.TaskName,
+                StartMinutes = Math.Max(r.Start, 0),
+                EndMinutes = Math.Clamp(r.End, Math.Max(r.Start, 0), MinutesInDay),
+                StartedBeforeToday = r.Start < 0,
+                Status = r.Status,
+                ErrorMessage = r.ErrorMessage
+            }, r.Start))
+            .ToList();
+
         var section = new TodaySection
         {
             Date = today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -125,21 +145,7 @@ internal static class DashboardCorrelations
                 .OrderBy(p => p.StartMinutes)
                 .Select(p => new PlannedRun { TaskId = p.TaskId, TaskName = p.TaskName, StartMinutes = p.StartMinutes, DurationMinutes = p.DurationMinutes, Category = p.Category, Kind = p.Kind })
                 .ToList(),
-            Actual = runs
-                .Select(r => (r.TaskId, r.TaskName, Start: MinuteOf(r.StartUtc), End: MinuteOf(r.EndUtc), r.Status, r.ErrorMessage))
-                .Concat(running.Select(r => (r.TaskId, r.TaskName, Start: MinuteOf(r.StartUtc), End: (int)now.TimeOfDay.TotalMinutes, Status: RunningStatus, ErrorMessage: (string?)null)))
-                .Where(r => IsToday(r.Start))
-                .OrderBy(r => r.Start)
-                .Select(r => new ActualRun
-                {
-                    TaskId = r.TaskId,
-                    TaskName = r.TaskName,
-                    StartMinutes = r.Start,
-                    EndMinutes = Math.Clamp(r.End, r.Start, MinutesInDay),
-                    Status = r.Status,
-                    ErrorMessage = r.ErrorMessage
-                })
-                .ToList(),
+            Actual = actual.Select(a => a.Run).ToList(),
             Spikes = spikes
                 .Select(e => (Event: e, Minute: MinuteOf(e.TimeUtc)))
                 .Where(e => IsToday(e.Minute))
@@ -154,7 +160,7 @@ internal static class DashboardCorrelations
                 .ToList()
         };
 
-        Match(section.Planned, section.Actual, section.NowMinutes);
+        Match(section.Planned, actual, section.NowMinutes);
         section.Summary = new TodaySummary
         {
             Planned = section.Planned.Count,
@@ -174,10 +180,12 @@ internal static class DashboardCorrelations
     /// Gives each planned run its status. A planned run takes the first unclaimed run of the same task that
     /// started from 15 minutes before it until 15 minutes before that task's next planned run, or halfway to it
     /// when the two are closer (or until the end of the day): late when that run started more than 30 minutes
-    /// after the planned time, ran otherwise. Without a run it's not run once an hour has passed, and waiting
-    /// until then.
+    /// after the planned time, ran otherwise. A cancelled or aborted run gives way to the first later run in that
+    /// span that was neither, which takes the plan along with the runs before it; with no such run, the plan is
+    /// cancelled. Without a run it's not run once an hour has passed, and waiting until then. Each run goes by
+    /// its real start, which is before minute 0 for a run from before midnight.
     /// </summary>
-    private static void Match(List<PlannedRun> planned, List<ActualRun> actual, int nowMinutes)
+    private static void Match(List<PlannedRun> planned, List<(ActualRun Run, int Start)> actual, int nowMinutes)
     {
         var claimed = new HashSet<ActualRun>();
         foreach (var task in planned.GroupBy(p => p.TaskId, StringComparer.Ordinal))
@@ -190,11 +198,17 @@ internal static class DashboardCorrelations
                 int until = i + 1 < times.Count
                     ? Math.Max(times[i + 1].StartMinutes - EarlyMinutes, (plan.StartMinutes + times[i + 1].StartMinutes + 1) / 2)
                     : MinutesInDay;
-                var run = actual.FirstOrDefault(a => a.TaskId == plan.TaskId && !claimed.Contains(a) && a.StartMinutes >= from && a.StartMinutes < until);
-                if (run is not null)
+                var tries = actual.Where(a => a.Run.TaskId == plan.TaskId && !claimed.Contains(a.Run) && a.Start >= from && a.Start < until).ToList();
+                int taken = tries.FindIndex(a => !WasCancelled(a.Run.Status));
+                if (taken >= 0)
                 {
-                    claimed.Add(run);
-                    plan.Status = run.StartMinutes - plan.StartMinutes > LateMinutes ? Late : Ran;
+                    claimed.UnionWith(tries.Take(taken + 1).Select(a => a.Run));
+                    plan.Status = tries[taken].Start - plan.StartMinutes > LateMinutes ? Late : Ran;
+                }
+                else if (tries.Count > 0)
+                {
+                    claimed.Add(tries[0].Run);
+                    plan.Status = Cancelled;
                 }
                 else
                 {
@@ -203,6 +217,9 @@ internal static class DashboardCorrelations
             }
         }
     }
+
+    // Aborted counts as cancelled: either way the run stopped before it finished.
+    private static bool WasCancelled(string status) => status is nameof(TaskCompletionStatus.Cancelled) or nameof(TaskCompletionStatus.Aborted);
 
     /// <summary>
     /// Why files are transcoded, as shares of all samples, each reason paired with what in the library causes
