@@ -26,11 +26,11 @@ env:
   DLL: 'Jellyfin.Plugin.MedicProfiles.dll'
   GUID: '1eb65368-7b2e-4a55-8f2b-b56134f3fe68'
   NAME: 'Medic Profiles'
-  OWNER: 'P1zzm1ssile'
+  OWNER: 'camarigor'
   TARGET_ABI: '12.0.0.0'   # built against Jellyfin 12.0, so it loads on 12.0 and 12.1
   DESCRIPTION: "Sonarr and Radarr from your Jellyfin dashboard: downloads, fixes and profile advice."
   OVERVIEW: "See what Sonarr and Radarr are downloading, remove, block or import stuck and wrong downloads by hand, and get quality profile advice from what your server actually plays."
-  IMAGE: 'https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/Jellyfin.Plugin.MedicProfiles/thumb.png'
+  IMAGE: 'https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/Jellyfin.Plugin.MedicProfiles/thumb.png'
 
 jobs:
   # Unit and end-to-end tests first: nothing is released or added to the manifest unless they pass.

@@ -22,11 +22,11 @@ concurrency:
 env:
   GUID: '8d1f5c2e-6b4a-4f7e-9c3d-2a7b5e1f0c94'
   NAME: 'Jellyfin Medic'
-  OWNER: 'P1zzm1ssile'
+  OWNER: 'camarigor'
   TARGET_ABI: '12.1.0.0'
   DESCRIPTION: "Health checks, performance tests and usage-aware task scheduling for your Jellyfin server."
   OVERVIEW: "Keeps a busy Jellyfin server healthy: checks, tests and smart scheduling."
-  IMAGE: 'https://raw.githubusercontent.com/P1zzm1ssile/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png'
+  IMAGE: 'https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/src/JellyfinMedic/thumb.png'
 
 jobs:
   # Unit and end-to-end tests first: nothing is released or added to the manifest unless they pass.

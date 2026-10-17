@@ -142,13 +142,13 @@
                         <legend>Report a problem or suggest an idea</legend>
                         <p class="mp-muted">Bugs and ideas go on GitHub, where you can follow the fix and others with the same problem can find it. Saying which Sonarr, Radarr and Jellyfin versions you run helps a lot.</p>
                         <div class="mp-row">
-                            <a class="mp-btn mp-btn-accent" href="https://github.com/P1zzm1ssile/Jellyfin-Medic/issues/new/choose" target="_blank" rel="noopener" style="text-decoration:none; display:inline-flex; align-items:center">Report an issue</a>
-                            <a class="mp-btn mp-btn-plain" href="https://github.com/P1zzm1ssile/Jellyfin-Medic/issues" target="_blank" rel="noopener" style="text-decoration:none; display:inline-flex; align-items:center">See open issues</a>
+                            <a class="mp-btn mp-btn-accent" href="https://github.com/camarigor/Jellyfin-Medic/issues/new/choose" target="_blank" rel="noopener" style="text-decoration:none; display:inline-flex; align-items:center">Report an issue</a>
+                            <a class="mp-btn mp-btn-plain" href="https://github.com/camarigor/Jellyfin-Medic/issues" target="_blank" rel="noopener" style="text-decoration:none; display:inline-flex; align-items:center">See open issues</a>
                         </div>
                     </fieldset>
                     <fieldset>
                         <legend>Contact me</legend>
-                        <p class="mp-muted">For anything that doesn't belong on a public page, email <a class="mp-link" href="mailto:p1zzm1ssilerepo@gmail.com?subject=Medic%20Profiles">p1zzm1ssilerepo@gmail.com</a>.</p>
+                        <p class="mp-muted">For anything that doesn't belong on a public page, email <a class="mp-link" href="mailto:igor.marques@protonmail.com?subject=Medic%20Profiles">igor.marques@protonmail.com</a>.</p>
                     </fieldset>
                 </div>
             </section>
@@ -260,6 +260,12 @@
                 };
                 if (expectJson !== false) req.dataType = 'json';
                 return ApiClient.ajax(req);
+            }
+
+            // A failed request rejects with the server's answer: the detail of a Problem says what went wrong.
+            function problemDetail(err, fallback) {
+                if (!err || typeof err.json !== 'function') return Promise.resolve(fallback);
+                return err.json().then(function (p) { return (p && typeof p.detail === 'string' && p.detail) || fallback; }, function () { return fallback; });
             }
 
             function size(bytes) {
@@ -590,13 +596,18 @@
                     const box = el('input');
                     box.type = 'checkbox';
                     box.checked = s.include;
-                    box.addEventListener('change', function () { s.include = box.checked; });
                     label.appendChild(box);
                     label.appendChild(el('span', 'mp-release', f.name));
                     div.appendChild(label);
                     div.appendChild(el('p', 'mp-meta', [f.quality, size(f.size), f.languages].filter(Boolean).join(' · ')));
                     f.rejections.forEach(function (x) { div.appendChild(el('p', 'mp-reject', '⚠ ' + x)); });
-                    if (f.rejections.length) { div.appendChild(el('p', 'mp-meta', 'Left unticked because the app rejected it. Tick it to import it anyway.')); }
+                    const unticked = el('p', 'mp-meta', 'Left unticked because the app rejected it. Tick it to import it anyway.');
+                    unticked.hidden = !f.rejections.length || s.include;
+                    div.appendChild(unticked);
+                    box.addEventListener('change', function () {
+                        s.include = box.checked;
+                        unticked.hidden = !f.rejections.length || s.include;
+                    });
 
                     const match = el('p', 'mp-meta');
                     const matchText = el('span');
@@ -642,7 +653,7 @@
                                     li.appendChild(button(m.title + (m.year ? ' (' + m.year + ')' : ''), '', function () {
                                         s.mediaId = m.id;
                                         s.mediaTitle = m.title + (m.year ? ' (' + m.year + ')' : '');
-                                        s.include = true;
+                                        // The tick stays the user's: a new match doesn't answer why the app rejected the file.
                                         if (r.app === 'sonarr') { s.episodeIds = []; openEpisodes(s, picker, describe); }
                                         else picker.textContent = '';
                                         describe();
@@ -929,7 +940,9 @@
                     post('Settings', settingsBody(), false).then(function () {
                         note.textContent = 'Saved.';
                         loadSettings();
-                    }).catch(function () { note.textContent = 'Couldn’t save. Try again.'; });
+                    }).catch(function (err) {
+                        return problemDetail(err, 'Couldn’t save. Try again.').then(function (text) { note.textContent = text; });
+                    });
                 });
 
                 page.querySelectorAll('[data-test]').forEach(function (b) {

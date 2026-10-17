@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Medic.Shared;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MedicProfiles.Arr;
@@ -382,7 +383,10 @@ public class QbitFileFilter
     private async Task<(HttpClient? Client, string Error, bool Refused)> SignInAsync(string baseUrl, string user, string password, CancellationToken ct)
     {
         var cookies = new CookieContainer();
-        var handler = new HttpClientHandler { CookieContainer = cookies, UseCookies = true };
+        // Redirects aren't followed: on a 307 or 308 the form, password and all, would be posted again to the new address.
+        var handler = ServiceHttp.NoRedirects();
+        handler.CookieContainer = cookies;
+        handler.UseCookies = true;
         var client = new HttpClient(handler, disposeHandler: true) { Timeout = TimeSpan.FromSeconds(15) };
         try
         {
@@ -391,7 +395,15 @@ public class QbitFileFilter
                 new KeyValuePair<string, string>("username", user),
                 new KeyValuePair<string, string>("password", password)
             });
-            using var response = await client.PostAsync(baseUrl + "/api/v2/auth/login", form, ct).ConfigureAwait(false);
+            var asked = new Uri(baseUrl + "/api/v2/auth/login");
+            using var response = await client.PostAsync(asked, form, ct).ConfigureAwait(false);
+            if (ServiceHttp.RedirectTarget(response, asked) is { } target)
+            {
+                client.Dispose();
+                _logger.LogWarning("Medic Profiles: qBittorrent at {Url} redirected the sign-in to {Target}", baseUrl, target);
+                return (null, $"{baseUrl} sent the sign-in on to {target}. Medic Profiles doesn't follow that, so the password only goes to the address saved. Enter the address qBittorrent's Web UI answers at directly.", false);
+            }
+
             string body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             // Up to qBittorrent 5.1 a sign-in answers 200 with "Ok." or "Fails.". From 5.2 it answers 204 with no
             // text when signed in and 401 for a wrong password. Both answer 403 while this address is banned.

@@ -6,6 +6,7 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 ## Unreleased
 
 ### Fixed
+- **API keys and the qBittorrent password only go to the addresses you saved.** When the Sonarr, Radarr or qBittorrent address answered with a redirect to another address, the call followed it, sending the API key along, and for a 307 or 308 the qBittorrent sign-in posted the user name and password again to the new address. Redirects are no longer followed for these calls. The call fails with a message naming where the address points, so you can save that address instead.
 - **Import by hand leaves rejected files unticked.** Every matched file started ticked, including ones Sonarr or Radarr had rejected (as "not an upgrade", say), and a manual import doesn't check them again, so pressing Import could replace a better copy in the library. Rejected files now start unticked, with the reason shown, and can still be ticked to import them anyway.
 - **"HEVC plays fine here" needs real playback.** The tip took an empty transcode log as proof that HEVC plays everywhere, so it showed a few minutes after installing. It now waits until the log holds at least 20 transcodes, and no longer lists 4K profiles, where nearly every release is HEVC.
 - **Advice follows its evidence.** Any transcode for bitrate led to "untick Remux"; now only transcodes of Remux-sized files (25 Mbps or more) do. The DTS and TrueHD advice no longer reaches profiles that only allow Remux, since a Remux always keeps the disc's own audio.
@@ -14,8 +15,13 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 - **Odd answers and failed saves give a clear error.** A Sonarr or Radarr answer that wasn't the expected JSON made the page fail with a server error; it now says what came back. Saving writes the keys and password before the new addresses, so a failed key write leaves the old settings in place, instead of pairing the old key with the new server.
 - **Changing the qBittorrent address forgets what was added to the old one.** The record of which exclusions Medic Profiles added was kept when the address changed, so Stop blocking on the new qBittorrent could remove entries its owner had added there.
 - **An empty library search no longer fails.** Clearing the search box and searching answered with an error.
+- **A failed save changes nothing.** When the keys were written but the new addresses then couldn't be saved (a full disk, say), a key typed for a new server stayed paired with the old address; when one key couldn't be written, the password or key written before it stayed saved, although the page was told nothing had changed. The keys and password written by that save are now put back as they were, the addresses stay, and the page shows what the server said went wrong instead of only "Couldn't save. Try again.".
+- **Choosing the film or series for a rejected file leaves its box as it was.** Picking a match in Change film or Change series marked the file for import while its box still showed it unticked, so Import sent a file the list said it wouldn't. Picking a match now changes only the match: a rejected file is imported only once its box is ticked, and the "Left unticked" note goes away once it's ticked.
+- **An empty library search doesn't fetch the library.** A search with nothing to match (blank, or only punctuation) still fetched Sonarr's or Radarr's whole film or series list (unless it had in the last 10 minutes) before answering with no results. It now answers at once.
+- **Remux files without bitrate tags, a save during a report, and what an odd answer held.** A Remux whose streams carry no bitrate (common in MKV) read as a small file, so its transcodes didn't count toward the Remux advice; the file's overall bitrate now counts too. A report already being made when the settings were saved could still be kept for an hour afterwards; it isn't now. An answer that wasn't the expected JSON now says what came back ("a list where an object was expected", say) when reading the queue, blocked releases, the library, episodes, indexers or quality profiles.
+- **The contact address and issue links point to where the plugin is published now.** "Report an issue", "See open issues" and the email address pointed to the old repository and address. They now go to github.com/camarigor/Jellyfin-Medic and igor.marques@protonmail.com.
 
-Thanks @camarigor for reporting these (#159).
+Thanks @camarigor for reporting these (#159, #206).
 
 ## [1.1.4] – 2026-10-17
 

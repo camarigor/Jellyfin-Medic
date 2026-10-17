@@ -8,8 +8,8 @@ body:
       value: |
         Thanks for taking the time to report this. The more you fill in below, the sooner it can be found and fixed.
 
-        **Something private, or a security problem?** Please don't post it here: email the address under
-        [About this project](https://github.com/P1zzm1ssile/Jellyfin-Medic#about-this-project) instead.
+        **Something private, or a security problem?** Please don't post it here: email
+        [igor.marques@protonmail.com](mailto:igor.marques@protonmail.com) instead.
 
   - type: checkboxes
     id: pre-flight
