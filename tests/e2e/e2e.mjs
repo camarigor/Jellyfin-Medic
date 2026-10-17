@@ -762,8 +762,8 @@ await check('track cleanup refuses a new copy that comes out shorter than the or
     return withTrackSettings({ TracksExclude: 'Two Tracks\nKeep Me Too', TracksReplaceInPlace: true }, async () => {
         const p = await runTracks();
         const notes = JSON.stringify(p.Recent);
-        expect(p.Changed === 0 && p.Skipped === 1 && p.Failed === 0, 'a short copy was accepted: ' + notes);
-        expect((p.Recent || []).some((r) => /Cut Short.*didn't come out right \(it lasts/.test(r)), 'not refused for its length: ' + notes);
+        expect(p.Changed === 0 && p.Skipped === 0 && p.Failed === 1, 'a short copy was accepted, or not counted as failed: ' + notes);
+        expect((p.Recent || []).some((r) => /Problem with Cut Short.*didn't come out right \(it lasts/.test(r)), 'not refused for its length: ' + notes);
         expect(fs.statSync(file).size === size && audioLanguages(file) === 'eng,fre', 'the original was changed');
         expect(!fs.existsSync(`${file}.medic-tmp.mkv`), 'the temp file was left behind');
         return 'short copy refused, original untouched';

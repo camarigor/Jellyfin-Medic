@@ -1100,14 +1100,14 @@ public static class TrackCleaner
         ProbedFile? source = ffprobe is null ? null : await ProbeFile(ffprobe, plan.Path, ct).ConfigureAwait(false);
         if (source is null)
         {
-            Skipped(plan, "FFprobe couldn't read the file, so it was left alone");
+            NotChanged(plan, Unchanged.Unreadable, "FFprobe couldn't read the file, so it was left alone");
             return;
         }
 
         if (DescribeMismatch(plan, source) is { } mismatch)
         {
             item.ChangedExternally();
-            Skipped(plan, $"Jellyfin's list of its tracks is out of date ({mismatch}). Jellyfin has been asked to read the file again; run track cleanup again once it has.");
+            NotChanged(plan, Unchanged.StalePlan, $"Jellyfin's list of its tracks is out of date ({mismatch}). Jellyfin has been asked to read the file again; run track cleanup again once it has.");
             return;
         }
 
@@ -1115,7 +1115,7 @@ public static class TrackCleaner
         var facts = await FileFacts(plan.Path, ct).ConfigureAwait(false);
         if (LinkSkipReason(facts, IsSymlink(plan.Path), countLinks: !OperatingSystem.IsWindows()) is { } why)
         {
-            Skipped(plan, why);
+            NotChanged(plan, Unchanged.Linked, why);
             return;
         }
 
@@ -1129,7 +1129,7 @@ public static class TrackCleaner
         {
             if (!Reserve(free, total, size, ref _writing, out needed))
             {
-                Skipped(plan, $"its drive has {Gb(free)} free and the new copy needs about {Gb(needed)}, keeping {Gb(SpaceFloor(total))} free for everything else, so it was left alone");
+                NotChanged(plan, Unchanged.NoSpace, $"its drive has {Gb(free)} free and the new copy needs about {Gb(needed)}, keeping {Gb(SpaceFloor(total))} free for everything else, so it was left alone");
                 return;
             }
         }
@@ -1190,7 +1190,7 @@ public static class TrackCleaner
             if (problem is not null)
             {
                 SafeDelete(temp);
-                Skipped(plan, $"the new copy didn't come out right ({problem}), so the original was left alone");
+                NotChanged(plan, Unchanged.BadCopy, $"the new copy didn't come out right ({problem}), so the original was left alone");
                 return;
             }
 
@@ -1206,7 +1206,7 @@ public static class TrackCleaner
             {
                 SafeDelete(temp);
                 item.ChangedExternally();
-                Skipped(plan, "it changed while it was being cleaned (replaced by Sonarr or Radarr?), so the new file was kept as it is");
+                NotChanged(plan, Unchanged.ReplacedMeanwhile, "it changed while it was being cleaned (replaced by Sonarr or Radarr?), so the new file was kept as it is");
                 return;
             }
 
@@ -1288,11 +1288,37 @@ public static class TrackCleaner
         }
     }
 
-    /// <summary>Counts a file as left alone on purpose (not a failure), with the reason in the run's notes.</summary>
-    private static void Skipped(FilePlan plan, string why)
+    /// <summary>Why a run didn't change a file it planned to clean.</summary>
+    internal enum Unchanged
     {
-        lock (Sync) { Progress.Skipped++; Progress.Done++; Progress.BytesDone += plan.SizeBytes; }
-        Note($"Skipped {plan.Title}: {why}");
+        Unreadable,
+        StalePlan,
+        Linked,
+        NoSpace,
+        BadCopy,
+        ReplacedMeanwhile,
+    }
+
+    /// <summary>Counts a file the run didn't change, with the reason in the run's notes.</summary>
+    private static void NotChanged(FilePlan plan, Unchanged reason, string why)
+    {
+        bool failed;
+        lock (Sync) { failed = Tally(Progress, reason, plan.SizeBytes); }
+        Note(failed ? $"Problem with {plan.Title}: {why}" : $"Skipped {plan.Title}: {why}");
+    }
+
+    /// <summary>
+    /// Counts a file the run didn't change; true when it failed. A file Medic chose not to touch is left alone, but one
+    /// it tried and couldn't clean (the original unreadable, or the new copy not right) failed, so a run where FFmpeg
+    /// fails on every file doesn't look like one that had nothing to do.
+    /// </summary>
+    internal static bool Tally(TrackRunProgress progress, Unchanged reason, long bytes)
+    {
+        bool failed = reason is Unchanged.Unreadable or Unchanged.BadCopy;
+        if (failed) progress.Failed++; else progress.Skipped++;
+        progress.Done++;
+        progress.BytesDone += bytes;
+        return failed;
     }
 
     /// <summary>
