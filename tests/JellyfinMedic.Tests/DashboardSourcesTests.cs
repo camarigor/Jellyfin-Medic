@@ -68,7 +68,52 @@ public sealed class LoadGuardPausedTests : IDisposable
         Assert.Empty(LoadGuard.Paused);
     }
 
+    [Fact]
+    public async Task The_list_survives_a_restart_of_Jellyfin()
+    {
+        var scan = new FakeTaskWorker("Scan media library", "RefreshLibrary", 30);
+        using (var before = new LoadGuard(new FakeTaskManager(), _paths, NullLogger<LoadGuard>.Instance))
+        {
+            before.Defer(scan);
+        }
+
+        using var after = new LoadGuard(new FakeTaskManager(), _paths, NullLogger<LoadGuard>.Instance);
+        await after.StartAsync(CancellationToken.None);
+        await after.StopAsync(CancellationToken.None);
+
+        Assert.Equal(scan.Id, Assert.Single(LoadGuard.Paused).TaskId);
+        after.DropFirst();
+    }
+
+    [Fact]
+    public void After_a_restart_each_task_comes_back_once_and_none_stopped_over_a_day_ago()
+    {
+        var now = Dash.Utc(2026, 10, 17, 9);
+        var saved = new[]
+        {
+            new PausedTask { TaskId = "b", TaskName = "Trickplay", StoppedUtc = now.AddHours(-2) },
+            new PausedTask { TaskId = "a", TaskName = "Scan", StoppedUtc = now.AddHours(-3) },
+            new PausedTask { TaskId = "a", TaskName = "Scan", StoppedUtc = now.AddHours(-1) },
+            new PausedTask { TaskId = "c", TaskName = "Old", StoppedUtc = now.AddHours(-25) }
+        };
+
+        Assert.Equal(new[] { "a", "b" }, LoadGuard.Restore(saved, now).Select(p => p.TaskId));
+    }
+
     public void Dispose() => Directory.Delete(_paths.Root, recursive: true);
+}
+
+public sealed class SafeRestartTests
+{
+    [Theory]
+    [InlineData("RefreshLibrary", true)]
+    [InlineData(RestartForUpdatesTask.TaskKey, false)]
+    [InlineData(ScheduledRestartTask.TaskKey, false)]
+    public void A_restart_waits_for_other_tasks_but_not_for_either_restart_task(string running, bool blocks)
+    {
+        Assert.Equal(blocks, SafeRestart.Blocks(running, ScheduledRestartTask.TaskKey));
+        Assert.Equal(blocks, SafeRestart.Blocks(running, RestartForUpdatesTask.TaskKey));
+    }
 }
 
 public sealed class DiskReadingsTests : IDisposable

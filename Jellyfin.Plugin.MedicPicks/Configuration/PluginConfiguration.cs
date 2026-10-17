@@ -51,6 +51,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Users who should not get Discover picks (e.g. children's accounts). Library picks still respect parental controls.</summary>
     public string[] DiscoverDisabledUserIds { get; set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Accounts with parental limits (a maximum rating, or blocked or allowed tags) that an admin ticked for Discover.
+    /// Without this they get no Discover picks, as TMDb's suggestions can't be filtered by those limits.
+    /// </summary>
+    public string[] DiscoverAllowedLimitedUserIds { get; set; } = Array.Empty<string>();
+
     /// <summary>Add a link to the picks page to every user's Jellyfin menu (web, Desktop, Android and iOS apps).</summary>
     public bool AddMenuLink { get; set; } = true;
 

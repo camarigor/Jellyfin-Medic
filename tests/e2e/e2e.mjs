@@ -8,6 +8,10 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const JF = process.env.JF || 'http://127.0.0.1:8096';
+// The pretend Sonarr, Seerr and the rest listen on fixed ports, moved by FAKE_PORT_OFFSET so two runs can go side by side.
+const P = (port) => port + Number(process.env.FAKE_PORT_OFFSET || 0);
+// The Docker container run.sh started Jellyfin in.
+const CONTAINER = process.env.E2E_NAME || 'medic-e2e';
 const AUTH = 'MediaBrowser Client="e2e", Device="e2e", DeviceId="medic-e2e", Version="1.0"';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -169,7 +173,7 @@ await check('support export hides secrets in name/value pairs, tokens and dashle
   <ProxyAuth>Basic FAKEbasicDXNlcjpwYXNz</ProxyAuth>
   <LibraryId>3f2504e0-4f89-11d3-9a0c-0305e82c3301</LibraryId>
 </PluginConfiguration>`;
-    execFileSync('docker', ['exec', '-i', 'medic-e2e', 'sh', '-c', 'cat > "$1"', 'sh', file], { input: xml });
+    execFileSync('docker', ['exec', '-i', CONTAINER, 'sh', '-c', 'cat > "$1"', 'sh', file], { input: xml });
     try {
         const r = await api('GET', '/JellyfinMedic/Export');
         expect(r.status === 200, 'export ' + r.status);
@@ -180,7 +184,7 @@ await check('support export hides secrets in name/value pairs, tokens and dashle
         expect(part.includes('3f2504e0-4f89-11d3-9a0c-0305e82c3301'), 'a dashed id was hidden');
         return 'no secret left, labels and ids kept';
     } finally {
-        execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-f', file]);
+        execFileSync('docker', ['exec', CONTAINER, 'rm', '-f', file]);
     }
 });
 
@@ -368,6 +372,62 @@ await check('Dashboard data: both routes answer an admin with every section, and
     return `${fields.length} fields, ${data.Disks.Drives.length} drives, ${live.Resources.length} readings; 403 and 401 for the others`;
 });
 
+// Every admin route in the plugins' controllers, read from the source so a new one is covered without a change here.
+// Medic Picks marks admin routes one by one, all under Admin/; its unit tests check that the two go together.
+function adminRoutes() {
+    const root = new URL('../../', import.meta.url);
+    const files = [
+        ['src/JellyfinMedic/MedicController.cs'], ['src/JellyfinMedic/ScheduleController.cs'], ['src/JellyfinMedic/MedicDashboardController.cs'],
+        ['Jellyfin.Plugin.MedicProfiles/Api/ProfilesController.cs'], ['Jellyfin.Plugin.MedicPosters/Api/PostersController.cs'],
+        ['Jellyfin.Plugin.MedicPicks/Api/PicksController.cs', (route) => route.startsWith('Admin/')]
+    ];
+    // Values that fit each route's parameters, so the request reaches the sign-in check rather than a 404.
+    const values = { app: 'sonarr', itemId: '00000000-0000-0000-0000-000000000000', requestId: '1', name: 'e2e' };
+    const routes = [];
+    for (const [file, include = () => true] of files) {
+        const code = require('node:fs').readFileSync(new URL(file, root), 'utf8');
+        const prefix = code.match(/^\[Route\("([^"]+)"\)\]/m)[1];
+        for (const m of code.matchAll(/\[Http(Get|Post|Put|Delete)(?:\("([^"]*)"\))?\]/g)) {
+            const route = m[2] || '';
+            if (!include(route)) continue;
+            const path = '/' + [prefix, route].filter(Boolean).join('/').replace(/\{(\w+)[^}]*\}/g, (_, p) => values[p] ?? '1');
+            routes.push([m[1].toUpperCase(), path]);
+        }
+    }
+    return routes;
+}
+
+await check('every admin route refuses an account that isn\'t an administrator', async () => {
+    const routes = adminRoutes();
+    expect(routes.length > 80, `only ${routes.length} admin routes found; has a controller moved?`);
+    const name = 'e2e-not-admin-routes';
+    const device = AUTH.replace('medic-e2e', name);
+    const made = await api('POST', '/Users/New', { Name: name, Password: 'e2e-pass' });
+    expect(made.status === 200, 'user not created: ' + made.text);
+    try {
+        const signIn = await fetch(JF + '/Users/AuthenticateByName', {
+            method: 'POST',
+            headers: { Authorization: device, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ Username: name, Pw: 'e2e-pass' })
+        });
+        expect(signIn.status === 200, 'sign-in: ' + signIn.status);
+        const userToken = (await signIn.json()).AccessToken;
+        const answered = [];
+        for (const [method, path] of routes) {
+            const res = await fetch(JF + path, {
+                method,
+                headers: { Authorization: `${device}, Token="${userToken}"`, 'Content-Type': 'application/json' },
+                body: method === 'GET' ? undefined : '{}'
+            });
+            if (res.status !== 403) answered.push(`${method} ${path}: ${res.status}`);
+        }
+        expect(answered.length === 0, 'answered an account that isn\'t an administrator: ' + answered.join(', '));
+    } finally {
+        await api('DELETE', `/Users/${made.json.Id}`);
+    }
+    return `${routes.length} routes, each 403`;
+});
+
 await check('Jellyfin\'s API document still builds with Medic installed', async () => {
     // Jellyfin names the document's schemas by a type's short name, so a Medic type named like a Jellyfin one breaks it.
     const doc = await api('GET', '/api-docs/openapi.json');
@@ -430,18 +490,18 @@ const MEDIC_DATA = '/config/plugins/configurations/JellyfinMedic';
 // Medic's data files in the container (Jellyfin owns /config while it runs): read one (null when missing), write one, remove one.
 function readMedicFile(name) {
     try {
-        return execFileSync('docker', ['exec', 'medic-e2e', 'cat', `${MEDIC_DATA}/${name}`], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+        return execFileSync('docker', ['exec', CONTAINER, 'cat', `${MEDIC_DATA}/${name}`], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
     } catch {
         return null;
     }
 }
 
 function writeMedicFile(name, text) {
-    execFileSync('docker', ['exec', '-i', 'medic-e2e', 'sh', '-c', 'cat > "$1"', 'sh', `${MEDIC_DATA}/${name}`], { input: text });
+    execFileSync('docker', ['exec', '-i', CONTAINER, 'sh', '-c', 'cat > "$1"', 'sh', `${MEDIC_DATA}/${name}`], { input: text });
 }
 
 function removeMedicFile(name) {
-    execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-f', `${MEDIC_DATA}/${name}`]);
+    execFileSync('docker', ['exec', CONTAINER, 'rm', '-f', `${MEDIC_DATA}/${name}`]);
 }
 
 // The Dashboard's data is kept for a minute: waits for a build that started after `since` (a time in ms).
@@ -493,13 +553,13 @@ await check('schedule apply changes nothing when Medic can\'t save its schedule,
         .sort((a, b) => a[0].localeCompare(b[0])));
     const before = await triggers();
     // A folder where Medic first writes its schedule file makes that write fail, as a full disk would.
-    execFileSync('docker', ['exec', 'medic-e2e', 'mkdir', '-p', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
+    execFileSync('docker', ['exec', CONTAINER, 'mkdir', '-p', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
     try {
         const blocked = await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
         expect(blocked.json?.Success === false && /nothing was changed/.test(blocked.json.Message), `blocked apply: ${blocked.status} ${blocked.text.slice(0, 200)}`);
         expect(await triggers() === before, 'triggers changed although the apply failed');
     } finally {
-        execFileSync('docker', ['exec', 'medic-e2e', 'rmdir', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
+        execFileSync('docker', ['exec', CONTAINER, 'rmdir', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
     }
 
     const applied = (await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule')).json;
@@ -521,11 +581,11 @@ await check('schedule backups each get their own name, and the newest 50 are kep
 
 await check('a damaged Medic file is set aside instead of written over', async () => {
     const file = `${MEDIC_DATA}/task_choices.json`;
-    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{"damaged": true' > ${file}`]);
+    execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `echo '{"damaged": true' > ${file}`]);
     const scan = (await ok('/ScheduledTasks')).find((t) => t.Key === 'RefreshLibrary');
     const set = await api('POST', `/JellyfinMedic/Schedule/SetChoice?taskId=${scan.Id}&choice=medic`);
     expect(set.status === 200, 'SetChoice ' + set.status);
-    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `cat ${file}.bad 2>/dev/null || echo missing`]).toString();
+    const kept = execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `cat ${file}.bad 2>/dev/null || echo missing`]).toString();
     expect(kept.includes('"damaged"'), 'the damaged file was not kept: ' + kept.trim());
     return 'kept as task_choices.json.bad';
 });
@@ -629,7 +689,7 @@ await check('track cleanup checks the file itself before changing it', async () 
 
     return withTrackSettings({ TracksExclude: 'Keep Me Too' }, async () => {
         const first = await runTracks();
-        expect(first.Changed === 0 && first.Failed === 1, 'stale plan was not refused: ' + JSON.stringify(first.Recent));
+        expect(first.Changed === 0 && first.Skipped === 1 && first.Failed === 0, 'stale plan was not refused: ' + JSON.stringify(first.Recent));
         expect(audioLanguages(file) === 'fre,eng', 'the file was changed anyway: ' + audioLanguages(file));
 
         // Medic asked Jellyfin to read the file again; once it has, the run strips the French track.
@@ -680,7 +740,7 @@ await check('track cleanup refuses a new copy that comes out shorter than the or
     return withTrackSettings({ TracksExclude: 'Two Tracks\nKeep Me Too', TracksReplaceInPlace: true }, async () => {
         const p = await runTracks();
         const notes = JSON.stringify(p.Recent);
-        expect(p.Changed === 0 && p.Failed === 1, 'a short copy was accepted: ' + notes);
+        expect(p.Changed === 0 && p.Skipped === 1 && p.Failed === 0, 'a short copy was accepted: ' + notes);
         expect((p.Recent || []).some((r) => /Cut Short.*didn't come out right \(it lasts/.test(r)), 'not refused for its length: ' + notes);
         expect(fs.statSync(file).size === size && audioLanguages(file) === 'eng,fre', 'the original was changed');
         expect(!fs.existsSync(`${file}.medic-tmp.mkv`), 'the temp file was left behind');
@@ -697,7 +757,7 @@ await check('track cleanup leaves hardlinked files alone', async () => {
         return await withTrackSettings({ TracksExclude: 'Cut Short' }, async () => {
             const p = await runTracks();
             const notes = JSON.stringify(p.Recent);
-            expect(p.Changed === 0 && p.Failed === 1 && /Seeded.*2 hard links/.test(notes), 'the hardlinked film was cleaned: ' + notes);
+            expect(p.Changed === 0 && p.Skipped === 1 && p.Failed === 0 && /Seeded.*2 hard links/.test(notes), 'the hardlinked film was cleaned: ' + notes);
             expect(audioLanguages(file) === 'eng,fre' && fs.statSync(file).nlink === 2, 'the film was changed');
             return 'skipped, still shared with the seeding copy';
         });
@@ -728,6 +788,45 @@ await check('track cleanup keeps the file\'s owner and permissions', async () =>
         expect(describe(originals) === `2770 ${folder.uid}:${folder.gid}` && describe(ignore) === `660 ${folder.uid}:${folder.gid}`,
             `.medic-originals is ${describe(originals)} and its .ignore ${describe(ignore)}, the film's folder ${describe(folder)}`);
         return 'mode 660 and owner kept, originals folder like the film\'s';
+    });
+});
+
+await check('track cleanup keeps the original of a file replaced between runs', async () => {
+    // Sonarr or Radarr upgrading a cleaned film under the same name: the new release must be kept when it's
+    // cleaned, not lost because .medic-originals already holds the old release's original.
+    const file = await addFilm('Upgraded (2021)', ['eng', 'fre'], 4);
+    const dir = `${movies}/Upgraded (2021)`;
+    const kept = `${dir}/.medic-originals/Upgraded (2021).mkv`;
+    return withTrackSettings({ TracksExclude: 'Cut Short\nSeeded\nOwned' }, async () => {
+        const first = await runTracks();
+        expect(first.Changed === 1 && first.Failed === 0, 'first clean: ' + JSON.stringify(first.Recent));
+        expect(first.BytesKept > 0, 'space held by the kept original not reported: ' + first.BytesKept);
+        const changes = await ok('/JellyfinMedic/Tracks/Changes');
+        // Paths as the server sees them, inside its container.
+        expect(changes.some((c) => c.Path.endsWith('/Upgraded (2021)/Upgraded (2021).mkv') && c.KeptOriginal?.endsWith('/Upgraded (2021)/.medic-originals/Upgraded (2021).mkv')), 'the change was not recorded: ' + JSON.stringify(changes.slice(0, 3)));
+
+        const upgrade = `${process.env.WORK}/upgrade.mkv`;
+        makeFilm(upgrade, ['eng', 'fre'], 6);
+        fs.renameSync(upgrade, file);
+        const size = fs.statSync(file).size;
+        // Jellyfin still lists the cleaned file's one track, so nothing would plan it: have Jellyfin read it, as a scan would.
+        const id = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Upgraded')).Items[0].Id;
+        await api('POST', `/Items/${id}/Refresh?metadataRefreshMode=Default&imageRefreshMode=None&replaceAllMetadata=false`);
+        let audio = 0;
+        for (let i = 0; i < 30 && audio < 2; i++) {
+            await sleep(2000);
+            const item = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Upgraded&Fields=MediaStreams')).Items[0];
+            audio = (item?.MediaStreams || []).filter((m) => m.Type === 'Audio').length;
+        }
+        expect(audio === 2, 'Jellyfin did not read the new release');
+        const second = await runTracks();
+        expect(second.Changed === 1, 'second clean: ' + JSON.stringify(second.Recent));
+        const aside = fs.readdirSync(`${dir}/.medic-originals`).filter((f) => /^Upgraded \(2021\)\.replaced-\d{8}-\d{6}\.mkv$/.test(f));
+        expect(aside.length === 1, 'the old release\'s original was not moved aside: ' + fs.readdirSync(`${dir}/.medic-originals`));
+        expect(fs.statSync(kept).size === size && audioLanguages(kept) === 'eng,fre', 'the new release was not kept');
+        const k = await ok('/JellyfinMedic/Tracks/KeptOriginals');
+        expect(k.Orphans >= 1, 'the old original is not offered as one with no file: ' + JSON.stringify(k));
+        return 'new release kept, old one moved aside and offered for deletion';
     });
 });
 
@@ -804,6 +903,28 @@ await check('Medic Picks builds picks from watch history', async () => {
     return `${picks.length} picks: ${order.split(', ').slice(0, 4).join(', ')}, ...`;
 });
 
+await check('Medic Picks updates the playlist in place on the next build, keeping its id', async () => {
+    const find = async () => (await ok(`/Items?Recursive=true&IncludeItemTypes=Playlist&userId=${ctx.userId}`)).Items
+        .filter((i) => /picks for you/i.test(i.Name));
+    const before = await find();
+    expect(before.length === 1, 'playlists before: ' + before.map((p) => p.Name).join(', '));
+    const was = (await ok('/MedicPicks/Me')).generatedUtc;
+    const build = (await ok('/ScheduledTasks')).find((t) => t.Key === 'MedicPicksBuild' || /personal picks/i.test(t.Name));
+    await api('POST', `/ScheduledTasks/Running/${build.Id}`);
+    let me = null;
+    for (let i = 0; i < 60 && !(me?.generatedUtc && me.generatedUtc !== was && !me.rebuilding); i++) {
+        await sleep(1000);
+        me = (await api('GET', '/MedicPicks/Me')).json;
+    }
+    // The task saves part-way through; wait for it to finish.
+    for (let i = 0; i < 60 && (await ok('/ScheduledTasks')).find((t) => t.Id === build.Id).State !== 'Idle'; i++) await sleep(1000);
+    const after = await find();
+    expect(after.length === 1 && after[0].Id === before[0].Id, `playlist ${before[0].Id} became ${after.map((p) => p.Id).join(', ')}`);
+    const items = (await ok(`/Playlists/${after[0].Id}/Items?userId=${ctx.userId}`)).Items;
+    expect(items.length === me.inLibrary.length, `${items.length} items in the playlist for ${me.inLibrary.length} picks`);
+    return `kept ${after[0].Id} with ${items.length} items`;
+});
+
 await check('My picks page is served with no-cache', async () => {
     const res = await api('GET', '/MedicPicks/Page', undefined, true);
     expect(res.status === 200, 'status ' + res.status);
@@ -815,7 +936,7 @@ await check('Medic Picks "My requests" says Seerr is out of reach instead of fai
     // reachable:false, which the page shows, and the second within the time limit per call.
     const http = await import('node:http');
     const silent = http.createServer(() => { /* never answers */ });
-    await new Promise((resolve) => silent.listen(18991, '0.0.0.0', resolve));
+    await new Promise((resolve) => silent.listen(P(18991), '0.0.0.0', resolve));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
     const myRequests = async (url) => {
@@ -829,7 +950,7 @@ await check('Medic Picks "My requests" says Seerr is out of reach instead of fai
     try {
         const refused = await myRequests('http://host.docker.internal:9');
         expect(refused.status === 200 && refused.json?.reachable === false, `refused: ${refused.status} ${refused.text.slice(0, 200)}`);
-        const silentSeerr = await myRequests('http://host.docker.internal:18991');
+        const silentSeerr = await myRequests(`http://host.docker.internal:${P(18991)}`);
         expect(silentSeerr.status === 200 && silentSeerr.json?.reachable === false, `no answer: ${silentSeerr.status} ${silentSeerr.text.slice(0, 200)}`);
         expect(silentSeerr.seconds < 30, `took ${silentSeerr.seconds} s`);
         return `both reported as out of reach (the silent one after ${silentSeerr.seconds.toFixed(0)} s)`;
@@ -858,10 +979,10 @@ await check('Medic Picks "My requests" says Seerr is out of reach when something
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html><body>Sign in</body></html>');
     });
-    await new Promise((resolve) => signIn.listen(18996, '0.0.0.0', resolve));
+    await new Promise((resolve) => signIn.listen(P(18996), '0.0.0.0', resolve));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18996', ShowRequests: true });
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18996)}`, ShowRequests: true });
     await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     try {
         const mine = await api('GET', '/MedicPicks/Me/Requests');
@@ -926,15 +1047,15 @@ await check('Medic Picks removes the saved Seerr key when the Seerr address move
 // ---------- Medic Profiles, against a pretend Sonarr ----------
 
 const fakeArr = await import('./fake-arr.mjs');
-const arrServer = await fakeArr.start(18989);
-const ARR = process.env.ARR_URL || 'http://host.docker.internal:18989';
+const arrServer = await fakeArr.start(P(18989));
+const ARR = process.env.ARR_URL || `http://host.docker.internal:${P(18989)}`;
 
 await check('Medic Picks approves and declines requests as the admin\'s own Seerr account', async () => {
     // Without X-API-User, Seerr acts as its owner account for any call made with the API key.
-    const seerrServer = await fakeArr.startSeerr(18992);
+    const seerrServer = await fakeArr.startSeerr(P(18992));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18992', ShowRequests: true });
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18992)}`, ShowRequests: true });
     await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     try {
         const approved = await api('POST', '/MedicPicks/Admin/Requests/7/Approve');
@@ -952,10 +1073,10 @@ await check('Medic Picks approves and declines requests as the admin\'s own Seer
 
 await check('Medic Picks "My requests" skips a season entry it can\'t read instead of failing', async () => {
     // A season list holding something other than season entries; only season 2 is one, so only its download counts.
-    const seerrServer = await fakeArr.startSeerr(18995);
+    const seerrServer = await fakeArr.startSeerr(P(18995));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18995', ShowRequests: true });
+    await api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18995)}`, ShowRequests: true });
     await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     fakeArr.seerr.extraRequests.push({
         id: 13, status: 2, type: 'tv', createdAt: '2026-10-03T10:00:00.000Z', requestedBy: { id: 42 },
@@ -986,10 +1107,10 @@ await check('Medic Picks "My requests" skips a season entry it can\'t read inste
 
 await check('Medic Picks shows only your own requests and keeps Discover-off accounts from requesting', async () => {
     // This Seerr ignores ?requestedBy= and lists someone else's request too; Medic Picks must drop it.
-    const seerrServer = await fakeArr.startSeerr(18993);
+    const seerrServer = await fakeArr.startSeerr(P(18993));
     const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
     const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
-    const setCfg = (changes) => api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: 'http://host.docker.internal:18993', ShowRequests: true, SeerrDirectRequests: true, ...changes });
+    const setCfg = (changes) => api('POST', `/Plugins/${plugin.Id}/Configuration`, { ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18993)}`, ShowRequests: true, SeerrDirectRequests: true, ...changes });
     await setCfg({});
     await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
     try {
@@ -1025,7 +1146,7 @@ await check('Medic Profiles never sends a saved key to a new server, and keeps a
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR + '/', RadarrUrl: '' });
         expect(await keySet(), 'the key was dropped although the server is the same');
         // Another server, key box left blank: the key must be typed again.
-        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: 'http://host.docker.internal:18994', RadarrUrl: '' });
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: `http://host.docker.internal:${P(18994)}`, RadarrUrl: '' });
         expect(!(await keySet()), 'the saved key was kept for a different server');
     } finally {
         // Back to the pretend Sonarr whatever happened, so a failure here doesn't also fail the checks after it.
@@ -1034,10 +1155,10 @@ await check('Medic Profiles never sends a saved key to a new server, and keeps a
 
     // A keys file that can't be read is set aside, not replaced by one holding only the new key.
     const dir = '/config/data/medic-profiles';
-    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `echo '{not json' > ${dir}/secrets.json`]);
+    execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `echo '{not json' > ${dir}/secrets.json`]);
     await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
     // It's kept beside it, named with the time it was set aside.
-    const kept = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `cat ${dir}/secrets.json.*.bad`]).toString();
+    const kept = execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `cat ${dir}/secrets.json.*.bad`]).toString();
     expect(kept.includes('{not json'), 'the damaged file was not kept: ' + kept);
     expect(await keySet(), 'the new key was not saved');
     return 'key dropped for a new server; damaged file kept beside it';
@@ -1073,7 +1194,7 @@ await check('Medic Profiles blocks program files in qBittorrent, keeping the own
     // The owner's own list, switched off on purpose, holding *.zip, which is also one of Medic Profiles' patterns.
     Object.assign(fakeArr.qbit.prefs, { excluded_file_names_enabled: false, excluded_file_names: '*.nfo\n*.zip' });
     try {
-        const QB = ARR.replace('18989', '18080');
+        const QB = ARR.replace(`:${P(18989)}`, `:${P(18080)}`);
         await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'secret' });
         let state = await ok('/MedicProfiles/FileFilter');
         expect(state.reachable && !state.blocksPrograms, 'before: ' + JSON.stringify(state));
@@ -1116,7 +1237,7 @@ await check('Medic Profiles signs in to qBittorrent 5.2, and tries a refused sig
     const qbitServer = await fakeArr.startQbit(18080);
     Object.assign(fakeArr.qbit, { v52: true, banned: true, logins: 0, failedLogins: 0 });
     try {
-        const QB = ARR.replace('18989', '18080');
+        const QB = ARR.replace(`:${P(18989)}`, `:${P(18080)}`);
         const save = () => api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: 'secret' });
         // Banned: the page says so, and opening it again doesn't knock on qBittorrent's door.
         await save();
@@ -1147,7 +1268,7 @@ await check('Medic Profiles spends no qBittorrent sign-in on save, Test or block
     const qbitServer = await fakeArr.startQbit(18080);
     Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
     try {
-        const QB = ARR.replace('18989', '18080');
+        const QB = ARR.replace(`:${P(18989)}`, `:${P(18080)}`);
         // What the page sends: the password box is empty unless a new one was typed.
         const save = (password, extra) => api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: QB, QbitUser: 'admin', QbitPassword: password, ...extra });
         // Start signed in, so the wrong password below is new to Medic and not one an earlier check left refused.
@@ -1336,8 +1457,8 @@ await check('Medic Posters makes an animated poster for each film, Jellyfin serv
 await check('Medic Posters makes a series poster from its episodes, and a cover for a TV library', async () => {
     const { execFileSync } = await import('node:child_process');
     const dir = '/media/tv/Sample Show/Season 1';
-    const ff = (...args) => execFileSync('docker', ['exec', 'medic-e2e', '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
-    execFileSync('docker', ['exec', 'medic-e2e', 'mkdir', '-p', dir]);
+    const ff = (...args) => execFileSync('docker', ['exec', CONTAINER, '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
+    execFileSync('docker', ['exec', CONTAINER, 'mkdir', '-p', dir]);
     try {
         for (const [n, c] of [[1, 'testsrc'], [2, 'smptebars'], [3, 'rgbtestsrc']]) {
             ff('-f', 'lavfi', '-i', `${c}=size=320x180:rate=10:duration=8`, '-c:v', 'libx264', '-preset', 'ultrafast', `${dir}/Sample Show S01E0${n}.mkv`);
@@ -1378,7 +1499,7 @@ await check('Medic Posters makes a series poster from its episodes, and a cover 
     } finally {
         await api('POST', '/MedicPosters/RestoreAll');
         await api('DELETE', '/Library/VirtualFolders?name=Shows&refreshLibrary=false');
-        execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-rf', '/media/tv']);
+        execFileSync('docker', ['exec', CONTAINER, 'rm', '-rf', '/media/tv']);
         await sleep(2000);
     }
 });
@@ -1386,7 +1507,7 @@ await check('Medic Posters makes a series poster from its episodes, and a cover 
 await check('Medic Posters keeps its poster when a refresh reads the film\'s own poster.jpg again, but not over a new upload', async () => {
     const { execFileSync } = await import('node:child_process');
     const dir = '/media/movies/Poster Film (2003)';
-    const ff = (...args) => execFileSync('docker', ['exec', 'medic-e2e', '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
+    const ff = (...args) => execFileSync('docker', ['exec', CONTAINER, '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-y', ...args]);
     const image = async (id) => {
         const r = await api('GET', `/Items/${id}/Images/Primary`, undefined, true);
         if (r.status !== 200) return String(r.status);
@@ -1397,7 +1518,7 @@ await check('Medic Posters keeps its poster when a refresh reads the film\'s own
         for (let i = 0; i < 20; i++) { await sleep(1000); got = await image(id); if (got === want) break; }
         return got;
     };
-    execFileSync('docker', ['exec', 'medic-e2e', 'mkdir', '-p', dir]);
+    execFileSync('docker', ['exec', CONTAINER, 'mkdir', '-p', dir]);
     try {
         // A film with its own poster.jpg beside it, and no locked metadata, so every refresh reads that poster again.
         ff('-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=10:duration=6', '-c:v', 'libx264', '-preset', 'ultrafast', `${dir}/Poster Film (2003).mkv`);
@@ -1420,7 +1541,7 @@ await check('Medic Posters keeps its poster when a refresh reads the film\'s own
         expect(await settle(id, 'gif') === 'gif', 'a refresh left the film\'s own poster in place of the animated one');
 
         // A poster uploaded under Edit Images is someone's choice, and stays.
-        const png = execFileSync('docker', ['exec', 'medic-e2e', '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=200x300', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', '-']);
+        const png = execFileSync('docker', ['exec', CONTAINER, '/usr/lib/jellyfin-ffmpeg/ffmpeg', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=200x300', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', '-']);
         const up = await fetch(`${JF}/Items/${id}/Images/Primary`, { method: 'POST', headers: { Authorization: AUTH + `, Token="${token}"`, 'Content-Type': 'image/png' }, body: png.toString('base64') });
         expect(up.status === 204, 'upload returned ' + up.status);
         await sleep(4000);
@@ -1429,7 +1550,7 @@ await check('Medic Posters keeps its poster when a refresh reads the film\'s own
         return `${s.made} posters`;
     } finally {
         await api('POST', '/MedicPosters/RestoreAll');
-        execFileSync('docker', ['exec', 'medic-e2e', 'rm', '-rf', dir]);
+        execFileSync('docker', ['exec', CONTAINER, 'rm', '-rf', dir]);
         await api('POST', '/Library/Refresh');
         await sleep(3000);
     }
@@ -1614,7 +1735,7 @@ await check('Medic Profiles settings: Try qBittorrent again shows after a refusa
     const qbitServer = await fakeArr.startQbit(18080);
     Object.assign(fakeArr.qbit, { logins: 0, failedLogins: 0 });
     try {
-        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: ARR.replace('18989', '18080'), QbitUser: 'admin', QbitPassword: 'wrong' });
+        await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, RadarrUrl: '', QbitUrl: ARR.replace(`:${P(18989)}`, `:${P(18080)}`), QbitUser: 'admin', QbitPassword: 'wrong' });
         await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
         await page.reload();
         await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
@@ -1869,12 +1990,12 @@ await check('Medic report load: a report request the browser drops writes no err
     const http = await import('node:http');
     let reached = 0;
     const silent = http.createServer(() => { reached++; });
-    await new Promise((resolve) => silent.listen(18981, '0.0.0.0', resolve));
+    await new Promise((resolve) => silent.listen(P(18981), '0.0.0.0', resolve));
     const cfg = await ok('/System/Configuration');
-    const repo = { Name: 'E2E silent repository', Url: `http://host.docker.internal:18981/manifest-${Date.now()}.json`, Enabled: true };
+    const repo = { Name: 'E2E silent repository', Url: `http://host.docker.internal:${P(18981)}/manifest-${Date.now()}.json`, Enabled: true };
     await api('POST', '/System/Configuration', { ...cfg, PluginRepositories: [...(cfg.PluginRepositories || []), repo] });
-    const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
-    const from = Number(execFileSync('docker', ['exec', 'medic-e2e', 'stat', '-c', '%s', newest]).toString().trim());
+    const newest = execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
+    const from = Number(execFileSync('docker', ['exec', CONTAINER, 'stat', '-c', '%s', newest]).toString().trim());
     try {
         const leave = new AbortController();
         const asked = fetch(JF + '/JellyfinMedic/Report', { headers: { Authorization: `${AUTH}, Token="${token}"` }, signal: leave.signal }).catch((e) => e);
@@ -1883,7 +2004,7 @@ await check('Medic report load: a report request the browser drops writes no err
         leave.abort();
         await asked;
         await sleep(4000);
-        const added = execFileSync('docker', ['exec', 'medic-e2e', 'tail', '-c', `+${from + 1}`, newest]).toString();
+        const added = execFileSync('docker', ['exec', CONTAINER, 'tail', '-c', `+${from + 1}`, newest]).toString();
         const ours = added.split('\n').filter((l) => /\[ERR\]/.test(l) && /\/JellyfinMedic\/Report/.test(l));
         expect(ours.length === 0, 'logged: ' + ours.join(' | ').slice(0, 400));
         return 'nothing logged';
@@ -2233,6 +2354,61 @@ await check('Dashboard panels: a task that runs all day gets one line under Toda
         return seen.line;
     } finally {
         await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
+await check('Dashboard panels: Today draws a cancelled run as cancelled, not as a normal run', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const run = { TaskId: 'e2e-cancelled', TaskName: 'Fixture cancelled', StartMinutes: 120, EndMinutes: 150, Status: 'Cancelled', ErrorMessage: null };
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Today: { ...data.Today, Actual: [...data.Today.Actual, run] } } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => Array.from(document.querySelectorAll('#md-day .md-actual')).some((b) => /Fixture cancelled/.test(b.getAttribute('aria-label') || b.title || '')), null, { timeout: 30000 });
+        const block = await page.evaluate(() => {
+            const b = Array.from(document.querySelectorAll('#md-day .md-actual')).find((x) => /Fixture cancelled/.test(x.getAttribute('aria-label') || x.title || ''));
+            return { stopped: b.classList.contains('md-run-stopped'), text: b.textContent };
+        });
+        expect(block.stopped && block.text === 'cancelled', 'the cancelled run: ' + JSON.stringify(block));
+        return 'drawn as cancelled';
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
+await check('Dashboard panels: when the live readings stop updating, the Dashboard says so, and the note goes when they come back', async () => {
+    await page.route('**/JellyfinMedic/Dashboard/Live', (route) => route.fulfill({ status: 500, body: '' }));
+    let routed = true;
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForSelector('#md-stale:not([hidden])', { timeout: 30000 });
+        const note = await page.textContent('#md-stale');
+        expect(/live readings .*stopped updating/.test(note), 'note: ' + note);
+        await page.unroute('**/JellyfinMedic/Dashboard/Live');
+        routed = false;
+        await page.waitForSelector('#md-stale[hidden]', { state: 'attached', timeout: 30000 });
+        return note;
+    } finally {
+        if (routed) await page.unroute('**/JellyfinMedic/Dashboard/Live');
+    }
+});
+
+await check('Medic settings: a blank FFmpeg threads box saves as automatic, and "Fixed it" answers with a body', async () => {
+    const before = await ok('/JellyfinMedic/MedicSettings');
+    try {
+        await medicTab('tracks', true);
+        await page.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 30000 });
+        await page.fill('#md-tracks-threads', '');
+        await page.click('#md-tracks-save');
+        await page.waitForFunction(() => /Saved/.test(document.getElementById('md-tracks-saved')?.textContent || ''), null, { timeout: 30000 });
+        const saved = await ok('/JellyfinMedic/MedicSettings');
+        expect(saved.TracksFfmpegThreads === 0, 'saved threads: ' + saved.TracksFfmpegThreads);
+        const shown = await page.inputValue('#md-tracks-threads');
+        expect(shown === '0', 'the box shows ' + JSON.stringify(shown));
+        const reset = await api('POST', '/JellyfinMedic/Logs/ResetCount');
+        expect(reset.status === 200 && reset.json?.Reset === true, `reset: ${reset.status} ${reset.text}`);
+        return 'saved as 0, shown back; reset answered ' + reset.text;
+    } finally {
+        await api('POST', '/JellyfinMedic/MedicSettings', before);
     }
 });
 
@@ -2650,7 +2826,7 @@ await check('"Remove duplicate files" says which titles it left and shows the se
 await check('admin banner on the home page for a serious error, and it can be dismissed', async () => {
     // Pretend the database reported damage, by adding the line to the newest log file.
     // Written from inside the container: the log belongs to Jellyfin's user, not the one running the tests.
-    const newest = execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
+    const newest = execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', 'ls /config/log/*.log | sort | tail -1']).toString().trim();
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
     // "What's new" was seen on Medic's page above, so its home banner is gone too.
     expect(!((await api('GET', '/JellyfinMedic/Alerts')).json || []).some((a) => a.Kind === 'whatsnew'), '"What\'s new" banner still showing after seeing it in Medic');
@@ -2658,7 +2834,7 @@ await check('admin banner on the home page for a serious error, and it can be di
     // go in at once, so the result that shows the database error was read after the warning too.
     const warning = `[${now}.000 +00:00] [WRN] [28] MediaBrowser.Providers.Manager.ProviderManager: Could not cache an image, it will be fetched again later: No space left on device`;
     const line = `[${now}.000 +00:00] [ERR] [42] Microsoft.EntityFrameworkCore: SQLite Error 11: 'database disk image is malformed'.`;
-    execFileSync('docker', ['exec', 'medic-e2e', 'sh', '-c', `printf '%s\\n%s\\n' "$1" "$2" >> "$3"`, 'sh', warning, line, newest]);
+    execFileSync('docker', ['exec', CONTAINER, 'sh', '-c', `printf '%s\\n%s\\n' "$1" "$2" >> "$3"`, 'sh', warning, line, newest]);
     let alerts = [];
     for (let i = 0; i < 70 && !alerts.some((a) => a.Kind === 'critical'); i++) {
         alerts = (await api('GET', '/JellyfinMedic/Alerts')).json || [];

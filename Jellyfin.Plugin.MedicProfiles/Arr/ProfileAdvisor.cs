@@ -99,6 +99,13 @@ public class ProfileAdvisor
     private const int LibrarySample = 1500;
     private const int MinFiles = 3;
 
+    /// <summary>Transcodes the log must hold before "HEVC plays fine" counts as shown, so a new install doesn't claim it.</summary>
+    internal const int MinTranscodesForTip = 20;
+
+    /// <summary>Every quality the profile allows is a Remux.</summary>
+    internal static bool RemuxOnly(ProfileSummary p) =>
+        p.Allowed.Count > 0 && p.Allowed.All(q => q.Contains("Remux", StringComparison.OrdinalIgnoreCase));
+
     // Qualities nobody wants by accident.
     private static readonly HashSet<string> JunkQualities = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -119,6 +126,9 @@ public class ProfileAdvisor
         _paths = paths;
         _logger = logger;
     }
+
+    /// <summary>Forgets the kept report, after the settings change (another server, a new key).</summary>
+    public void Forget() => _cached = null;
 
     public async Task<AdviceReport> GetAsync(bool refresh, CancellationToken ct)
     {
@@ -153,7 +163,8 @@ public class ProfileAdvisor
                 .OrderBy(s => s.Severity == "problem" ? 0 : s.Severity == "improve" ? 1 : 2)
                 .ThenBy(s => s.App)
                 .ToList();
-            _cached = report;
+            // A report that couldn't reach Sonarr or Radarr isn't kept, so the next visit asks again.
+            _cached = report.Errors.Count == 0 ? report : null;
             return report;
         }
         finally
@@ -172,6 +183,7 @@ public class ProfileAdvisor
     /// dvonly    transcoded for HDR, and it's Dolby Vision with no HDR10 fallback
     /// hdr       transcoded for HDR (any kind)
     /// bitrate   transcoded because the bitrate was too high
+    /// remux     transcoded because the bitrate was too high, and the file runs at Remux bitrates
     /// uhd       transcoded because 4K was too big for the device
     /// libHevc / libFiles / libDtsOnly / libUhd   from a sample of the library
     /// </summary>
@@ -241,6 +253,11 @@ public class ProfileAdvisor
         if (file is null)
         {
             return;
+        }
+
+        if ((reasons.Contains("ContainerBitrateExceedsLimit") || reasons.Contains("VideoBitrateNotSupported")) && file.Bitrate >= RemuxBitrate)
+        {
+            Add("remux");
         }
 
         if ((reasons.Contains("AudioCodecNotSupported") || reasons.Contains("AudioProfileNotSupported") || reasons.Contains("AudioChannelsNotSupported"))
@@ -333,7 +350,13 @@ public class ProfileAdvisor
 
         /// <summary>Dolby Vision with no HDR10 fallback layer.</summary>
         public bool DolbyVisionOnly { get; set; }
+
+        /// <summary>The whole file's bitrate in bits per second, 0 when unknown.</summary>
+        public long Bitrate { get; set; }
     }
+
+    /// <summary>Bits per second from which a file is Remux-sized; Bluray and WEB-DL encodes run well below it.</summary>
+    internal const long RemuxBitrate = 25_000_000;
 
     private static FileFacts? Describe(BaseItem? item)
     {
@@ -362,7 +385,8 @@ public class ProfileAdvisor
             Height = video?.Height ?? 0,
             LosslessOnlyAudio = audio.Count > 0 && audio.All(a => a.Codec is { } c
                 && (c.StartsWith("dts", StringComparison.OrdinalIgnoreCase) || c.Equals("truehd", StringComparison.OrdinalIgnoreCase))),
-            DolbyVisionOnly = range.Equals("DOVI", StringComparison.OrdinalIgnoreCase)
+            DolbyVisionOnly = range.Equals("DOVI", StringComparison.OrdinalIgnoreCase),
+            Bitrate = streams.Sum(s => (long)(s.BitRate ?? 0))
         };
     }
 
@@ -548,7 +572,9 @@ public class ProfileAdvisor
                 "DTS / TrueHD audio formats",
                 "Some of your devices can't play DTS or TrueHD, so Jellyfin converts the audio every time those files play. Releases that also carry AC3 or EAC3 audio play directly.",
                 Files(Sig("dts")) + " transcoded because the device couldn't play their DTS or TrueHD audio.",
-                "improve");
+                "improve",
+                // A Remux keeps the disc's own audio, so a Remux-only profile can't avoid DTS or TrueHD.
+                p => !RemuxOnly(p));
             if (sug.Profiles.Count > 0)
             {
                 list.Add(sug);
@@ -572,11 +598,15 @@ public class ProfileAdvisor
                 list.Add(sug);
             }
         }
-        else if (Sig("libFiles") >= 100 && Sig("libHevc") * 5 >= Sig("libFiles") && evidence.FromMedic && Sig("hevc") == 0)
+        else if (Sig("libFiles") >= 100 && Sig("libHevc") * 5 >= Sig("libFiles") && evidence.FromMedic && Sig("hevc") == 0
+            // An empty log only means nothing has transcoded yet, not that HEVC plays everywhere.
+            && evidence.TranscodedFiles >= MinTranscodesForTip)
         {
             // Only profiles that actually hold x265 back. Scored 0 or above (or with no such format), x265 already gets through.
             var hevcFormats = data.CustomFormats.Where(f => hevcPattern.IsMatch(f)).ToList();
-            var penalised = active.Where(p => hevcFormats.Any(f => data.Scores.GetValueOrDefault(p.Id)?.GetValueOrDefault(f) < 0)).ToList();
+            // Not 4K profiles, for the same reason as above.
+            var penalised = active.Where(p => !p.Allowed.Any(q => q.Contains("2160", StringComparison.Ordinal))
+                && hevcFormats.Any(f => data.Scores.GetValueOrDefault(p.Id)?.GetValueOrDefault(f) < 0)).ToList();
             var negative = hevcFormats.Where(f => penalised.Any(p => data.Scores[p.Id].GetValueOrDefault(f) < 0)).ToList();
             if (penalised.Count > 0)
             {
@@ -655,7 +685,8 @@ public class ProfileAdvisor
             }
         }
 
-        if (Sig("bitrate") >= MinFiles)
+        // Only when the files cut down were Remux-sized: a high bitrate on its own may just be a slow connection.
+        if (Sig("remux") >= MinFiles)
         {
             var remux = active.Where(p => p.Allowed.Any(a => a.Contains("Remux", StringComparison.OrdinalIgnoreCase))).Select(p => p.Name).ToList();
             if (remux.Count > 0)
@@ -668,7 +699,7 @@ public class ProfileAdvisor
                     Profiles = remux,
                     Change = "Untick Remux qualities in these profiles (Bluray or WEB-DL of the same resolution looks nearly identical at a fraction of the size), or keep Remux only in a profile for titles watched at home.",
                     Why = "Remux files run at 20–80 Mbps. Over the internet, or on weaker Wi-Fi, Jellyfin has to cut the bitrate by transcoding.",
-                    Evidence = Files(Sig("bitrate")) + " transcoded because the bitrate was too high for the connection or device."
+                    Evidence = Files(Sig("remux")) + " at Remux bitrates transcoded because the bitrate was too high for the connection or device."
                 });
             }
         }

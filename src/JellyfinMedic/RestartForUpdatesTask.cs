@@ -111,8 +111,7 @@ public static class SafeRestart
 
         try
         {
-            var busy = tasks.ScheduledTasks.FirstOrDefault(t =>
-                t.State == TaskState.Running && !string.Equals(t.ScheduledTask.Key, ownKey, StringComparison.Ordinal));
+            var busy = tasks.ScheduledTasks.FirstOrDefault(t => t.State == TaskState.Running && Blocks(t.ScheduledTask.Key, ownKey));
             if (busy is not null)
             {
                 return $"\"{busy.Name}\" is running";
@@ -125,6 +124,15 @@ public static class SafeRestart
 
         return null;
     }
+
+    /// <summary>
+    /// Whether a running task keeps a restart waiting. Neither restart task waits for itself or for the other one:
+    /// when both run at once, each would otherwise wait for the other until both gave up.
+    /// </summary>
+    internal static bool Blocks(string? runningKey, string ownKey) =>
+        !string.Equals(runningKey, ownKey, StringComparison.Ordinal)
+        && !string.Equals(runningKey, RestartForUpdatesTask.TaskKey, StringComparison.Ordinal)
+        && !string.Equals(runningKey, ScheduledRestartTask.TaskKey, StringComparison.Ordinal);
 
     // Jellyfin 10.9 and later restart through ISystemManager; earlier versions through the application host.
     // Found by name, so this keeps working if the interface moves between versions.

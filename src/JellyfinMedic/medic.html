@@ -38,6 +38,7 @@
             <!-- Dashboard -->
             <section class="so-tabpanel" data-panel="dashboard" role="tabpanel">
                 <p id="md-checked" class="so-muted so-small md-checked"></p>
+                <p id="md-stale" class="so-small md-warn-text" role="status" hidden></p>
                 <div class="md-board">
                     <div class="md-line">
                         <section class="md-tile" aria-labelledby="md-t-health">
@@ -94,7 +95,7 @@
                                 <span><i class="md-sw md-sw-planned"></i>Planned</span>
                                 <span><i class="md-sw md-sw-ran"></i>Ran</span>
                                 <span><i class="md-sw md-sw-failed"></i>Failed</span>
-                                <span><i class="md-sw md-sw-stopped"></i>Stopped</span>
+                                <span><i class="md-sw md-sw-stopped"></i>Stopped or cancelled</span>
                                 <span><i class="md-sw md-hatch"></i>Moved after a failure</span>
                                 <span><i class="md-sw md-sw-spike"></i>Heavy use</span>
                                 <span><i class="md-sw md-sw-guard"></i>LoadGuard</span>
@@ -209,6 +210,7 @@
 
             <!-- Schedule -->
             <section class="so-tabpanel" data-panel="schedule" role="tabpanel" hidden>
+                <p class="so-muted so-small md-zone" hidden></p>
                 <div class="md-row md-space md-wrap">
                     <div class="md-row">
                         <button type="button" id="md-prev" class="md-icon-btn" aria-label="Previous week"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg></button>
@@ -277,6 +279,7 @@
 
             <!-- History -->
             <section class="so-tabpanel" data-panel="history" role="tabpanel" hidden>
+                <p class="so-muted so-small md-zone" hidden></p>
                 <div class="so-panel">
                     <h3>By task</h3>
                     <div class="so-scroll">
@@ -364,7 +367,7 @@
                                 <label for="md-tracks-conc">Files at once</label>
                                 <input type="number" id="md-tracks-conc" class="so-input md-num" min="1" max="4">
                                 <label for="md-tracks-threads">FFmpeg threads</label>
-                                <input type="number" id="md-tracks-threads" class="so-input md-num" min="0" max="16">
+                                <input type="number" id="md-tracks-threads" class="so-input md-num" min="0" max="16" placeholder="auto" title="0 or blank: FFmpeg decides">
                             </div>
                         </div>
                     <div class="md-row md-wrap" style="margin-top:12px">
@@ -393,7 +396,10 @@
                     <div class="md-row md-wrap">
                         <span id="md-tracks-kept" class="so-small">Checking kept originals…</span>
                         <button type="button" id="md-tracks-delete2" class="so-btn so-btn-plain" disabled>Delete the kept originals</button>
+                        <button type="button" id="md-tracks-delete-orphans" class="so-btn so-btn-plain" hidden>Delete those with no file too</button>
+                        <button type="button" id="md-tracks-changes" class="so-btn so-btn-plain">What earlier runs changed</button>
                     </div>
+                    <div id="md-tracks-changes-list" class="md-fulltext" style="margin-top:8px;display:none"></div>
                     <p class="so-muted so-small" id="md-tracks-rescan-hint"></p>
                 </div>
 
@@ -730,6 +736,16 @@
             };
             const HATCH = 'repeating-linear-gradient(135deg, #ffb648 0 6px, #c97a18 6px 12px)';
 
+            // The server's offset from UTC in minutes, once the report or the Dashboard has said. Times are then shown on the
+            // server's clock, the one the schedule and Medic's own messages use, rather than this browser's.
+            let serverOffset = null;
+
+            function onServerClock(value) {
+                const d = new Date(value);
+                if (serverOffset === null || isNaN(d.getTime())) return { date: d, zone: undefined };
+                return { date: new Date(d.getTime() + serverOffset * 60000), zone: 'UTC' };
+            }
+
             let clock = '24';
             try { clock = window.localStorage.getItem(CLOCK_KEY) === '12' ? '12' : '24'; } catch (e) { /* keep 24-hour */ }
 
@@ -768,10 +784,18 @@
                 return fmtTimes((h < 10 ? '0' : '') + h + ':' + (m % 60 < 10 ? '0' : '') + (m % 60));
             }
 
+            // A moment's hour and minute, on the server's clock when known.
+            function fmtTime(value) {
+                const t = onServerClock(value);
+                return t.zone ? hm(t.date.getUTCHours() * 60 + t.date.getUTCMinutes()) : hm(t.date.getHours() * 60 + t.date.getMinutes());
+            }
+
             function fmtDateTime(value) {
-                const d = new Date(value);
+                const t = onServerClock(value);
+                const d = t.date;
                 if (isNaN(d.getTime())) return '';
                 return d.toLocaleString('en-GB', {
+                    timeZone: t.zone,
                     day: 'numeric', month: 'short', year: 'numeric',
                     hour: clock === '12' ? 'numeric' : '2-digit', minute: '2-digit',
                     hourCycle: clock === '12' ? 'h12' : 'h23'
@@ -779,9 +803,11 @@
             }
 
             function fmtShort(value) {
-                const d = new Date(value);
+                const t = onServerClock(value);
+                const d = t.date;
                 if (isNaN(d.getTime())) return '';
                 return d.toLocaleString('en-GB', {
+                    timeZone: t.zone,
                     weekday: 'short', day: 'numeric', month: 'short',
                     hour: clock === '12' ? 'numeric' : '2-digit', minute: '2-digit',
                     hourCycle: clock === '12' ? 'h12' : 'h23'
@@ -802,6 +828,23 @@
 
             function postJson(path, params) {
                 return ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl(path, params), dataType: 'json' });
+            }
+
+            // The reason the server gave for a failed request (a Problem's detail, a message, or plain text), or ''.
+            async function reasonOf(e) {
+                try {
+                    if (!e || typeof e.text !== 'function') return '';
+                    const text = (await (e.bodyUsed ? '' : e.clone().text()) || '').trim();
+                    if (!text || text.length > 400 || text.charAt(0) === '<') return '';
+                    let reason = text;
+                    try {
+                        const json = JSON.parse(text);
+                        reason = json && typeof json === 'object' ? (json.detail || json.Message || json.message || '') : String(json);
+                    } catch (x) { /* plain text */ }
+                    return typeof reason === 'string' ? reason.trim() : '';
+                } catch (x) {
+                    return '';
+                }
             }
 
             function sleep(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
@@ -833,13 +876,22 @@
 
                 function shown() { return pageShown && !document.hidden; }
 
+                // Returns the message's number, so whoever showed it can hide it without hiding a later message, an error say.
+                let statusSeq = 0;
                 function showStatus(text, type) {
                     status.className = 'so-status ' + type;
                     status.textContent = text;
                     status.hidden = false;
+                    return ++statusSeq;
                 }
 
-                function hideStatus() { status.hidden = true; }
+                function hideStatus(seq) { if (seq === undefined || seq === statusSeq) status.hidden = true; }
+
+                // What failed, then the server's reason when it gave one, else the hint (which may be empty).
+                async function showError(e, what, hint) {
+                    const reason = await reasonOf(e);
+                    showStatus(what + (reason ? ' ' + reason : hint ? ' ' + hint : ''), 'error');
+                }
 
                 // ---------- Finding cards ----------
 
@@ -900,8 +952,13 @@
                             reset.disabled = true;
                             try {
                                 await postJson('/JellyfinMedic/Logs/ResetCount');
-                                await loadReport();
-                            } catch (e) { reset.disabled = false; }
+                            } catch (e) {
+                                reset.disabled = false;
+                                showError(e, 'Couldn\'t reset the count.');
+                                return;
+                            }
+                            await loadReport();
+                            showStatus('Medic counts repeated log errors again from now, so this one shows again only if it comes back.', 'info');
                         });
                         card.appendChild(reset);
                     }
@@ -1054,6 +1111,11 @@
                 async function toggleIgnore(f, button) {
                     const key = pick(f, 'Key');
                     const ignore = !isIgnored(f);
+                    // The card leaves this list when it's redrawn: the keyboard goes on to the next card instead of the page's top.
+                    const card = button.closest('.so-card');
+                    const list = card && card.parentNode;
+                    const next = card && (card.nextElementSibling || card.previousElementSibling);
+                    const nextKey = next && next.getAttribute('data-key');
                     button.disabled = true;
                     try {
                         await postJson('/JellyfinMedic/Ignore', { key: key, ignored: ignore });
@@ -1066,6 +1128,11 @@
                         if (report) { renderDashboard(); renderRecs(); }
                         if (plugins) renderPlugins();
                         if (settings) renderSettings();
+                        if (list && list.isConnected) {
+                            const target = (nextKey && list.querySelector('.so-card[data-key="' + CSS.escape(nextKey) + '"]'))
+                                || list.querySelector('.so-card[data-key="' + CSS.escape(key) + '"]') || list.querySelector('.so-card');
+                            if (target) target.focus({ preventScroll: true });
+                        }
                     } catch (err) {
                         console.error('Jellyfin Medic: could not update ignored finding', err);
                         showStatus('Couldn\'t save that change. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
@@ -1503,9 +1570,14 @@
                     try {
                         dash = await getJson('/JellyfinMedic/Dashboard');
                         dashAt = Date.now();
+                        learnOffset(pick(dash, 'UtcOffsetMinutes'));
+                        dashFailedAt = 0;
+                        showStale();
                         renderDash();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load the Dashboard data', err);
+                        dashFailedAt = Date.now();
+                        showStale();
                         if (!quiet) showStatus('Couldn\'t load the Dashboard. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
                     }
                 }
@@ -1517,12 +1589,31 @@
                     return Promise.resolve();
                 }
 
+                // When the live readings and the slower data last failed to update, so the tiles don't freeze without a word.
+                let liveFailedAt = 0;
+                let dashFailedAt = 0;
+                let liveAt = 0;
+
+                function showStale() {
+                    const note = $('md-stale');
+                    const parts = [];
+                    if (liveFailedAt) parts.push('The live readings (Right now, Load) stopped updating' + (liveAt ? ' at ' + fmtTime(liveAt) : ''));
+                    if (dashFailedAt && dash) parts.push((parts.length ? 'the' : 'The') + ' other tiles are from ' + fmtTime(dashAt));
+                    note.hidden = parts.length === 0;
+                    note.textContent = parts.length ? parts.join(', and ') + ', as Jellyfin isn\'t answering. Medic keeps trying.' : '';
+                }
+
                 async function loadLive() {
                     try {
                         live = await getJson('/JellyfinMedic/Dashboard/Live');
                     } catch (e) {
-                        return; // the tiles stay as they were
+                        liveFailedAt = Date.now(); // the tiles stay as they were, and say so
+                        showStale();
+                        return;
                     }
+                    liveAt = Date.now();
+                    liveFailedAt = 0;
+                    showStale();
                     nowData = pick(live, 'Now');
                     drawPanel(renderNow, 'md-cpu');
                     drawPanel(renderLoad, 'md-load-ffmpeg');
@@ -1676,6 +1767,12 @@
                         text.textContent = 'Disk data starts after the first daily reading.';
                         return;
                     }
+                    const missing = drives.filter(function (d) { return pick(d, 'Missing'); });
+                    if (missing.length) {
+                        big.textContent = missing.length === 1 ? '1 drive missing' : missing.length + ' drives missing';
+                        text.textContent = (pick(missing[0], 'Holds') || pick(missing[0], 'Key')) + ': its folder can\'t be found';
+                        return;
+                    }
                     const share = function (d) { return pick(d, 'TotalGb') > 0 ? pick(d, 'FreeGb') / pick(d, 'TotalGb') : 1; };
                     const worst = drives.slice().sort(function (a, b) { return share(a) - share(b); })[0];
                     big.textContent = pick(worst, 'TotalGb') > 0 ? Math.round(share(worst) * 100) + '% free' : gb(pick(worst, 'FreeGb')) + ' free';
@@ -1741,10 +1838,17 @@
                 }
 
                 function zoneNote() {
-                    const offset = pick(dash, 'UtcOffsetMinutes');
+                    const offset = serverOffset;
                     if (offset === undefined || offset === null || offset === -new Date().getTimezoneOffset()) return '';
                     const abs = Math.abs(offset);
                     return 'Times are the server\'s (UTC' + (offset < 0 ? '-' : '+') + Math.floor(abs / 60) + (abs % 60 ? ':' + String(abs % 60).padStart(2, '0') : '') + ').';
+                }
+
+                // Notes on the Schedule and History tabs too, as their times are the server's.
+                function learnOffset(offset) {
+                    if (typeof offset !== 'number') return;
+                    serverOffset = offset;
+                    page.querySelectorAll('.md-zone').forEach(function (n) { n.textContent = zoneNote(); n.hidden = !n.textContent; });
                 }
 
                 function moveNowLine() {
@@ -1786,7 +1890,7 @@
                         box.appendChild(b);
                     });
                     // A task that runs over and over would bury the axis in blocks: it gets one line under the axis, and only its
-                    // failed or stopped runs keep a block.
+                    // failed, stopped or cancelled runs keep a block.
                     const actual = pick(day, 'Actual') || [];
                     const runsOf = {};
                     actual.forEach(function (r) { runsOf[pick(r, 'TaskId')] = (runsOf[pick(r, 'TaskId')] || 0) + 1; });
@@ -1800,16 +1904,17 @@
                             g.runs++;
                             if (status === 'Failed') g.failed++;
                             g.last = Math.max(g.last, start);
-                            if (status !== 'Failed' && status !== 'Aborted') return;
+                            if (status !== 'Failed' && status !== 'Aborted' && status !== 'Cancelled') return;
                         }
                         const b = onDay(el('button', 'md-day-block md-actual'), start, runText(r), 'a|' + pick(r, 'TaskId') + '|' + start);
                         b.style.width = (Math.max(pick(r, 'EndMinutes') - start, 1) / 1440 * 100) + '%';
                         if (status === 'Failed') {
                             b.classList.add('md-run-failed');
                             b.textContent = 'failed';
-                        } else if (status === 'Aborted') {
+                        } else if (status === 'Aborted' || status === 'Cancelled') {
+                            // Cancelled is what LoadGuard and "Stop running tasks" leave; either way the run didn't finish.
                             b.classList.add('md-run-stopped');
-                            b.textContent = 'stopped';
+                            b.textContent = RUN_WORD[status];
                         } else {
                             b.style.background = backedOff[pick(r, 'TaskId')] ? HATCH : (CATEGORY[category[pick(r, 'TaskId')]] || CATEGORY.upkeep).bg;
                             if (status === 'Running') b.classList.add('md-run-running');
@@ -2059,9 +2164,14 @@
                         const days = pick(d, 'DaysToFull');
                         const filling = days !== null && days !== undefined;
                         const series = pick(d, 'Series') || [];
+                        wrap.appendChild(el('strong', null, name));
+                        if (pick(d, 'Missing')) {
+                            wrap.appendChild(el('span', 'so-small md-num-bad', 'The folder ' + pick(d, 'Path') + ' can\'t be found, so this drive wasn\'t read (is it mounted?). Last reading: ' + gb(free) + ' free.'));
+                            box.appendChild(wrap);
+                            return;
+                        }
                         const status = gb(free) + ' free' + (total ? ' of ' + gb(total) : '') +
                             (rate === null || rate === undefined ? '' : filling ? ', using ' + fmtNum(rate) + ' GB a day, full in ' + daysText(days) : ', not filling');
-                        wrap.appendChild(el('strong', null, name));
                         if (rate === null || rate === undefined) {
                             wrap.appendChild(el('span', 'so-small', status + '. The trend shows after 3 days of readings.'));
                             box.appendChild(wrap);
@@ -2173,6 +2283,8 @@
 
                 function renderTimeline() {
                     const box = $('md-timeline');
+                    // The keyboard stays on the block it chose, rather than going back to the top of the page.
+                    const focused = box.contains(document.activeElement) ? document.activeElement.getAttribute('data-key') : null;
                     box.innerHTML = '';
                     if (!cal) return;
 
@@ -2274,6 +2386,9 @@
                             if (pick(r, 'LastFailed')) rings.push('0 0 0 2px #ff5a5f');
                             if (key === selKey) rings.push('0 0 0 ' + (pick(r, 'LastFailed') ? 4 : 2) + 'px #ffffff');
                             if (rings.length) block.style.boxShadow = rings.join(', ');
+                            block.setAttribute('data-key', key);
+                            block.setAttribute('aria-pressed', key === selKey ? 'true' : 'false');
+                            if (key === selKey) block.classList.add('is-selected');
                             const busyPeak = busyDuring(day, s, d);
                             if (fromViewing && busyPeak >= 0.5 && !pick(day, 'IsPast') && pick(r, 'Category') !== 'plugin') {
                                 block.style.outline = '2px dashed #ffb648';
@@ -2316,6 +2431,10 @@
                         banner.hidden = true;
                     }
 
+                    if (focused) {
+                        const again = box.querySelector('[data-key="' + CSS.escape(focused) + '"]');
+                        if (again) again.focus({ preventScroll: true });
+                    }
                     renderDetail();
                 }
 
@@ -2356,7 +2475,7 @@
                             await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('ScheduledTasks/Running/' + pick(r, 'TaskId')) });
                             showStatus(pick(r, 'TaskName') + ' has started.', 'info');
                         } catch (e) {
-                            showStatus('Couldn\'t start ' + pick(r, 'TaskName') + '. It may already be running.', 'error');
+                            showError(e, 'Couldn\'t start ' + pick(r, 'TaskName') + '.');
                         } finally {
                             run.disabled = false;
                         }
@@ -2476,6 +2595,7 @@
                             const choiceCell = el('td');
                             const choice = el('select', 'so-input');
                             choice.setAttribute('aria-label', 'Your choice for ' + pick(p, 'TaskName'));
+                            choice.setAttribute('data-task', pick(p, 'TaskId'));
                             [['medic', 'Let Medic schedule it'], ['keep', 'Keep its schedule'], ['off', 'Leave unscheduled']].forEach(function (o) {
                                 if (o[0] === 'medic' && pick(p, 'CanPlan') === false) return;
                                 const opt = el('option', null, o[1]);
@@ -2488,9 +2608,12 @@
                                 try {
                                     await postJson('/JellyfinMedic/Schedule/SetChoice', { taskId: pick(p, 'TaskId'), choice: choice.value });
                                     await showPreview(true);
+                                    // The table is rebuilt: the keyboard stays on this task's choice.
+                                    const again = $('md-preview-box').querySelector('select[data-task="' + CSS.escape(String(pick(p, 'TaskId'))) + '"]');
+                                    if (again) again.focus({ preventScroll: true });
                                 } catch (e) {
                                     choice.disabled = false;
-                                    showStatus('Couldn\'t save that choice.', 'error');
+                                    showError(e, 'Couldn\'t save that choice.');
                                 }
                             });
                             choiceCell.appendChild(choice);
@@ -2524,7 +2647,7 @@
                         $('md-preview-box').hidden = true;
                         await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
                     } catch (err) {
-                        showStatus('Couldn\'t apply the schedule. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        showError(err, 'Couldn\'t apply the schedule.', 'Check the Jellyfin log for Jellyfin Medic errors.');
                     }
                 }
 
@@ -2536,7 +2659,7 @@
                         showStatus('Schedule backed up as ' + pick(result, 'BackupFile') + '.', 'info');
                         loadBackups();
                     } catch (e) {
-                        showStatus('Couldn\'t back up the schedule.', 'error');
+                        showError(e, 'Couldn\'t back up the schedule.');
                     }
                 });
 
@@ -2549,7 +2672,7 @@
                         showStatus(pick(result, 'Message') || 'Schedule restored.', pick(result, 'Success') === false ? 'error' : 'info');
                         await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
                     } catch (e) {
-                        showStatus('Couldn\'t restore that backup.', 'error');
+                        showError(e, 'Couldn\'t restore that backup.');
                     }
                 });
 
@@ -3219,38 +3342,42 @@
                     fillHours($('md-tracks-window-from'));
                     fillHours($('md-tracks-window-to'));
                     try {
-                        const s = await getJson('/JellyfinMedic/MedicSettings');
-                        $('md-avoid').checked = !!pick(s, 'AvoidEnabled');
-                        const avoidFrom = pick(s, 'AvoidStartMinute');
-                        const avoidTo = pick(s, 'AvoidEndMinute');
-                        $('md-avoid-from').value = String(avoidFrom ?? (pick(s, 'AvoidStartHour') || 0) * 60);
-                        $('md-avoid-to').value = String((avoidTo ?? (pick(s, 'AvoidEndHour') || 0) * 60) % 1440);
-                        $('md-inactive').value = String(pick(s, 'InactiveUserDays'));
-                        $('md-guard-enabled').checked = pick(s, 'LoadGuardEnabled') !== false;
-                        $('md-ceiling').value = String(pick(s, 'MemoryCeilingPercent') || 85);
-                        scheduleMode = pick(s, 'ScheduleMode') === 'off' ? 'off' : 'suggest';
-                        showMode();
-                        $('md-tracks-langs-in').value = pick(s, 'TracksKeepLanguages') || 'eng';
-                        showUnknownLanguages(s);
-                        $('md-tracks-undet-in').checked = !!pick(s, 'TracksRemoveUndetermined');
-                        $('md-tracks-untagsubs-in').checked = !!pick(s, 'TracksRemoveUntaggedSubtitles');
-                        $('md-tracks-keepfirst-in').checked = pick(s, 'TracksKeepFirstUntaggedSubtitle') !== false;
-                        $('md-tracks-onlysub-in').checked = !!pick(s, 'TracksAllowRemovingOnlySubtitle');
-                        $('md-tracks-window-in').checked = !!pick(s, 'TracksWindowEnabled');
-                        $('md-tracks-window-from').value = String(pick(s, 'TracksWindowStartHour') ?? 1);
-                        $('md-tracks-window-to').value = String(pick(s, 'TracksWindowEndHour') ?? 7);
-                        $('md-tracks-watching-in').checked = pick(s, 'TracksPauseWhileWatching') !== false;
-                        syncSubtitleOptions();
-                        $('md-tracks-inplace-in').checked = !!pick(s, 'TracksReplaceInPlace');
-                        $('md-tracks-conc').value = String(pick(s, 'TracksConcurrentFiles') || 1);
-                        $('md-tracks-threads').value = String(pick(s, 'TracksFfmpegThreads') || 1);
-                        $('md-tracks-exclude-in').value = pick(s, 'TracksExclude') || '';
-                        $('md-alert-critical').checked = pick(s, 'AlertCriticalErrors') !== false;
-                        $('md-alert-restart').checked = pick(s, 'AlertRestartNeeded') !== false;
-                        medicSettingsLoaded = true;
-                        tracksSaved = JSON.stringify(tracksForm());
+                        fillMedicSettings(await getJson('/JellyfinMedic/MedicSettings'));
                         $('md-tracks-save').disabled = false;
                     } catch (e) { /* defaults stay; saving stays off so nothing is overwritten with defaults */ }
+                }
+
+                // The settings as the server has them, after a load or a save (which may have clamped a value).
+                function fillMedicSettings(s) {
+                    $('md-avoid').checked = !!pick(s, 'AvoidEnabled');
+                    const avoidFrom = pick(s, 'AvoidStartMinute');
+                    const avoidTo = pick(s, 'AvoidEndMinute');
+                    $('md-avoid-from').value = String(avoidFrom ?? (pick(s, 'AvoidStartHour') || 0) * 60);
+                    $('md-avoid-to').value = String((avoidTo ?? (pick(s, 'AvoidEndHour') || 0) * 60) % 1440);
+                    $('md-inactive').value = String(pick(s, 'InactiveUserDays'));
+                    $('md-guard-enabled').checked = pick(s, 'LoadGuardEnabled') !== false;
+                    $('md-ceiling').value = String(pick(s, 'MemoryCeilingPercent') || 85);
+                    scheduleMode = pick(s, 'ScheduleMode') === 'off' ? 'off' : 'suggest';
+                    showMode();
+                    $('md-tracks-langs-in').value = pick(s, 'TracksKeepLanguages') || 'eng';
+                    showUnknownLanguages(s);
+                    $('md-tracks-undet-in').checked = !!pick(s, 'TracksRemoveUndetermined');
+                    $('md-tracks-untagsubs-in').checked = !!pick(s, 'TracksRemoveUntaggedSubtitles');
+                    $('md-tracks-keepfirst-in').checked = pick(s, 'TracksKeepFirstUntaggedSubtitle') !== false;
+                    $('md-tracks-onlysub-in').checked = !!pick(s, 'TracksAllowRemovingOnlySubtitle');
+                    $('md-tracks-window-in').checked = !!pick(s, 'TracksWindowEnabled');
+                    $('md-tracks-window-from').value = String(pick(s, 'TracksWindowStartHour') ?? 1);
+                    $('md-tracks-window-to').value = String(pick(s, 'TracksWindowEndHour') ?? 7);
+                    $('md-tracks-watching-in').checked = pick(s, 'TracksPauseWhileWatching') !== false;
+                    syncSubtitleOptions();
+                    $('md-tracks-inplace-in').checked = !!pick(s, 'TracksReplaceInPlace');
+                    $('md-tracks-conc').value = String(pick(s, 'TracksConcurrentFiles') || 1);
+                    $('md-tracks-threads').value = String(pick(s, 'TracksFfmpegThreads') ?? 1);
+                    $('md-tracks-exclude-in').value = pick(s, 'TracksExclude') || '';
+                    $('md-alert-critical').checked = pick(s, 'AlertCriticalErrors') !== false;
+                    $('md-alert-restart').checked = pick(s, 'AlertRestartNeeded') !== false;
+                    medicSettingsLoaded = true;
+                    tracksSaved = JSON.stringify(tracksForm());
                 }
 
                 // The two subtitle sub-options only apply when untagged subtitles are being removed.
@@ -3292,7 +3419,8 @@
                         TracksPauseWhileWatching: $('md-tracks-watching-in').checked,
                         TracksReplaceInPlace: $('md-tracks-inplace-in').checked,
                         TracksConcurrentFiles: parseInt($('md-tracks-conc').value, 10) || 1,
-                        TracksFfmpegThreads: parseInt($('md-tracks-threads').value, 10),
+                        // Blank means automatic, which the server saves as 0.
+                        TracksFfmpegThreads: parseInt($('md-tracks-threads').value, 10) || 0,
                         TracksExclude: $('md-tracks-exclude-in').value
                     };
                 }
@@ -3322,12 +3450,11 @@
                     }, tracks);
                     try {
                         const saved = await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('JellyfinMedic/MedicSettings'), data: JSON.stringify(body), contentType: 'application/json', dataType: 'json' });
-                        showUnknownLanguages(saved);
-                        tracksSaved = JSON.stringify(tracks);
+                        fillMedicSettings(saved);
                         statusEl.textContent = okMessage;
                         return true;
                     } catch (e) {
-                        statusEl.textContent = 'Couldn\'t save. Check the Jellyfin log.';
+                        statusEl.textContent = 'Couldn\'t save. ' + (await reasonOf(e) || 'Check the Jellyfin log.');
                         return false;
                     }
                 }
@@ -3416,15 +3543,24 @@
                 // ---------- Maintenance ----------
 
                 async function stopAllTasks() {
-                    const running = (nowData && (pick(nowData, 'RunningTasks') || [])) || [];
+                    // Asked now: the Dashboard's last reading stops while other tabs are open.
+                    let running;
+                    try {
+                        running = (await getJson('ScheduledTasks')).filter(function (t) { return pick(t, 'State') === 'Running'; }).map(function (t) { return pick(t, 'Name'); });
+                    } catch (e) {
+                        showError(e, 'Couldn\'t find out which tasks are running.');
+                        return;
+                    }
                     if (running.length === 0) { showStatus('No tasks are running.', 'info'); return; }
-                    if (!window.confirm('Stop ' + running.length + ' running task(s)? They can run again at their next scheduled time.')) return;
+                    if (!window.confirm('Stop ' + (running.length === 1 ? 'this task' : 'these ' + running.length + ' tasks') + '?\n\n' + running.join('\n')
+                        + '\n\nThey can run again at their next scheduled time.')) return;
                     try {
                         const result = await postJson('/JellyfinMedic/StopRunningTasks');
-                        showStatus('Stopped ' + pick(result, 'Stopped') + ' task(s).', 'info');
+                        const names = pick(result, 'Names') || [];
+                        showStatus(names.length ? 'Stopped ' + names.join(', ') + '.' : 'No tasks were running by then.', 'info');
                         loadLive();
                     } catch (e) {
-                        showStatus('Couldn\'t stop the tasks. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
+                        showError(e, 'Couldn\'t stop the tasks.', 'Check the Jellyfin log for Jellyfin Medic errors.');
                     }
                 }
 
@@ -3524,7 +3660,7 @@
                                     showStatus(pick(r, 'Message') || 'Done.', pick(r, 'Success') === false ? 'error' : 'info');
                                     loadCleanup();
                                 } catch (e) {
-                                    showStatus('Couldn\'t clean that up.', 'error');
+                                    showError(e, 'Couldn\'t clean that up.');
                                     b.disabled = false;
                                 }
                             });
@@ -3895,7 +4031,7 @@
                     const changing = pick(tracksScan, 'FilesWouldChange') || 0;
                     $('md-tracks-summary').innerHTML = '';
                     if (pick(tracksScan, 'GeneratedUtc')) {
-                        $('md-tracks-summary').appendChild(el('p', 'so-muted so-small', 'Scanned ' + new Date(pick(tracksScan, 'GeneratedUtc')).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + '. Scan again after changing settings.'));
+                        $('md-tracks-summary').appendChild(el('p', 'so-muted so-small', 'Scanned ' + fmtShort(pick(tracksScan, 'GeneratedUtc')) + '. Scan again after changing settings.'));
                     }
                     const dl = el('dl', 'so-kv');
                     function row(k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); }
@@ -4134,7 +4270,7 @@
                         $('md-bulk-result').textContent = pick(r, 'Message');
                         loadUntagged();
                     } catch (e) {
-                        $('md-bulk-result').textContent = 'Couldn\'t set them. Scan again, then try.';
+                        $('md-bulk-result').textContent = 'Couldn\'t set them. ' + (await reasonOf(e) || 'Scan again, then try.');
                     }
                     $('md-bulk-go').disabled = false;
                 });
@@ -4151,7 +4287,7 @@
                         $('md-tracks-log').style.display = 'block';
                         pollTracks(true);
                     } catch (e) {
-                        showStatus('Couldn\'t start. A run may already be going.', 'error');
+                        showError(e, 'Couldn\'t start the run.', 'Check the Jellyfin log for Jellyfin Medic errors.');
                     }
                 }
                 $('md-tracks-dry').addEventListener('click', function () { startTracks(true); });
@@ -4246,7 +4382,7 @@
                         $('md-media-status').textContent = total ? 'Reading ' + done.toLocaleString('en-GB') + ' of ' + total.toLocaleString('en-GB') + ' items…' : 'Gathering your library…';
                     } else if (r) {
                         const when = new Date(pick(r, 'GeneratedUtc'));
-                        $('md-media-status').textContent = 'Built ' + when.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' · ' + (pick(r, 'Files') || 0).toLocaleString('en-GB') + ' video files · ' + tracksSize(pick(r, 'Bytes') || 0);
+                        $('md-media-status').textContent = 'Built ' + fmtShort(when) + ' · ' + (pick(r, 'Files') || 0).toLocaleString('en-GB') + ' video files · ' + tracksSize(pick(r, 'Bytes') || 0);
                     } else {
                         $('md-media-status').textContent = 'No report yet. Building one reads every video file Jellyfin knows about; on a large library it takes a minute or two.';
                     }
@@ -4421,8 +4557,11 @@
                     }
 
                     parts.push((pick(p, 'Changed') || 0) + ' changed');
+                    if (pick(p, 'Skipped')) parts.push(pick(p, 'Skipped') + ' left alone');
                     parts.push((pick(p, 'Failed') || 0) + ' failed');
                     if (pick(p, 'BytesSaved')) parts.push('saved ' + tracksSize(pick(p, 'BytesSaved')));
+                    // Kept originals still take their space until they're deleted, so "saved" isn't free yet.
+                    if (pick(p, 'BytesKept')) parts.push(tracksSize(pick(p, 'BytesKept')) + ' held in kept originals');
                     if (running && !holding && pick(p, 'Current')) parts.push('now: ' + pick(p, 'Current'));
                     return parts.join(' · ');
                 }
@@ -4458,11 +4597,13 @@
                 async function loadKept() {
                     try {
                         const k = await getJson('/JellyfinMedic/Tracks/KeptOriginals');
-                        const n = pick(k, 'Files') || 0;
-                        $('md-tracks-kept').textContent = n === 0
+                        const n = pick(k, 'Files') || 0, orphans = pick(k, 'Orphans') || 0;
+                        $('md-tracks-kept').textContent = (n === 0
                             ? 'No kept originals.'
-                            : 'Kept originals: ' + n.toLocaleString('en-GB') + ' file' + (n === 1 ? '' : 's') + ', ' + pick(k, 'SizeText') + '.';
+                            : 'Kept originals: ' + n.toLocaleString('en-GB') + ' file' + (n === 1 ? '' : 's') + ', ' + pick(k, 'SizeText') + '.')
+                            + (orphans > 0 ? ' ' + orphans.toLocaleString('en-GB') + ' of them (' + pick(k, 'OrphanSizeText') + ') no longer have a file of the same name beside them, as Sonarr or Radarr renamed or replaced it.' : '');
                         $('md-tracks-delete2').disabled = n === 0;
+                        $('md-tracks-delete-orphans').hidden = orphans === 0;
                     } catch (e) {
                         $('md-tracks-kept').textContent = '';
                     }
@@ -4507,15 +4648,18 @@
                     }
                 });
 
-                async function deleteKeptOriginals(btn) {
-                    if (!window.confirm('Delete the originals Medic kept in .medic-originals folders? Only originals whose cleaned file is still in place are deleted. This can\'t be undone.')) return false;
+                async function deleteKeptOriginals(btn, orphans) {
+                    const question = orphans
+                        ? 'Delete every original Medic kept in .medic-originals folders, including those whose file Sonarr or Radarr has since renamed or replaced? Check the library has the film or episode first. This can\'t be undone.'
+                        : 'Delete the originals Medic kept in .medic-originals folders? Only originals whose cleaned file is still in place are deleted. This can\'t be undone.';
+                    if (!window.confirm(question)) return false;
                     btn.disabled = true;
                     try {
-                        const r = await postJson('/JellyfinMedic/Tracks/DeleteOriginals');
+                        const r = await postJson('/JellyfinMedic/Tracks/DeleteOriginals' + (orphans ? '?orphans=true' : ''));
                         showStatus('Deleted ' + pick(r, 'Deleted') + ' kept original(s), freeing ' + pick(r, 'FreedText') + '.', 'info');
                         return true;
                     } catch (e) {
-                        showStatus('Couldn\'t delete the kept originals.', 'error');
+                        showError(e, 'Couldn\'t delete the kept originals.');
                         return false;
                     } finally {
                         btn.disabled = false;
@@ -4524,6 +4668,22 @@
                 function afterDelete(ok) { loadKept(); if (ok) rescanHint(); }
                 $('md-tracks-delete').addEventListener('click', function () { deleteKeptOriginals($('md-tracks-delete')).then(afterDelete); });
                 $('md-tracks-delete2').addEventListener('click', function () { deleteKeptOriginals($('md-tracks-delete2')).then(afterDelete); });
+                $('md-tracks-delete-orphans').addEventListener('click', function () { deleteKeptOriginals($('md-tracks-delete-orphans'), true).then(afterDelete); });
+                $('md-tracks-changes').addEventListener('click', async function () {
+                    const box = $('md-tracks-changes-list');
+                    try {
+                        const list = await getJson('/JellyfinMedic/Tracks/Changes?count=200');
+                        box.textContent = !list.length ? 'No run has changed a file yet.'
+                            : list.map(function (c) {
+                                return fmtDateTime(pick(c, 'WhenUtc')) + ' ' + pick(c, 'Path') + ': ' + pick(c, 'Removed')
+                                    + ' (' + tracksSize(pick(c, 'BytesBefore')) + ' to ' + tracksSize(pick(c, 'BytesAfter')) + ')'
+                                    + (pick(c, 'KeptOriginal') ? ', original kept' : '');
+                            }).join('\n');
+                    } catch (e) {
+                        box.textContent = (await reasonOf(e)) || 'Couldn\'t read what earlier runs changed.';
+                    }
+                    box.style.display = 'block';
+                });
 
                 // ---------- Loading ----------
 
@@ -4545,10 +4705,11 @@
 
                 async function loadReport() {
                     $('so-rerun').disabled = true;
-                    showStatus('Checking your setup…', 'info');
+                    const checking = showStatus('Checking your setup…', 'info');
                     try {
                         try {
                             report = await fetchReport();
+                            learnOffset(pick(report, 'UtcOffsetMinutes'));
                         } catch (err) {
                             console.error('Jellyfin Medic: report failed', err);
                             showStatus('The checks couldn\'t run. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
@@ -4557,7 +4718,7 @@
                         // Kept apart from the request: a page bug must not read as the checks failing on the server.
                         try {
                             await ensurePluginPages();
-                            hideStatus();
+                            hideStatus(checking);
                             renderDashboard();
                             renderRecs();
                             if (settings) renderSettings();

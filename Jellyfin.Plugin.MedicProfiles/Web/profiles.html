@@ -41,6 +41,7 @@
             <!-- Blocked -->
             <section class="mp-panel" data-panel="blocked" role="tabpanel" hidden>
                 <p class="mp-muted">Releases Sonarr and Radarr won't grab again. Unblock one if it was blocked by mistake.</p>
+                <p id="mp-blocked-notes" class="mp-muted" hidden></p>
                 <ul id="mp-blocked" class="mp-list"></ul>
                 <p id="mp-blocked-empty" class="mp-muted" hidden>Nothing is blocked.</p>
             </section>
@@ -536,7 +537,7 @@
                 function renderImport(r, files, box, container) {
                     box.appendChild(el('p', null, 'Choose what each file is, then import. Files ' + appName(r.app) + ' refused say why.'));
                     const states = files.map(function (f) {
-                        const s = { file: f, include: f.rejections.length === 0 || !!f.mediaId, mediaId: f.mediaId, mediaTitle: f.mediaTitle, episodeIds: (f.episodes || []).map(function (e) { return e.id; }) };
+                        const s = { file: f, include: f.rejections.length === 0, mediaId: f.mediaId, mediaTitle: f.mediaTitle, episodeIds: (f.episodes || []).map(function (e) { return e.id; }) };
                         box.appendChild(fileBlock(r, s));
                         return s;
                     });
@@ -595,6 +596,7 @@
                     div.appendChild(label);
                     div.appendChild(el('p', 'mp-meta', [f.quality, size(f.size), f.languages].filter(Boolean).join(' · ')));
                     f.rejections.forEach(function (x) { div.appendChild(el('p', 'mp-reject', '⚠ ' + x)); });
+                    if (f.rejections.length) { div.appendChild(el('p', 'mp-meta', 'Left unticked because the app rejected it. Tick it to import it anyway.')); }
 
                     const match = el('p', 'mp-meta');
                     const matchText = el('span');
@@ -698,6 +700,10 @@
                     getJson('Blocked').then(function (data) {
                         showSetup(data.configured);
                         showErrors(data.errors);
+                        // Only the newest are fetched from each app: say so when there are more.
+                        const notes = Object.keys(data.notes || {}).map(function (k) { return data.notes[k]; });
+                        $('mp-blocked-notes').textContent = notes.join(' ');
+                        $('mp-blocked-notes').hidden = notes.length === 0;
                         const list = $('mp-blocked');
                         list.textContent = '';
                         (data.rows || []).forEach(function (b) {

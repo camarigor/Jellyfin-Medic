@@ -17,7 +17,14 @@ public static class ScheduleStorage
 {
     public static readonly object SyncRoot = new();
 
-    private const int MaxRunHistory = 2000;
+    private const int MaxRunHistory = 4000;
+
+    // Per task, so one that runs every few minutes can't push every other task's runs out. A day of
+    // runs every 5 minutes is 288.
+    internal const int MaxRunsPerTask = 300;
+
+    // Runs that finish this close together are written to disk together.
+    private static readonly TimeSpan RunWriteDelay = TimeSpan.FromSeconds(5);
     private const int MaxAuditEntries = 1000; // the page shows the newest 200
     private const int MaxBackups = 50;
     private const int MaxErrorDetailsLength = 4000;
@@ -87,20 +94,26 @@ public static class ScheduleStorage
         }
         catch (JsonException ex)
         {
-            // Set it aside: the next write would otherwise replace it, and everything in it would be lost.
-            // If it can't be moved, the error goes up and nothing writes over it.
-            string aside = path + ".bad";
-            try
-            {
-                File.Move(path, aside, overwrite: true);
-                Logger?.LogWarning(ex, "Jellyfin Medic: {File} couldn't be read, so it was kept as {Aside} and a new one started", Path.GetFileName(path), Path.GetFileName(aside));
-            }
-            catch (FileNotFoundException)
-            {
-                // Another reader set it aside first.
-            }
-
+            SetAside(path, ex);
             return new List<T>();
+        }
+    }
+
+    /// <summary>
+    /// Keeps a file that couldn't be read as name.bad: the next write would otherwise replace it, and everything in
+    /// it would be lost. If it can't be moved, the error goes up and nothing writes over it.
+    /// </summary>
+    public static void SetAside(string path, Exception why)
+    {
+        string aside = path + ".bad";
+        try
+        {
+            File.Move(path, aside, overwrite: true);
+            Logger?.LogWarning(why, "Jellyfin Medic: {File} couldn't be read, so it was kept as {Aside} and a new one started", Path.GetFileName(path), Path.GetFileName(aside));
+        }
+        catch (FileNotFoundException)
+        {
+            // Another reader set it aside first.
         }
     }
 
@@ -211,23 +224,82 @@ public static class ScheduleStorage
         }
     }
 
+    // Finished runs not written to disk yet, by history file. Readers see them through ReadRuns.
+    private static readonly Dictionary<string, List<RunRecord>> PendingRuns = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Records a finished run. It's written a few seconds later, together with any other run that finishes
+    /// meanwhile, so a burst of runs (the night's tasks, say) rewrites the history once, not once per run.
+    /// </summary>
     public static void AppendRun(IApplicationPaths paths, RunRecord run)
     {
+        string path = RunHistoryPath(paths);
+        bool schedule;
         lock (SyncRoot)
         {
-            string path = RunHistoryPath(paths);
-            var runs = ReadList<RunRecord>(path);
-            runs.Add(run);
-
-            // Keep the file a manageable size: drop the oldest runs first.
-            if (runs.Count > MaxRunHistory)
+            schedule = !PendingRuns.ContainsKey(path);
+            if (schedule)
             {
-                runs = runs.OrderBy(r => r.EndUtc).Skip(runs.Count - MaxRunHistory).ToList();
+                PendingRuns[path] = new List<RunRecord>();
             }
 
-            WriteJson(path, runs);
+            PendingRuns[path].Add(run);
+        }
+
+        if (schedule)
+        {
+            _ = Task.Delay(RunWriteDelay).ContinueWith(_ => FlushRuns(paths), TaskScheduler.Default);
         }
     }
+
+    /// <summary>Writes the runs still waiting to be written. Also called when the plugin stops.</summary>
+    public static void FlushRuns(IApplicationPaths paths)
+    {
+        string path = RunHistoryPath(paths);
+        try
+        {
+            lock (SyncRoot)
+            {
+                if (!PendingRuns.Remove(path, out var pending) || pending.Count == 0)
+                {
+                    return;
+                }
+
+                var runs = ReadList<RunRecord>(path);
+                runs.AddRange(pending);
+                WriteJson(path, Trim(runs));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger?.LogWarning(ex, "Jellyfin Medic: couldn't save the latest task runs to the run history");
+        }
+    }
+
+    /// <summary>The run history, the runs not written to disk yet included.</summary>
+    public static List<RunRecord> ReadRuns(IApplicationPaths paths)
+    {
+        string path = RunHistoryPath(paths);
+        lock (SyncRoot)
+        {
+            var runs = ReadList<RunRecord>(path);
+            if (PendingRuns.TryGetValue(path, out var pending))
+            {
+                runs.AddRange(pending);
+            }
+
+            return runs;
+        }
+    }
+
+    /// <summary>Keeps the newest runs: up to MaxRunsPerTask of each task, and MaxRunHistory in all. Oldest first.</summary>
+    internal static List<RunRecord> Trim(IEnumerable<RunRecord> runs) =>
+        runs.GroupBy(r => r.TaskId, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(g => g.OrderByDescending(r => r.EndUtc).Take(MaxRunsPerTask))
+            .OrderByDescending(r => r.EndUtc)
+            .Take(MaxRunHistory)
+            .OrderBy(r => r.EndUtc)
+            .ToList();
 
     /// <summary>
     /// Forgets any pending back-off for these tasks, so a later successful run

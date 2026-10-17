@@ -340,23 +340,26 @@ public class MedicController : ControllerBase
 
         var sessions = _sessions;
         TrackCleaner.WatchingCount = () => sessions.Sessions.Count(x => SettingsReader.Get(x, "NowPlayingItem") is not null);
+        TrackCleaner.ChangesFile = TrackChangesFile();
         _ = TrackCleaner.RunAsync(_library, _engine.Libraries, ffmpeg ?? string.Empty, cfg, dryRun);
         return Ok(new { Started = true, DryRun = dryRun });
     }
 
     /// <summary>Pauses the run once the files already in progress finish.</summary>
     [HttpPost("Tracks/Pause")]
-    public ActionResult TracksPause()
+    public ActionResult<object> TracksPause()
     {
         TrackCleaner.Pause();
-        return NoContent();
+        // A body, as the page's requests expect JSON and take an empty answer as a failure.
+        return Ok(new { Paused = true });
     }
 
     [HttpPost("Tracks/Resume")]
-    public ActionResult TracksResume()
+    public ActionResult<object> TracksResume()
     {
         TrackCleaner.Resume();
-        return NoContent();
+        // A body, as the page's requests expect JSON and take an empty answer as a failure.
+        return Ok(new { Paused = false });
     }
 
     [HttpGet("Tracks/Progress")]
@@ -396,20 +399,37 @@ public class MedicController : ControllerBase
     [HttpGet("Tracks/KeptOriginals")]
     public ActionResult<object> TracksKeptOriginals()
     {
-        var (files, bytes) = TrackCleaner.KeptOriginals(_library, _engine.Libraries);
-        return Ok(new { Files = files, Bytes = bytes, SizeText = SystemProbe.Size(bytes) });
+        var (files, bytes, orphans, orphanBytes) = TrackCleaner.KeptOriginals(_library, _engine.Libraries);
+        return Ok(new
+        {
+            Files = files, Bytes = bytes, SizeText = SystemProbe.Size(bytes),
+            Orphans = orphans, OrphanBytes = orphanBytes, OrphanSizeText = SystemProbe.Size(orphanBytes)
+        });
     }
 
-    /// <summary>Deletes the originals Medic kept in .medic-originals folders (only where the cleaned file is in place).</summary>
+    /// <summary>The files earlier track runs changed, newest first.</summary>
+    [HttpGet("Tracks/Changes")]
+    public ActionResult<object> TracksChanges([FromQuery] int count = 200)
+    {
+        TrackCleaner.ChangesFile = TrackChangesFile();
+        return Ok(TrackCleaner.RecentChanges(Math.Clamp(count, 1, 2000)));
+    }
+
+    private string TrackChangesFile() => Path.Combine(ScheduleStorage.DataDir(_paths), "track_changes.jsonl");
+
+    /// <summary>
+    /// Deletes the originals Medic kept in .medic-originals folders: only where the cleaned file is in place, or with
+    /// orphans, also those whose file was renamed or replaced since.
+    /// </summary>
     [HttpPost("Tracks/DeleteOriginals")]
-    public ActionResult<object> TracksDeleteOriginals()
+    public ActionResult<object> TracksDeleteOriginals([FromQuery] bool orphans = false)
     {
         if (TrackCleaner.CurrentProgress().Running)
         {
             return StatusCode(StatusCodes.Status409Conflict, "Wait for the track run to finish first.");
         }
 
-        var (deleted, freed) = TrackCleaner.DeleteOriginals(_library, _engine.Libraries);
+        var (deleted, freed) = TrackCleaner.DeleteOriginals(_library, _engine.Libraries, orphans);
         WeeklyLedger.AddFreed("Kept originals", freed);
         return Ok(new { Deleted = deleted, Freed = freed, FreedText = SystemProbe.Size(freed) });
     }
@@ -824,10 +844,11 @@ public class MedicController : ControllerBase
 
     /// <summary>"Fixed it": starts counting repeated log errors again from now.</summary>
     [HttpPost("Logs/ResetCount")]
-    public ActionResult LogsResetCount()
+    public ActionResult<object> LogsResetCount()
     {
         LogScanner.ResetCount(_paths.PluginConfigurationsPath);
-        return NoContent();
+        // A body, as the page's requests expect JSON and take an empty answer as a failure.
+        return Ok(new { Reset = true });
     }
 
     /// <summary>Disk space that can usually be freed safely.</summary>

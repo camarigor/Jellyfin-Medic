@@ -54,7 +54,7 @@ public static class PluginDirectoryService
 
     public static async Task<PluginDirectory> GetAsync(CancellationToken ct)
     {
-        if (_cache is { } hit && DateTime.UtcNow - hit.At < TimeSpan.FromHours(6))
+        if (_cache is { } hit && Fresh(hit.At, hit.Data, DateTime.UtcNow))
         {
             return hit.Data;
         }
@@ -62,7 +62,7 @@ public static class PluginDirectoryService
         await Gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_cache is { } again && DateTime.UtcNow - again.At < TimeSpan.FromHours(6))
+            if (_cache is { } again && Fresh(again.At, again.Data, DateTime.UtcNow))
             {
                 return again.Data;
             }
@@ -90,6 +90,10 @@ public static class PluginDirectoryService
             Gate.Release();
         }
     }
+
+    /// <summary>A list is kept for 6 hours; a failed fetch only for 2 minutes, as LinkChecker does, so it's soon tried again.</summary>
+    internal static bool Fresh(DateTime at, PluginDirectory data, DateTime now) =>
+        now - at < (data.Error is null ? TimeSpan.FromHours(6) : TimeSpan.FromMinutes(2));
 
     private static void Parse(string markdown, PluginDirectory directory)
     {

@@ -6,6 +6,9 @@
 #   KEEP=1 tests/e2e/run.sh     leave Jellyfin running afterwards on http://127.0.0.1:8096
 #   tests/e2e/run.sh "dashboard" "memory"    run only the checks whose names contain one of these
 #   JELLYFIN_IMAGE=jellyfin/jellyfin:12.1 tests/e2e/run.sh    test against another Jellyfin
+#   E2E_NAME=medic-e2e-2 PORT=8097 FAKE_PORT_OFFSET=100 WORK=/tmp/e2e-2 tests/e2e/run.sh    a second run beside the first
+#
+# Build output, Jellyfin's logs and the container's output are kept in $LOGS (tests/e2e/.logs by default).
 #
 # Needs: dotnet 10 SDK, docker, ffmpeg, node with playwright (PLAYWRIGHT_MODULE can point at it).
 set -euo pipefail
@@ -14,15 +17,28 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${WORK:-$ROOT/tests/e2e/.work}"
 # A fixed image (Jellyfin 12.2.0), so a run only changes when the code or this line does.
 IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.2@sha256:357724bf0ae27a672c7cbaa899db2d9abeb13dbd8657ccce750258a4c059d037}"
-NAME=medic-e2e
+NAME="${E2E_NAME:-medic-e2e}"
 PORT="${PORT:-8096}"
+LOGS="${LOGS:-$ROOT/tests/e2e/.logs}"
 
-rm -rf "$WORK"
-mkdir -p "$WORK/config/plugins" "$WORK/cache" "$WORK/media/movies"
+# A container left by a KEEP=1 run goes first: it holds $WORK, and what it wrote there belongs to root, so it's
+# handed back (by a container, as only root can) before $WORK is deleted.
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+if [ -d "$WORK" ] && ! rm -rf "$WORK" 2>/dev/null; then
+  docker run --rm --entrypoint chown -v "$WORK:/work" "$IMAGE" -R "$(id -u):$(id -g)" /work
+  rm -rf "$WORK"
+fi
+rm -rf "$LOGS"
+mkdir -p "$WORK/config/plugins" "$WORK/cache" "$WORK/media/movies" "$LOGS"
 
 echo "== Building plugins"
 build() { # project, folder, dll
-  dotnet publish "$ROOT/$1" -c Release -o "$WORK/build/$2" -v quiet -nologo >/dev/null
+  # MSBuild prints errors on stdout, so the output is kept and shown when the build fails.
+  if ! timeout 600 dotnet publish "$ROOT/$1" -c Release -o "$WORK/build/$2" -v quiet -nologo >"$LOGS/build-$2.log" 2>&1; then
+    cat "$LOGS/build-$2.log"
+    echo "Building $1 failed (output above, and in $LOGS/build-$2.log)" >&2
+    exit 1
+  fi
   mkdir -p "$WORK/config/plugins/$2"
   cp "$WORK/build/$2/$3" "$WORK/config/plugins/$2/"
 }
@@ -92,6 +108,8 @@ docker run -d --name "$NAME" -p "$PORT:8096" --add-host=host.docker.internal:hos
 # Jellyfin runs as root in the container, so what it writes under $WORK belongs to root. It's handed back
 # before the container goes, or the next run couldn't delete $WORK and would stop before any test.
 cleanup() {
+  docker logs "$NAME" >"$LOGS/container.log" 2>&1 || true
+  cp -r "$WORK/config/log" "$LOGS/jellyfin" 2>/dev/null || true
   [ "${KEEP:-0}" = 1 ] && return
   docker exec "$NAME" chown -R "$(id -u):$(id -g)" /config /cache /media >/dev/null 2>&1 || true
   docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -102,12 +120,14 @@ trap cleanup EXIT
 # to the real one, dropping connections on the way. /Startup/Configuration, the tests' first call, only
 # answers 200 from the real server.
 for i in $(seq 1 90); do
-  curl -sf "http://127.0.0.1:$PORT/Startup/Configuration" >/dev/null && break
+  curl -sf -m 5 "http://127.0.0.1:$PORT/Startup/Configuration" >/dev/null && break
   sleep 2
 done
 
 status=0
 # The pretend Sonarr, qBittorrent and Seerr listen only where the container reaches this machine.
-JF="http://127.0.0.1:$PORT" WORK="$WORK" FAKE_HOST="${GATEWAY:-0.0.0.0}" node "$ROOT/tests/e2e/e2e.mjs" "$@" || status=$?
+# A time limit, so a check that hangs fails the run instead of holding it until the CI job is killed.
+JF="http://127.0.0.1:$PORT" WORK="$WORK" E2E_NAME="$NAME" FAKE_HOST="${GATEWAY:-0.0.0.0}" timeout "${E2E_TIMEOUT:-1500}" node "$ROOT/tests/e2e/e2e.mjs" "$@" || status=$?
+[ "$status" = 124 ] && echo "The checks didn't finish within ${E2E_TIMEOUT:-1500} seconds" >&2
 docker logs "$NAME" 2>&1 | grep -E "\[ERR\]|\[FTL\]" | grep -iE "medic|picks|profiles|posters" | head -20 || true
 exit $status

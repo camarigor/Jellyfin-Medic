@@ -87,6 +87,9 @@ public class DiagnosticReport
 {
     public DateTime GeneratedUtc { get; set; } = DateTime.UtcNow;
 
+    // The server's offset from UTC now, so the page shows every time on the server's clock, as the schedule is.
+    public int UtcOffsetMinutes { get; set; } = (int)TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalMinutes;
+
     public List<SpecItem> Specs { get; set; } = new();
 
     public List<Finding> Findings { get; set; } = new();

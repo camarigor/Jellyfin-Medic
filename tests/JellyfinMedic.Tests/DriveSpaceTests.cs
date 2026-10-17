@@ -99,4 +99,22 @@ public sealed class DriveSpaceTests
         Assert.Equal(@"D:\", cache);
         Assert.False(DiagnosticsEngine.SameDrive(cache, data));
     }
+
+    [Fact]
+    public void A_missing_or_empty_library_folder_is_not_counted_as_its_parents_drive()
+    {
+        string parent = Path.GetTempPath();
+        var drives = StorageWatch.Drives(new[] { ("Films", Path.Combine(parent, "medic-not-mounted")) }, _ => false);
+
+        Assert.Empty(drives);
+    }
+
+    [Fact]
+    public void Jellyfins_own_folders_are_read_through_their_parent_when_not_made_yet()
+    {
+        string parent = Path.GetTempPath();
+        var drive = Assert.Single(StorageWatch.Drives(new[] { ("transcodes", Path.Combine(parent, "medic-no-transcodes-yet")) }, _ => false));
+
+        Assert.Equal("transcodes", drive.Holds);
+    }
 }

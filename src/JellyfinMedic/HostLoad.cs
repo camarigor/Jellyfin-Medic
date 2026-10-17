@@ -27,6 +27,9 @@ public sealed class HostLoadSampler : IHostedService, IDisposable
     private Timer? _timer;
     private HostCounters? _previous;
 
+    // Whether the last reading failed, so a repeated failure is a warning once.
+    private bool _failing;
+
     public HostLoadSampler(ITaskManager tasks, IApplicationPaths paths, ILogger<HostLoadSampler> logger)
     {
         _tasks = tasks;
@@ -72,8 +75,21 @@ public sealed class HostLoadSampler : IHostedService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Jellyfin Medic: couldn't read the server's load this time.");
+            // A warning the first time, as a failure here repeats on every reading.
+            if (!_failing)
+            {
+                _failing = true;
+                _logger.LogWarning(ex, "Jellyfin Medic: couldn't record the server's load; Medic keeps trying.");
+            }
+            else
+            {
+                _logger.LogDebug(ex, "Jellyfin Medic: still couldn't record the server's load.");
+            }
+
+            return;
         }
+
+        _failing = false;
     }
 }
 
@@ -367,8 +383,9 @@ public static class HostLoadStore
                 profile = JsonSerializer.Deserialize<HostLoadProfile>(File.ReadAllText(path));
             }
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            ScheduleStorage.SetAside(path, ex);
             profile = null;
         }
 

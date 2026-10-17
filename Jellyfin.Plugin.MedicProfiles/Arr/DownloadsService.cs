@@ -263,6 +263,11 @@ public class DownloadsService
             }
 
             var root = result.Json.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return (records, $"{ArrClient.Name(app)} sent something unexpected.", total);
+            }
+
             if (root.TryGetProperty("records", out var list) && list.ValueKind == JsonValueKind.Array)
             {
                 // Clone so the rows outlive this page's document.
@@ -451,10 +456,14 @@ public class DownloadsService
 
     // ---------- Blocked list ----------
 
-    public async Task<(List<BlockedRow> Rows, Dictionary<string, string> Errors)> BlockedAsync(CancellationToken ct)
+    // The newest this many blocked releases are shown from each app.
+    internal const int BlockedShown = 100;
+
+    public async Task<(List<BlockedRow> Rows, Dictionary<string, string> Errors, Dictionary<string, string> Notes)> BlockedAsync(CancellationToken ct)
     {
         var rows = new List<BlockedRow>();
         var errors = new Dictionary<string, string>();
+        var notes = new Dictionary<string, string>();
         foreach (var app in new[] { ArrApp.Sonarr, ArrApp.Radarr })
         {
             if (!_arr.IsConfigured(app))
@@ -462,8 +471,8 @@ public class DownloadsService
                 continue;
             }
 
-            using var result = await _arr.GetAsync(app, "blocklist?page=1&pageSize=100&sortKey=date&sortDirection=descending", ct).ConfigureAwait(false);
-            if (!result.Ok || result.Json is null)
+            using var result = await _arr.GetAsync(app, $"blocklist?page=1&pageSize={BlockedShown}&sortKey=date&sortDirection=descending", ct).ConfigureAwait(false);
+            if (!result.Ok || result.Json is null || result.Json.RootElement.ValueKind != JsonValueKind.Object)
             {
                 errors[Key(app)] = result.Ok ? ArrClient.Name(app) + " sent something unexpected." : result.Message;
                 continue;
@@ -472,6 +481,11 @@ public class DownloadsService
             if (!result.Json.RootElement.TryGetProperty("records", out var list) || list.ValueKind != JsonValueKind.Array)
             {
                 continue;
+            }
+
+            if (Json.Int(result.Json.RootElement, "totalRecords") is { } total && total > BlockedShown)
+            {
+                notes[Key(app)] = $"{ArrClient.Name(app)} has {total.ToString("N0", CultureInfo.InvariantCulture)} blocked releases; this shows the newest {BlockedShown}. The rest are under Activity → Blocklist in {ArrClient.Name(app)}.";
             }
 
             foreach (var r in list.EnumerateArray())
@@ -500,7 +514,7 @@ public class DownloadsService
             }
         }
 
-        return (rows.OrderByDescending(r => r.DateUtc).ToList(), errors);
+        return (rows.OrderByDescending(r => r.DateUtc).ToList(), errors, notes);
     }
 
     public async Task<(bool Ok, string Message)> UnblockAsync(ArrApp app, int id, string title, string? by, CancellationToken ct)

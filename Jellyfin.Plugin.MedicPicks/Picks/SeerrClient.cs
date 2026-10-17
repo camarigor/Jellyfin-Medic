@@ -56,6 +56,10 @@ public class SeerrClient
     private readonly ConcurrentDictionary<(string Server, Guid User), (int? SeerrId, DateTime At)> _accounts = new();
     private readonly ConcurrentDictionary<string, (SeerrTitle Title, DateTime At)> _titles = new();
 
+    // Titles Seerr couldn't give lately, so a page of requests doesn't wait for each again on every visit.
+    private static readonly TimeSpan TitleMissTime = TimeSpan.FromMinutes(5);
+    private readonly ConcurrentDictionary<string, DateTime> _titleMisses = new();
+
     public SeerrClient(IHttpClientFactory httpClientFactory, PicksStore store, ILogger<SeerrClient> logger)
     {
         _httpClientFactory = httpClientFactory;
@@ -300,10 +304,15 @@ public class SeerrClient
     public async Task<SeerrTitle?> GetTitleAsync(string baseUrl, string mediaType, int tmdbId, CancellationToken ct)
     {
         string type = mediaType == "tv" ? "tv" : "movie";
-        string cacheKey = type + ":" + tmdbId.ToString(CultureInfo.InvariantCulture);
+        string cacheKey = baseUrl + "|" + type + ":" + tmdbId.ToString(CultureInfo.InvariantCulture);
         if (_titles.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow - cached.At < TitleCacheTime)
         {
             return cached.Title;
+        }
+
+        if (_titleMisses.TryGetValue(cacheKey, out var missed) && DateTime.UtcNow - missed < TitleMissTime)
+        {
+            return null;
         }
 
         string? key = _store.GetSeerrKey();
@@ -319,6 +328,7 @@ public class SeerrClient
             using var response = await SendAsync(request, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
+                _titleMisses[cacheKey] = DateTime.UtcNow;
                 return null;
             }
 
@@ -328,6 +338,7 @@ public class SeerrClient
             {
                 // Not a title: say nothing rather than remember "Unknown title" for a day.
                 _logger.LogDebug("Medic Picks: Seerr sent something other than a title for {Type} {Id}", type, tmdbId);
+                _titleMisses[cacheKey] = DateTime.UtcNow;
                 return null;
             }
 
@@ -340,11 +351,13 @@ public class SeerrClient
                 PosterPath = Text(root, "posterPath")
             };
             _titles[cacheKey] = (title, DateTime.UtcNow);
+            _titleMisses.TryRemove(cacheKey, out _);
             return title;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Medic Picks: couldn't read a title from Seerr");
+            _titleMisses[cacheKey] = DateTime.UtcNow;
             return null;
         }
     }

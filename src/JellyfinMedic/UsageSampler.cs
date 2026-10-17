@@ -52,14 +52,46 @@ public sealed class UsageSampler : IHostedService, IDisposable
                 .ToList();
 
             var (streams, transcodes) = Count(playing);
-            UsageStore.Record(_paths, DateTime.Now, streams, transcodes);
-            TranscodeLog.Record(_paths, playing);
-            ServerNow.Record();
-            StorageWatch.RecordKnown(_paths.PluginConfigurationsPath);
+            // Each on its own, so one that fails doesn't stop the others.
+            Run("busy hours", () => UsageStore.Record(_paths, DateTime.Now, streams, transcodes));
+            Run("transcodes", () => TranscodeLog.Record(_paths, playing));
+            Run("the live readings", ServerNow.Record);
+            Run("disk space", () => StorageWatch.RecordKnown(_paths.PluginConfigurationsPath));
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Jellyfin Medic: couldn't record usage this time.");
+            Failed("who is watching", ex);
+        }
+    }
+
+    // What failed last time, so a failure that repeats every 5 minutes is a warning once, not every time.
+    private readonly HashSet<string> _failing = new(StringComparer.Ordinal);
+
+    private void Run(string what, Action record)
+    {
+        try
+        {
+            record();
+            if (_failing.Remove(what))
+            {
+                _logger.LogInformation("Jellyfin Medic: recording {What} works again.", what);
+            }
+        }
+        catch (Exception ex)
+        {
+            Failed(what, ex);
+        }
+    }
+
+    private void Failed(string what, Exception ex)
+    {
+        if (_failing.Add(what))
+        {
+            _logger.LogWarning(ex, "Jellyfin Medic: couldn't record {What}; Medic keeps trying every 5 minutes.", what);
+        }
+        else
+        {
+            _logger.LogDebug(ex, "Jellyfin Medic: still couldn't record {What}.", what);
         }
     }
 
@@ -136,8 +168,9 @@ public static class UsageStore
                 profile = JsonSerializer.Deserialize<UsageProfile>(File.ReadAllText(path));
             }
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            ScheduleStorage.SetAside(path, ex);
             profile = null;
         }
 
