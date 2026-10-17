@@ -27,25 +27,26 @@ public sealed record PosterSpec(
     public static PosterSpec From(Configuration.PluginConfiguration c)
     {
         int width = Math.Clamp(c.Width / 2 * 2, 120, 600);
-        return Make(c, width, width * 3 / 2);
+        return new(width, width * 3 / 2, Math.Clamp(c.Moments, 1, 6), Math.Clamp(c.MomentTenths, 5, 30) / 10.0,
+            Math.Clamp(c.FramesPerSecond, 4, 15), Math.Clamp(c.Colours, 16, 256), c.ShowTitle, c.ShowFrame);
     }
 
     /// <summary>The settings as a 16:9 library cover spec, the shape of Jellyfin's library cards.</summary>
     public static PosterSpec CoverFrom(Configuration.PluginConfiguration c)
     {
         int width = Math.Clamp(c.CoverWidth / 2 * 2, 240, 960);
-        return Make(c, width, width * 9 / 16 / 2 * 2);
+        return new(width, width * 9 / 16 / 2 * 2, Math.Clamp(c.CoverMoments, 1, 6), Math.Clamp(c.CoverMomentTenths, 5, 30) / 10.0,
+            Math.Clamp(c.CoverFramesPerSecond, 4, 15), Math.Clamp(c.CoverColours, 16, 256), c.CoverShowTitle, c.CoverShowFrame);
     }
 
-    private static PosterSpec Make(Configuration.PluginConfiguration c, int width, int height) => new(
-        width,
-        height,
-        Math.Clamp(c.Moments, 1, 6),
-        Math.Clamp(c.MomentTenths, 5, 30) / 10.0,
-        Math.Clamp(c.FramesPerSecond, 4, 15),
-        Math.Clamp(c.Colours, 16, 256),
-        c.ShowTitle,
-        c.ShowFrame);
+    /// <summary>How many frames a poster or cover made with this spec has.</summary>
+    public int Frames => (int)Math.Round(Moments * MomentSeconds * FramesPerSecond);
+
+    /// <summary>
+    /// Roughly how big a GIF made with this spec is, from bytes per pixel per frame: about 0.04 on the test
+    /// clips, and more for films with a lot of detail, so the page uses what's been made already when it can.
+    /// </summary>
+    public long EstimateBytes(double bytesPerPixelFrame) => (long)(Width * (double)Height * Frames * bytesPerPixelFrame);
 }
 
 /// <summary>One moment of a poster: which video, where in it to start, and whether it's HDR.</summary>

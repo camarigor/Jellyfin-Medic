@@ -26,6 +26,9 @@ public class PosterRecord
 
     public int Height { get; set; }
 
+    /// <summary>How many frames it has, to estimate the size of the next ones; 0 for records from before 1.2.0.</summary>
+    public int Frames { get; set; }
+
     /// <summary>The film's own poster before Medic Posters replaced it; null if it had none.</summary>
     public SavedImage? Original { get; set; }
 }

@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Enums;
+using Jellyfin.Plugin.MedicPosters.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
@@ -60,8 +61,17 @@ public class PosterService
         _logger = logger;
     }
 
+    /// <summary>Bytes per pixel per frame for a GIF when nothing has been made yet to measure.</summary>
+    public const double DefaultBytesPerPixelFrame = 0.05;
+
     /// <summary>Set by "Make them all again": the next run also redoes items that already have one.</summary>
     public bool RedoAllNextRun { get; set; }
+
+    /// <summary>What the next run makes: <see cref="PosterKind"/>, <see cref="CoverKind"/>, or null for both (the nightly run).</summary>
+    public string? NextRunKind { get; set; }
+
+    /// <summary>The item and spec the preview file was last made for, so "Use this one" can apply it.</summary>
+    public (Guid ItemId, string Kind, PosterSpec Spec)? LastPreview { get; private set; }
 
     public RunProgress? Progress => _progress;
 
@@ -72,19 +82,24 @@ public class PosterService
             .Select(f => (Guid.Parse(f.ItemId), f.Name))
             .ToList();
 
-    /// <summary>The libraries chosen in the settings (all of them if none are chosen).</summary>
+    /// <summary>The libraries to make posters for: all of them, or the ones chosen in 1.0 and 1.1, less the ones left out.</summary>
     public IReadOnlyList<CollectionFolder> ChosenLibraries()
     {
-        var chosen = (Plugin.Instance?.Configuration.LibraryIds ?? Array.Empty<string>())
-            .Select(id => Guid.TryParse(id, out var g) ? g : Guid.Empty)
-            .Where(g => g != Guid.Empty)
-            .ToHashSet();
+        var config = Plugin.Instance?.Configuration;
+        var chosen = Ids(config?.LibraryIds);
+        var excluded = Ids(config?.ExcludedLibraryIds);
         return Libraries()
-            .Where(l => chosen.Count == 0 || chosen.Contains(l.Id))
+            .Where(l => (chosen.Count == 0 || chosen.Contains(l.Id)) && !excluded.Contains(l.Id))
             .Select(l => _libraryManager.GetItemById(l.Id))
             .OfType<CollectionFolder>()
             .ToList();
     }
+
+    private static HashSet<Guid> Ids(string[]? ids) =>
+        (ids ?? Array.Empty<string>())
+            .Select(id => Guid.TryParse(id, out var g) ? g : Guid.Empty)
+            .Where(g => g != Guid.Empty)
+            .ToHashSet();
 
     /// <summary>The films, series, home videos and music videos in the chosen libraries: everything that gets a poster.</summary>
     public IReadOnlyList<BaseItem> Titles()
@@ -186,15 +201,20 @@ public class PosterService
         }
 
         bool redo = RedoAllNextRun;
+        string? only = NextRunKind;
         RedoAllNextRun = false;
+        NextRunKind = null;
         var summary = new RunSummary { StartedUtc = DateTime.UtcNow };
         try
         {
             var config = Plugin.Instance!.Configuration;
             var posterSpec = PosterSpec.From(config);
             var coverSpec = PosterSpec.CoverFrom(config);
-            var jobs = ChosenLibraries().Where(_ => config.MakeLibraryCovers).Select(l => ((BaseItem)l, CoverKind))
-                .Concat(Titles().Select(t => (t, PosterKind)))
+            // The nightly run makes covers only when they're switched on; "Make library covers now" always does.
+            bool covers = only == CoverKind || (only is null && config.MakeLibraryCovers);
+            bool posters = only != CoverKind;
+            var jobs = ChosenLibraries().Where(_ => covers).Select(l => ((BaseItem)l, CoverKind))
+                .Concat(Titles().Where(_ => posters).Select(t => (t, PosterKind)))
                 .ToList();
             _progress = new RunProgress { Total = jobs.Count };
             _logger.LogInformation("Medic Posters: checking {Count} titles and libraries{Redo}", jobs.Count, redo ? ", making every one again" : string.Empty);
@@ -262,7 +282,7 @@ public class PosterService
             if (error is null)
             {
                 File.Move(temp, output, overwrite: true);
-                await UsePosterAsync(item, kind, output, spec.Width, spec.Height, ct).ConfigureAwait(false);
+                await UsePosterAsync(item, kind, output, spec.Width, spec.Height, spec.Frames, ct).ConfigureAwait(false);
                 _store.Update(s => s.Failures.Remove(item.Id));
                 return null;
             }
@@ -278,9 +298,10 @@ public class PosterService
     /// Makes a poster (or, for <see cref="CoverKind"/>, a library cover) into the preview file, without changing
     /// anything. Uses the given item, or a random one. Returns the item used, or why it didn't work.
     /// </summary>
-    public async Task<(BaseItem? Item, string? Error)> PreviewAsync(Guid? itemId, string kind, CancellationToken ct)
+    public async Task<(BaseItem? Item, string? Error)> PreviewAsync(Guid? itemId, string kind, PluginConfiguration? settings, CancellationToken ct)
     {
-        var config = Plugin.Instance!.Configuration;
+        // The page sends the settings on screen, saved or not, so the preview shows what they'd make.
+        var config = settings ?? Plugin.Instance!.Configuration;
         bool cover = kind == CoverKind;
         var spec = cover ? PosterSpec.CoverFrom(config) : PosterSpec.From(config);
         IReadOnlyList<BaseItem> candidates = cover ? ChosenLibraries() : Titles();
@@ -295,9 +316,43 @@ public class PosterService
         }
 
         var (clips, error) = cover ? CoverClips((CollectionFolder)item, spec) : PosterClips(item, spec);
+        LastPreview = null;
         error ??= await _maker.MakeAsync(clips, item.Name, spec, _store.PreviewPath, ct).ConfigureAwait(false);
+        if (error is null)
+        {
+            LastPreview = (item.Id, kind, spec);
+        }
+
         return (item, error);
     }
+
+    /// <summary>Uses the last preview as that item's poster or cover. Returns the item, or why it couldn't.</summary>
+    public async Task<(BaseItem? Item, string? Error)> UsePreviewAsync(CancellationToken ct)
+    {
+        if (LastPreview is not { } last || !File.Exists(_store.PreviewPath))
+        {
+            return (null, "Make a preview first.");
+        }
+
+        if (_libraryManager.GetItemById(last.ItemId) is not BaseItem item)
+        {
+            return (null, "That film, series or library isn't on the server any more.");
+        }
+
+        string output = _store.PosterPath(item.Id);
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        File.Copy(_store.PreviewPath, output, overwrite: true);
+        await UsePosterAsync(item, last.Kind, output, last.Spec.Width, last.Spec.Height, last.Spec.Frames, ct).ConfigureAwait(false);
+        _store.Update(s => s.Failures.Remove(item.Id));
+        return (item, null);
+    }
+
+    /// <summary>Titles in the chosen libraries whose name contains the text, for picking one to preview or make.</summary>
+    public IReadOnlyList<BaseItem> FindTitles(string text, int limit) =>
+        Titles().Where(t => !t.IsShortcut && t.Name.Contains(text, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(limit)
+            .ToList();
 
     /// <summary>Puts a film's own poster back and deletes Medic's. Returns false if Medic never made one for it.</summary>
     public async Task<bool> RestoreAsync(Guid itemId, CancellationToken ct)
@@ -378,14 +433,14 @@ public class PosterService
         }
 
         _logger.LogInformation("Medic Posters: a refresh put back {Title}'s own poster; using the animated one again", film.Name);
-        await UsePosterAsync(film, record.Kind, ours, record.Width, record.Height, ct).ConfigureAwait(false);
+        await UsePosterAsync(film, record.Kind, ours, record.Width, record.Height, record.Frames, ct).ConfigureAwait(false);
         return true;
     }
 
     private static bool SamePath(string a, string b) =>
         string.Equals(a, b, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
-    private async Task UsePosterAsync(BaseItem film, string kind, string path, int width, int height, CancellationToken ct)
+    private async Task UsePosterAsync(BaseItem film, string kind, string path, int width, int height, int frames, CancellationToken ct)
     {
         var current = film.GetImageInfo(ImageType.Primary, 0);
         var existing = _store.Read(s => s.Posters.GetValueOrDefault(film.Id));
@@ -417,6 +472,7 @@ public class PosterService
             Bytes = new FileInfo(path).Length,
             Width = width,
             Height = height,
+            Frames = frames,
             Original = original
         });
     }

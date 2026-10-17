@@ -125,4 +125,23 @@ public class PosterMakerTests
         Assert.Equal(0, PosterMaker.RandomStart(null, 1, random));
         Assert.Equal(0, PosterMaker.RandomStart(2, 1, random));
     }
+
+    [Fact]
+    public void Library_covers_follow_their_own_settings()
+    {
+        var c = new PluginConfiguration { Moments = 5, FramesPerSecond = 12, ShowTitle = true, CoverMoments = 2, CoverFramesPerSecond = 6, CoverColours = 48, CoverShowTitle = false, CoverShowFrame = false };
+        var cover = PosterSpec.CoverFrom(c);
+        Assert.Equal((2, 6, 48, false, false), (cover.Moments, cover.FramesPerSecond, cover.Colours, cover.ShowTitle, cover.ShowFrame));
+        var poster = PosterSpec.From(c);
+        Assert.Equal((5, 12, true), (poster.Moments, poster.FramesPerSecond, poster.ShowTitle));
+    }
+
+    [Fact]
+    public void The_size_estimate_scales_with_pixels_and_frames()
+    {
+        Assert.Equal(24, Spec.Frames);
+        Assert.Equal(240 * 360 * 24 / 20, Spec.EstimateBytes(0.05));
+        var longer = Spec with { Moments = 6 };
+        Assert.Equal(2 * Spec.EstimateBytes(0.05), longer.EstimateBytes(0.05));
+    }
 }

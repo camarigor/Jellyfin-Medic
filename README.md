@@ -161,10 +161,12 @@ An animated poster for every film and series, and an animated cover for every li
 
 - **Made from the video itself.** Each poster cuts between a few moments of the film, spread from 15% to 75% of the way through so it skips the opening titles and the credits (for a series, a moment from each of a few episodes), with the title in capitals in a big serif font (Bodoni Moda) and a rounded white frame. HDR films are converted to normal colour first. It uses Jellyfin's own FFmpeg, so there's nothing else to install.
 - **They stay animated.** Jellyfin resizes posters before sending them to an app, which turns an animated WebP into a still picture, but it never resizes a GIF. So the posters are small GIFs, and they move in the Jellyfin website, Jellyfin Desktop and the apps that can play a GIF poster. Apps that can't show the first frame.
-- **Library covers too.** Each library with videos in it (films, TV, home videos, music videos) gets a wide cover, the shape of Jellyfin's library cards, cut from moments of a few random things in it with the library's name on it. It's a GIF as well, so it moves on the home screen.
+- **Library covers too.** Each library with videos in it (films, TV, home videos, music videos) gets a wide cover, the shape of Jellyfin's library cards, cut from moments of a few random things in it with the library's name on it. It's a GIF as well, so it moves on the home screen. Covers have their own settings, separate from the posters'.
 - **Your own posters are kept.** Nothing in your media folders is changed or deleted: the GIFs live in the server's data folder, and each film's own poster is remembered. **Put back** under any poster, or **Put back the original posters**, brings them back.
-- **New films get one each night** from the **Make animated posters** scheduled task. A poster you change yourself, or that a metadata refresh replaces, is left alone. **Make them all again** redoes them all.
-- **A preview** shows a poster for a random film with your settings, and its size, without changing anything.
+- **New films get one each night** from the **Make animated posters** scheduled task. A poster you change yourself, or that a metadata refresh replaces, is left alone. **Make all posters again** and **Make all covers again** redo them all.
+- **A preview** shows a poster or a cover with the settings on screen, saved or not, and its size, without changing anything. Pick the film, series or library, or let it choose one. **Use this one** puts that preview on it, so you can do them one at a time.
+- **Posters and covers separately.** **Make posters now** and **Make library covers now** each make only their own kind, and each says how many there are to make and roughly how much space they'll take, worked out from the settings on screen and the ones made so far.
+- **Leave libraries out**, such as IPTV ones, by unticking them. Libraries you add later are included.
 
 ### Size
 
@@ -173,7 +175,7 @@ Because Jellyfin sends GIF posters at their full size, every poster on a page is
 ### Setting it up
 
 1. Install **Medic Posters** from the catalogue and restart Jellyfin.
-2. Open **Plugins → Medic Posters**, tick the libraries you want (or leave them all unticked for every one), and press **Preview a poster** or **Preview a library cover** to try the settings.
+2. Open **Plugins → Medic Posters**, untick any library to leave alone, and press **Preview a poster** or **Preview a library cover** to try the settings.
 3. Press **Make posters now**, or wait for the nightly run.
 
 ---

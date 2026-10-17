@@ -3,6 +3,20 @@
 All notable changes to Medic Posters are recorded here. The newest version is at the top.
 Jellyfin Medic, Medic Picks and Medic Profiles have their own changelogs.
 
+## [1.2.0] – 2026-10-17
+
+### Added
+- **Leave libraries out.** Every library is ticked; untick one, such as an IPTV library, and nothing in it gets a poster and it gets no cover. Libraries added later are included. The libraries chosen in 1.0 and 1.1 are kept: the ones not chosen show unticked.
+- **How much space they'll take.** The page says how much the animated posters and covers use now, and for each kind how many are left to make and roughly what they'll come to, and what making them all again would. It works the size out from the settings on screen, so it changes as you change them, and from the ones made so far.
+- **Posters and library covers on their own.** **Make posters now** and **Make library covers now**, and **Make all posters again** and **Make all covers again**, each do only their own kind. The nightly task still does both, covers only when **Make library covers each night too** is on.
+- **One at a time.** Pick a film or series, or a library, for the preview, then **Use this one** to put that preview on it.
+
+### Changed
+- **Library covers have their own settings**: moments, how long each plays, frames per second, colours, the name and the frame. They start at the defaults, so if you changed the poster settings in 1.1, set the cover ones to match.
+
+### Fixed
+- **The preview uses the settings on screen.** It used the saved ones, so a change didn't show until it was saved.
+
 ## [1.1.0] – 2026-10-17
 
 ### Added
