@@ -74,7 +74,15 @@ internal static class ScheduleCalendar
             if (date == ScheduleStorage.FirstWeekdayOfMonth(date.Year, date.Month, managed.Weekday))
             {
                 var slot = TimeSpan.FromTicks(managed.TimeOfDayTicks);
-                yield return Make(ScheduleStorage.Hhmm(slot), (int)slot.TotalMinutes, "managed");
+
+                // ManagedScheduleRunner skips the slot when the task already started earlier that month (on the
+                // day it had before it was moved, or when it was handed to Medic). A start from the slot on is
+                // this month's run itself, which stays on the calendar.
+                bool startedEarlier = managed.LastStartedLocal is { } started && started >= new DateTime(date.Year, date.Month, 1) && started < date + slot;
+                if (!startedEarlier)
+                {
+                    yield return Make(ScheduleStorage.Hhmm(slot), (int)slot.TotalMinutes, "managed");
+                }
             }
 
             yield break;
