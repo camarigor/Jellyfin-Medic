@@ -183,9 +183,11 @@ HARDWARE AND TRANSCODING
 
 STORAGE
   - Low space for transcodes, on the cache drive, or on the config drive.
-  - Every library drive: nearly full or full, and how fast each drive is
-    filling (one reading a day), with a warning when one will be full
-    within a month.
+  - Every library drive: nearly full (under 25 GB free, or 3% of the drive
+    up to 150 GB) or full (under 5 GB, or 1% up to 50 GB), and how fast
+    each drive is filling (one reading a day), with a warning when one will
+    be full within a month. A drive that holds only transcodes is left to
+    the transcoding checks.
   - Specs list each drive and the size of the metadata folder, trickplay
     images and image cache (measured in the background).
   - Almost no space left for the database.

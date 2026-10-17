@@ -79,9 +79,8 @@ public static class StorageWatch
                 continue;
             }
 
-            // The mount point when it can be read, else the volume that holds the folder (Windows, macOS). Only when
-            // neither can be read are drives with the same size and free space one.
-            string? mount = SystemProbe.Mount(path)?.MountPoint ?? VolumeRoot(path, roots.Value);
+            // Only when the drive can't be named are drives with the same size and free space one.
+            string? mount = DriveOf(path, roots);
             string key = mount ?? string.Create(CultureInfo.InvariantCulture, $"{space.TotalGb:0.0}/{space.FreeGb:0.0}");
             if (byKey.TryGetValue(key, out var existing))
             {
@@ -176,6 +175,13 @@ public static class StorageWatch
             Record(pluginConfigDir, drives);
         }
     }
+
+    /// <summary>The drive that holds <paramref name="path"/>, or null when it can't be named.</summary>
+    public static string? DriveOf(string path) => DriveOf(path, new Lazy<List<string>>(DriveRoots));
+
+    // The mount point when it can be read, else the volume that holds the folder (Windows, macOS).
+    internal static string? DriveOf(string path, Lazy<List<string>> roots, Func<string, string?>? mountOf = null) =>
+        (mountOf ?? (p => SystemProbe.Mount(p)?.MountPoint))(path) ?? VolumeRoot(path, roots.Value);
 
     /// <summary>
     /// The longest of <paramref name="roots"/> that holds <paramref name="path"/>, or null. Where mount points can't be
