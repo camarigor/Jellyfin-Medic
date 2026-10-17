@@ -264,8 +264,8 @@ public static class TrackCleaner
     private static readonly TrackRunProgress Progress = new();
     private static CancellationTokenSource? _cancel;
     private static long _bytesFreed; // space freed by this run right away (not held in kept originals)
-    private static long _writing; // bytes the files being cleaned right now may still write
-    private static readonly object SpaceSync = new(); // the space check and the reservation are one step
+    private static readonly SpaceReservations Writing = new(); // bytes the files being cleaned right now may still write
+    private static readonly object SpaceSync = new(); // the record of cleaned files and the changes file
 
     /// <summary>Where each changed file is recorded (one JSON line per file), set by the controller. Null records nothing.</summary>
     public static string? ChangesFile { get; set; }
@@ -940,6 +940,7 @@ public static class TrackCleaner
             Progress.BytesSaved = 0;
             Progress.BytesKept = 0;
             _bytesFreed = 0;
+            Writing.Reset();
             Progress.Current = null;
             Progress.StartedUtc = DateTime.UtcNow;
             Progress.FinishedUtc = null;
@@ -1123,15 +1124,10 @@ public static class TrackCleaner
         // on top of what other files being cleaned right now are still writing, and the run leaves a floor free
         // for everything else on the drive. Checked and reserved in one step, so two files can't both pass.
         long size = Size(plan.Path);
-        var (free, total) = DriveSpace(plan.Path);
-        long needed;
-        lock (SpaceSync)
+        if (!Writing.TryReserve(size, () => DriveSpace(plan.Path), out long free, out long total, out long needed))
         {
-            if (!Reserve(free, total, size, ref _writing, out needed))
-            {
-                NotChanged(plan, Unchanged.NoSpace, $"its drive has {Gb(free)} free and the new copy needs about {Gb(needed)}, keeping {Gb(SpaceFloor(total))} free for everything else, so it was left alone");
-                return;
-            }
+            NotChanged(plan, Unchanged.NoSpace, $"its drive has {Gb(free)} free and the new copy needs about {Gb(needed)}, keeping {Gb(SpaceFloor(total))} free for everything else, so it was left alone");
+            return;
         }
 
         // To tell whether Sonarr or Radarr replaces the file while it's being cleaned.
@@ -1244,7 +1240,7 @@ public static class TrackCleaner
         }
         finally
         {
-            Interlocked.Add(ref _writing, -size);
+            Writing.Release(size);
         }
     }
 
@@ -1361,6 +1357,53 @@ public static class TrackCleaner
         return true;
     }
 
+    /// <summary>What the files being cleaned right now may still write, for the space check each file makes before it starts.</summary>
+    internal sealed class SpaceReservations
+    {
+        private readonly object _sync = new();
+        private long _bytes;
+
+        internal long Bytes
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _bytes;
+                }
+            }
+        }
+
+        /// <summary>Reads the drive's free space and size, checks and reserves the copy's size as <see cref="Reserve"/> does.</summary>
+        internal bool TryReserve(long size, Func<(long Free, long Total)> driveSpace, out long free, out long total, out long needed)
+        {
+            // Read under the lock too: a figure read before another file's reservation doesn't count that file's copy.
+            lock (_sync)
+            {
+                (free, total) = driveSpace();
+                return Reserve(free, total, size, ref _bytes, out needed);
+            }
+        }
+
+        /// <summary>Takes a reservation off again once its file is done.</summary>
+        internal void Release(long size)
+        {
+            lock (_sync)
+            {
+                _bytes -= size;
+            }
+        }
+
+        /// <summary>Starts a run from nothing reserved, so a count gone wrong can't hold files back past the run.</summary>
+        internal void Reset()
+        {
+            lock (_sync)
+            {
+                _bytes = 0;
+            }
+        }
+    }
+
     /// <summary>Where an earlier release's kept original goes when the file has been replaced since it was cleaned.</summary>
     internal static string ReplacedPath(string kept, DateTime when) =>
         Path.Combine(Path.GetDirectoryName(kept) ?? string.Empty,
@@ -1468,8 +1511,19 @@ public static class TrackCleaner
 
         lock (SpaceSync)
         {
+            var lines = new List<string>();
+            try
+            {
+                lines.AddRange(File.ReadLines(file));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The lines read before the failure are still listed; the tab shouldn't fail over the rest.
+                NoteOnce($"Couldn't read the record of changed files: {ex.Message}");
+            }
+
             var list = new List<TrackChange>();
-            foreach (var line in File.ReadLines(file).Reverse().Take(count))
+            foreach (var line in Enumerable.Reverse(lines).Take(count))
             {
                 try
                 {
@@ -2513,6 +2567,18 @@ public static class TrackCleaner
             if (Progress.Recent.Count > 30)
             {
                 Progress.Recent.RemoveAt(Progress.Recent.Count - 1);
+            }
+        }
+    }
+
+    // For a note made each time the page looks, not once per run: a second one would push run notes out.
+    private static void NoteOnce(string line)
+    {
+        lock (Sync)
+        {
+            if (!Progress.Recent.Any(l => l.EndsWith(" " + line, StringComparison.Ordinal)))
+            {
+                Note(line);
             }
         }
     }
