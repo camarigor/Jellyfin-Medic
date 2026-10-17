@@ -2519,6 +2519,37 @@ await check('Dashboard panels: Load draws a line from the first reading after a 
     }
 });
 
+await check('Dashboard panels: Load names a whole-card GPU figure as such, with no alert line, and Jellyfin\'s own with one', async () => {
+    let live = await ok('/JellyfinMedic/Dashboard/Live');
+    for (let i = 0; i < 12 && live.Resources.length === 0; i++) {
+        await sleep(5000);
+        live = await ok('/JellyfinMedic/Dashboard/Live');
+    }
+    expect(live.Resources.length > 0, 'the resource monitor has no readings after a minute');
+    const last = live.Resources[live.Resources.length - 1];
+    const gpuMeter = async (whole) => {
+        await page.route('**/JellyfinMedic/Dashboard/Live', (route) => route.fulfill({ json: { ...live, Resources: [
+            { ...last, GpuPercent: 40, GpuWholeDevice: whole }, { ...last, GpuPercent: 60, GpuWholeDevice: whole }] } }));
+        try {
+            await medicTab('dashboard', true);
+            await page.waitForFunction(() => document.querySelectorAll('#md-load .md-meter').length === 4
+                && !!document.querySelectorAll('#md-load .md-meter')[3].querySelector('svg'), null, { timeout: 30000 });
+            return await page.evaluate(() => {
+                const meter = document.querySelectorAll('#md-load .md-meter')[3];
+                return { name: meter.querySelector('.md-meter-head span').textContent, alert: !!meter.querySelector('.md-line-alert'),
+                    label: meter.querySelector('svg').getAttribute('aria-label') };
+            });
+        } finally {
+            await page.unroute('**/JellyfinMedic/Dashboard/Live');
+        }
+    };
+    const whole = await gpuMeter(true);
+    expect(whole.name === 'GPU, whole card' && !whole.alert && /every program using the card, so no alert\.$/.test(whole.label), 'whole card: ' + JSON.stringify(whole));
+    const own = await gpuMeter(false);
+    expect(own.name === 'GPU' && own.alert && /alert at 95%\.$/.test(own.label), 'Jellyfin\'s own: ' + JSON.stringify(own));
+    return whole.name + ' | ' + own.name;
+});
+
 await check('Dashboard panels: Today shows the planned and actual runs, the failed one with the word, spikes and LoadGuard', async () => {
     await medicTab('dashboard', true);
     await page.waitForFunction(() => document.querySelectorAll('#md-day .md-day-block').length > 0, null, { timeout: 30000 });

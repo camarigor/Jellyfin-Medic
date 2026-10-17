@@ -1770,10 +1770,14 @@
                     const limits = pick(live, 'Limits') || {};
                     METERS.forEach(function (m) {
                         const values = readings.map(function (r) { return pick(r, m.field); }).filter(function (v) { return v !== null && v !== undefined; });
-                        const alert = m.guard ? pick(nowData, 'GuardCeilingPercent') : pick(limits, m.field);
+                        // Where Jellyfin's own GPU use can't be read (NVIDIA, older kernels), the figure is the whole card's,
+                        // other programs included, so it's named as such and has no alert line: it raises no alert.
+                        const whole = m.field === 'GpuPercent' && readings.length > 0 && !!pick(readings[readings.length - 1], 'GpuWholeDevice');
+                        const name = whole ? 'GPU, whole card' : m.name;
+                        const alert = m.guard ? pick(nowData, 'GuardCeilingPercent') : whole ? null : pick(limits, m.field);
                         const meter = el('div', 'md-meter');
                         const head = el('div', 'md-meter-head');
-                        head.appendChild(el('span', null, m.name));
+                        head.appendChild(el('span', null, name));
                         head.appendChild(el('strong', null, values.length ? fmtNum(values[values.length - 1]) + m.unit : 'n/a'));
                         meter.appendChild(head);
                         if (!values.length) {
@@ -1782,9 +1786,10 @@
                             const highest = Math.max.apply(null, values);
                             const top = m.top || Math.max((alert || 0) * 1.2, highest * 1.1, 1);
                             const minutes = Math.max(1, Math.round(values.length / 4));
-                            meter.appendChild(spark(160, 36, values, top, alert, m.name + ': now ' + fmtNum(values[values.length - 1]) + m.unit +
+                            meter.appendChild(spark(160, 36, values, top, alert, name + ': now ' + fmtNum(values[values.length - 1]) + m.unit +
                                 ', highest ' + fmtNum(highest) + m.unit + ' in the last ' + minutes + (minutes === 1 ? ' minute' : ' minutes') +
-                                (!m.guard ? '; alert at ' + fmtNum(alert || 0) + m.unit + '.' : alert ? '; LoadGuard\'s ceiling at ' + fmtNum(alert) + m.unit + '.' : '; LoadGuard is off.')));
+                                (m.guard ? (alert ? '; LoadGuard\'s ceiling at ' + fmtNum(alert) + m.unit + '.' : '; LoadGuard is off.')
+                                    : whole ? '; every program using the card, so no alert.' : '; alert at ' + fmtNum(alert || 0) + m.unit + '.')));
                         }
                         box.appendChild(meter);
                     });

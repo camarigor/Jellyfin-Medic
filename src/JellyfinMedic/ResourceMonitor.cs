@@ -27,8 +27,13 @@ public sealed class ResourceSample
     // Disk reads and writes by Jellyfin and FFmpeg, in MB a second. Null where it can't be read.
     public double? DiskMBps { get; set; }
 
-    // Null when the GPU's load can't be read (Intel, or no GPU).
+    // The busiest GPU engine, video engines included. Null when there's no GPU Jellyfin was given, or its load
+    // can't be read.
     public double? GpuPercent { get; set; }
+
+    // True when GpuPercent is the whole GPU, every program using it, because Jellyfin's own share can't be read
+    // (NVIDIA, or an older kernel). Such a figure never raises a heavy-use event, which would blame Jellyfin's tasks.
+    public bool GpuWholeDevice { get; set; }
 
     public int FfmpegProcesses { get; set; }
 }
@@ -76,6 +81,7 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
     private readonly ILogger<ResourceMonitor> _logger;
     private readonly Dictionary<string, int> _highFor = new();
     private readonly Dictionary<string, DateTime> _lastEvent = new();
+    private readonly GpuLoad _gpu = new();
     private Timer? _timer;
     private (DateTime Wall, double CpuSeconds, double IoBytes)? _previous;
     private int _busy;
@@ -156,7 +162,7 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
                 Watch("CPU", sample.CpuPercent >= CpuAlertPercent, $"{sample.CpuPercent:0}% of all CPU threads", ffmpeg);
                 Watch("Memory", sample.MemoryPercent >= MemoryAlertPercent, $"{sample.MemoryGb:0.#} GB ({sample.MemoryPercent:0}% of what Jellyfin may use)", ffmpeg);
                 Watch("Disk", sample.DiskMBps >= DiskAlertMBps, $"{sample.DiskMBps:0} MB/s of reads and writes", ffmpeg);
-                Watch("GPU", sample.GpuPercent >= GpuAlertPercent, $"{sample.GpuPercent:0}% GPU", ffmpeg);
+                Watch("GPU", GpuHigh(sample), $"{sample.GpuPercent:0}% GPU", ffmpeg);
             }
 
             if (_failing)
@@ -197,6 +203,9 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
         ResourceLog.Add(_paths, entry);
         _logger.LogInformation("Jellyfin Medic: high {Resource} use ({Level}). Running: {Causes}", resource, level, string.Join("; ", entry.Causes));
     }
+
+    /// <summary>Whether a reading is heavy GPU use by Jellyfin. The whole GPU's figure may be another program's, so it never is.</summary>
+    internal static bool GpuHigh(ResourceSample sample) => !sample.GpuWholeDevice && sample.GpuPercent >= GpuAlertPercent;
 
     /// <summary>
     /// Whether a spell of heavy use that has lasted <paramref name="highFor"/> readings becomes an event: once it
@@ -255,6 +264,7 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
         double cpuSeconds;
         double memoryBytes = self.WorkingSet64;
         double? ioBytes = ReadIo(self.Id);
+        var started = new List<int>();
 
         // Jellyfin's own line rather than TotalProcessorTime, which leaves out the FFmpeg processes it has reaped.
         if ((OperatingSystem.IsLinux() ? ReadStat(self.Id) : null) is { } own)
@@ -267,6 +277,8 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
                 {
                     continue;
                 }
+
+                started.Add(pid);
 
                 descendants.Add(stat.Value);
                 memoryBytes += stat.Value.RssBytes;
@@ -290,6 +302,9 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
         }
 
         var now = DateTime.UtcNow;
+        // Read every time, the first included, as its load is the change since the last reading. Only the processes
+        // Jellyfin started: Jellyfin itself opens no GPU file, and listing its hundreds of files every 15 s is waste.
+        var gpu = _gpu.Read(started, now);
         var previous = _previous;
         _previous = (now, cpuSeconds, ioBytes ?? -1);
         if (previous is not { } prev)
@@ -308,7 +323,8 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
             MemoryPercent = limit > 0 ? Math.Round(Math.Clamp(memoryBytes / limit * 100, 0, 100), 1) : 0,
             ServerMemoryPercent = ServerMemory.UsedPercent(out _, out _),
             DiskMBps = ioBytes is { } io2 && prev.IoBytes >= 0 && io2 >= prev.IoBytes ? Math.Round((io2 - prev.IoBytes) / wall / 1048576d, 1) : null,
-            GpuPercent = GpuBusy(),
+            GpuPercent = gpu?.Percent,
+            GpuWholeDevice = gpu?.WholeDevice ?? false,
             FfmpegProcesses = ffmpeg.Count
         };
     }
@@ -466,64 +482,6 @@ public sealed class ResourceMonitor : IHostedService, IDisposable
     /// </summary>
     internal static double MemoryBase(double? cgroupLimit, double? hostTotal, double dotnetAvailable) =>
         cgroupLimit ?? (hostTotal is > 0 ? hostTotal.Value : dotnetAvailable);
-
-    private static DateTime _nvidiaRetryUtc = DateTime.MinValue;
-
-    /// <summary>GPU load: NVIDIA through nvidia-smi, AMD through sysfs. Intel doesn't expose it without extra tools.</summary>
-    private static double? GpuBusy()
-    {
-        try
-        {
-            // Only card*/device/gpu_busy_percent: sysfs links loop back on themselves, so a recursive search never ends.
-            var cards = Directory.Exists("/sys/class/drm") ? Directory.GetDirectories("/sys/class/drm", "card*", SearchOption.TopDirectoryOnly) : Array.Empty<string>();
-            foreach (var file in cards.Select(c => Path.Combine(c, "device", "gpu_busy_percent")).Where(File.Exists).Take(4))
-            {
-                if (double.TryParse(File.ReadAllText(file).Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var amd))
-                {
-                    return amd;
-                }
-            }
-        }
-        catch
-        {
-            // Not readable.
-        }
-
-        if (!File.Exists("/dev/nvidiactl") || DateTime.UtcNow < _nvidiaRetryUtc)
-        {
-            return null;
-        }
-
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo("nvidia-smi", "--query-gpu=utilization.gpu --format=csv,noheader,nounits")
-            {
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            });
-            if (p is null || !p.WaitForExit(3000))
-            {
-                p?.Kill(entireProcessTree: true);
-                _nvidiaRetryUtc = DateTime.UtcNow.AddMinutes(5); // hung: don't start another one every 15 seconds
-                return null;
-            }
-
-            var first = p.StandardOutput.ReadToEnd().Split('\n').FirstOrDefault()?.Trim();
-            if (double.TryParse(first, NumberStyles.Any, CultureInfo.InvariantCulture, out var nv))
-            {
-                return nv;
-            }
-
-            _nvidiaRetryUtc = DateTime.UtcNow.AddMinutes(5); // an answer that isn't a number won't change by itself
-            return null;
-        }
-        catch
-        {
-            _nvidiaRetryUtc = DateTime.UtcNow.AddMinutes(30); // no nvidia-smi in this container
-            return null;
-        }
-    }
 
     /// <summary>
     /// From a process's line in /proc/&lt;pid&gt;/stat: its own CPU time and that of the children it has reaped (cutime and
