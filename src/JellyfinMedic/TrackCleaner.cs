@@ -940,8 +940,17 @@ public static class TrackCleaner
         var keep = KeepLanguages(cfg);
         var exclude = ExcludeList(cfg.TracksExclude);
 
+        // cfg is the live settings object that a save changes in place, so reading this for each file
+        // would let a save during the run switch keep or replace for the files not started yet.
+        bool replaceInPlace = cfg.TracksReplaceInPlace;
+
         try
         {
+            // Hands the request back now: the controller doesn't wait for the run, and without this its request
+            // would last through planning, which goes through every file in every library, and through a whole
+            // dry run. Running is already set, so a second start is refused meanwhile.
+            await Task.Yield();
+
             // Jellyfin's track list can be older than the file, so every file is probed again right before its remux.
             string? ffprobe = dryRun ? null : FfprobePath(ffmpeg);
             if (!dryRun && ffprobe is null)
@@ -952,12 +961,13 @@ public static class TrackCleaner
 
             if (!dryRun)
             {
-                RecoverInterruptedSwaps(LibraryFolders(library, libraries));
+                RecoverInterruptedSwaps(LibraryFolders(library, libraries, ct), ct);
             }
 
             var plans = new List<(FilePlan Plan, BaseItem Item)>();
             foreach (var lib in libraries.Where(l => !l.IsStreamed))
             {
+                ct.ThrowIfCancellationRequested();
                 if (!Guid.TryParse(lib.Id, out var id))
                 {
                     continue;
@@ -966,6 +976,7 @@ public static class TrackCleaner
                 var items = library.GetItemList(new InternalItemsQuery { ParentId = id, Recursive = true, IsFolder = false });
                 foreach (var item in items)
                 {
+                    ct.ThrowIfCancellationRequested();
                     string path = item.Path ?? string.Empty;
                     if (string.IsNullOrEmpty(path) || path.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) || !LooksLocal(path) || IsMedicFile(path) || IsExcluded(path, exclude) || !File.Exists(path))
                     {
@@ -982,6 +993,7 @@ public static class TrackCleaner
 
             foreach (var (plan, _) in plans)
             {
+                ct.ThrowIfCancellationRequested();
                 try { plan.SizeBytes = new FileInfo(plan.Path).Length; } catch { plan.SizeBytes = 0; }
             }
 
@@ -1006,7 +1018,7 @@ public static class TrackCleaner
                         await WaitUntilAllowedAsync(cfg, ct).ConfigureAwait(false);
                     }
 
-                    await ProcessOne(p.Plan, p.Item, ffmpeg, ffprobe, threads, dryRun, cfg.TracksReplaceInPlace, ct).ConfigureAwait(false);
+                    await ProcessOne(p.Plan, p.Item, ffmpeg, ffprobe, threads, dryRun, replaceInPlace, ct).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -1571,11 +1583,12 @@ public static class TrackCleaner
     }
 
     /// <summary>Every folder that holds a local file in a non-streamed library.</summary>
-    private static HashSet<string> LibraryFolders(ILibraryManager library, IEnumerable<LibraryFacts> libraries)
+    private static HashSet<string> LibraryFolders(ILibraryManager library, IEnumerable<LibraryFacts> libraries, CancellationToken ct = default)
     {
         var folders = new HashSet<string>(StringComparer.Ordinal);
         foreach (var lib in libraries.Where(l => !l.IsStreamed))
         {
+            ct.ThrowIfCancellationRequested();
             if (!Guid.TryParse(lib.Id, out var id))
             {
                 continue;
@@ -1981,12 +1994,14 @@ public static class TrackCleaner
     /// moving the cleaned copy in): the path is empty, the original is kept, and the temp file is still beside it.
     /// Without the temp file the title was removed on purpose, so it's left alone. Also handles the ".medic-orig"
     /// backups that "replace in place" used before it swapped in one step. Returns how many were put back.
+    /// A stop takes effect between folders, never during a move.
     /// </summary>
-    private static int RecoverInterruptedSwaps(IEnumerable<string> folders)
+    private static int RecoverInterruptedSwaps(IEnumerable<string> folders, CancellationToken ct = default)
     {
         int restored = 0;
         foreach (var dir in folders)
         {
+            ct.ThrowIfCancellationRequested();
             var candidates = new List<(string From, string To)>();
             string kept = Path.Combine(dir, OriginalsFolder);
             if (Directory.Exists(kept))

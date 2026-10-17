@@ -3235,6 +3235,7 @@
                         $('md-alert-critical').checked = pick(s, 'AlertCriticalErrors') !== false;
                         $('md-alert-restart').checked = pick(s, 'AlertRestartNeeded') !== false;
                         medicSettingsLoaded = true;
+                        tracksSaved = JSON.stringify(tracksForm());
                         $('md-tracks-save').disabled = false;
                     } catch (e) { /* defaults stay; saving stays off so nothing is overwritten with defaults */ }
                 }
@@ -3261,21 +3262,12 @@
 
                 let medicSettingsLoaded = false;
 
-                async function saveMedicSettings(statusEl, okMessage) {
-                    if (!medicSettingsLoaded) {
-                        statusEl.textContent = 'Settings are still loading. Try again in a moment.';
-                        return false;
-                    }
-                    const body = {
-                        AvoidEnabled: $('md-avoid').checked,
-                        AvoidStartMinute: parseInt($('md-avoid-from').value, 10),
-                        AvoidEndMinute: parseInt($('md-avoid-to').value, 10),
-                        AvoidStartHour: Math.floor(parseInt($('md-avoid-from').value, 10) / 60),
-                        AvoidEndHour: Math.floor(parseInt($('md-avoid-to').value, 10) / 60),
-                        InactiveUserDays: parseInt($('md-inactive').value, 10) || 90,
-                        LoadGuardEnabled: $('md-guard-enabled').checked,
-                        MemoryCeilingPercent: parseInt($('md-ceiling').value, 10) || 85,
-                        ScheduleMode: scheduleMode,
+                // The track settings as last loaded or saved, to tell whether the form has changes.
+                let tracksSaved = null;
+
+                // The track settings as the form shows them, in the shape the server saves.
+                function tracksForm() {
+                    return {
                         TracksKeepLanguages: $('md-tracks-langs-in').value || 'eng',
                         TracksRemoveUndetermined: $('md-tracks-undet-in').checked,
                         TracksRemoveUntaggedSubtitles: $('md-tracks-untagsubs-in').checked,
@@ -3288,13 +3280,37 @@
                         TracksReplaceInPlace: $('md-tracks-inplace-in').checked,
                         TracksConcurrentFiles: parseInt($('md-tracks-conc').value, 10) || 1,
                         TracksFfmpegThreads: parseInt($('md-tracks-threads').value, 10),
-                        TracksExclude: $('md-tracks-exclude-in').value,
+                        TracksExclude: $('md-tracks-exclude-in').value
+                    };
+                }
+
+                function tracksChanged() {
+                    return medicSettingsLoaded && JSON.stringify(tracksForm()) !== tracksSaved;
+                }
+
+                async function saveMedicSettings(statusEl, okMessage) {
+                    if (!medicSettingsLoaded) {
+                        statusEl.textContent = 'Settings are still loading. Try again in a moment.';
+                        return false;
+                    }
+                    const tracks = tracksForm();
+                    const body = Object.assign({
+                        AvoidEnabled: $('md-avoid').checked,
+                        AvoidStartMinute: parseInt($('md-avoid-from').value, 10),
+                        AvoidEndMinute: parseInt($('md-avoid-to').value, 10),
+                        AvoidStartHour: Math.floor(parseInt($('md-avoid-from').value, 10) / 60),
+                        AvoidEndHour: Math.floor(parseInt($('md-avoid-to').value, 10) / 60),
+                        InactiveUserDays: parseInt($('md-inactive').value, 10) || 90,
+                        LoadGuardEnabled: $('md-guard-enabled').checked,
+                        MemoryCeilingPercent: parseInt($('md-ceiling').value, 10) || 85,
+                        ScheduleMode: scheduleMode,
                         AlertCriticalErrors: $('md-alert-critical').checked,
                         AlertRestartNeeded: $('md-alert-restart').checked
-                    };
+                    }, tracks);
                     try {
                         const saved = await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('JellyfinMedic/MedicSettings'), data: JSON.stringify(body), contentType: 'application/json', dataType: 'json' });
                         showUnknownLanguages(saved);
+                        tracksSaved = JSON.stringify(tracks);
                         statusEl.textContent = okMessage;
                         return true;
                     } catch (e) {
@@ -3309,15 +3325,51 @@
                     }
                 });
 
+                // Earlier scan results were made with the old settings.
+                function forgetTracksScan() {
+                    tracksScan = null;
+                    $('md-tracks-summary').innerHTML = '';
+                    $('md-tracks-undet-panel').hidden = true;
+                    loadTracks();
+                }
+
                 $('md-tracks-save').addEventListener('click', async function () {
                     if (await saveMedicSettings($('md-tracks-saved'), 'Saved. Press Scan and preview to see what each file would keep.')) {
-                        // Earlier scan results were made with the old settings.
-                        tracksScan = null;
-                        $('md-tracks-summary').innerHTML = '';
-                        $('md-tracks-undet-panel').hidden = true;
-                        loadTracks();
+                        forgetTracksScan();
                     }
                 });
+
+                // Scan and runs use the saved settings, so changes still on screen are saved first.
+                // False when that save fails, and then nothing should start.
+                async function saveTracksIfChanged() {
+                    if (!tracksChanged()) return true;
+                    if (!await saveMedicSettings($('md-tracks-saved'), 'Saved your track settings first.')) {
+                        showStatus('Your track settings couldn\'t be saved, so nothing was started.', 'error');
+                        return false;
+                    }
+                    forgetTracksScan();
+                    return true;
+                }
+
+                // What a run will keep, read the way the server reads the settings: languages split on commas,
+                // semicolons or spaces (eng when there are none), and exclusions one per line without blanks or repeats.
+                function tracksPlanText() {
+                    const form = tracksForm();
+                    const langs = Array.from(new Set(form.TracksKeepLanguages.split(/[,; ]+/).map(function (l) { return l.trim().toLowerCase(); }).filter(Boolean)));
+                    const seen = new Set();
+                    const exclude = form.TracksExclude.split(/[\r\n]+/).map(function (l) { return l.trim(); }).filter(function (l) {
+                        const key = l.toLowerCase();
+                        if (!l || seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                    });
+                    const shown = exclude.slice(0, 5).join(', ') + (exclude.length > 5 ? ' and ' + (exclude.length - 5) + ' more' : '');
+                    return 'Keeping: ' + (langs.length ? langs.join(', ') : 'eng') + '\n'
+                        + 'Leaving alone: ' + (exclude.length ? shown : 'nothing') + '\n'
+                        + (form.TracksReplaceInPlace
+                            ? 'The originals aren\'t kept: each cleaned file replaces its original.'
+                            : 'The originals are kept in a hidden .medic-originals folder next to each file.');
+                }
 
                 $('md-goto-tracks').addEventListener('click', function (e) { e.preventDefault(); selectTab('tracks'); window.scrollTo(0, 0); });
 
@@ -3799,6 +3851,10 @@
 
                 $('md-tracks-scan').addEventListener('click', async function () {
                     $('md-tracks-scan').disabled = true;
+                    if (!await saveTracksIfChanged()) {
+                        $('md-tracks-scan').disabled = false;
+                        return;
+                    }
                     $('md-tracks-summary').innerHTML = '<p class="so-muted">Starting the scan…</p>';
                     try {
                         await postJson('/JellyfinMedic/Tracks/Scan/Start');
@@ -4065,7 +4121,8 @@
 
                 async function startTracks(dryRun) {
                     if (!dryRun && !window.confirm('Strip tracks for real? This rewrites your media files. You have backed up and tested on a few files first, right?')) return;
-                    if (!dryRun && !window.confirm('Last check: this modifies real files. Continue?')) return;
+                    if (!dryRun && !window.confirm('Last check: this modifies real files.\n\n' + tracksPlanText() + '\n\nContinue?')) return;
+                    if (!await saveTracksIfChanged()) return;
                     try {
                         await postJson('/JellyfinMedic/Tracks/Run', { dryRun: dryRun });
                         $('md-tracks-log').style.display = 'block';

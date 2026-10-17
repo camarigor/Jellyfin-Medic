@@ -2381,6 +2381,53 @@ await check('one-time on every device: a dismissed banner and a seen "What\'s ne
     return versions + ' versions in the full changelog';
 });
 
+await check('Tracks: unsaved track settings are saved before a scan or a run starts, and the run\'s confirm names them', async () => {
+    const before = await ok('/JellyfinMedic/MedicSettings');
+    const posts = [];
+    const dialogs = [];
+    const watch = (req) => {
+        const m = req.method() === 'POST' && req.url().match(/\/JellyfinMedic\/(MedicSettings|Tracks\/Scan\/Start|Tracks\/Run)\b/);
+        if (m) posts.push(m[1]);
+    };
+    const accept = (dialog) => { dialogs.push(dialog.message()); dialog.accept(); };
+    // Nothing is stripped: the run is answered here and never reaches the server.
+    await page.route('**/JellyfinMedic/Tracks/Run?*', (route) => route.fulfill({ json: { Started: true, DryRun: false } }));
+    page.on('request', watch);
+    page.on('dialog', accept);
+    try {
+        await medicTab('tracks', true);
+        await page.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 15000 });
+        await page.fill('#md-tracks-langs-in', 'eng, FRE');
+        await page.fill('#md-tracks-exclude-in', 'Seeded\n\n  Cut Short  \nOne\nTwo\nThree\nFour');
+        await page.click('#md-tracks-scan');
+        for (let i = 0; i < 50 && !posts.includes('Tracks/Scan/Start'); i++) await sleep(200);
+        expect(posts.includes('Tracks/Scan/Start'), 'the scan didn\'t start: ' + posts.join(', '));
+        expect(posts.indexOf('MedicSettings') === 0, 'no save before the scan: ' + posts.join(', '));
+        const saved = await ok('/JellyfinMedic/MedicSettings');
+        expect(/Seeded/.test(saved.TracksExclude || ''), 'saved exclusions: ' + saved.TracksExclude);
+        expect(/first/i.test(await page.locator('#md-tracks-saved').textContent()), 'no note that the settings were saved first');
+        for (let i = 0; i < 60 && (await ok('/JellyfinMedic/Tracks/Scan/Status')).Running; i++) await sleep(1000);
+
+        posts.length = 0;
+        await page.check('#md-tracks-inplace-in');
+        await page.evaluate(() => { document.getElementById('md-tracks-run-panel').hidden = false; });
+        await page.click('#md-tracks-go');
+        for (let i = 0; i < 50 && !posts.includes('Tracks/Run'); i++) await sleep(200);
+        expect(posts.join(', ') === 'MedicSettings, Tracks/Run', 'requests for Strip: ' + posts.join(', '));
+        expect((await ok('/JellyfinMedic/MedicSettings')).TracksReplaceInPlace === true, 'replace in place wasn\'t saved');
+        const confirm = dialogs[dialogs.length - 1] || '';
+        for (const part of ['eng, fre', 'Seeded', 'Cut Short', 'and 1 more', 'originals aren\'t kept']) {
+            expect(confirm.includes(part), `the confirm doesn't say "${part}": ${confirm}`);
+        }
+        return 'saved before Scan and Strip; the confirm names the values';
+    } finally {
+        page.off('request', watch);
+        page.off('dialog', accept);
+        await page.unroute('**/JellyfinMedic/Tracks/Run?*');
+        await api('POST', '/JellyfinMedic/MedicSettings', before);
+    }
+});
+
 await browser.close();
 arrServer.close();
 console.log(`${passed}/${passed + failed} passed`);
