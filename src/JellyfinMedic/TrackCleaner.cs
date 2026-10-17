@@ -1098,6 +1098,10 @@ public static class TrackCleaner
             return;
         }
 
+        // To tell whether Sonarr or Radarr replaces the file while it's being cleaned. Taken before FFprobe reads it, so a
+        // release put in place after that read can't pass as the file the tracks below were checked against.
+        var original = (Length: Size(plan.Path), Written: File.GetLastWriteTimeUtc(plan.Path));
+
         // The plan comes from the tracks Jellyfin read at its last scan. If the file has changed since
         // (cleaned before, or replaced by Sonarr or Radarr), mapping by those numbers keeps the wrong tracks.
         ProbedFile? source = ffprobe is null ? null : await ProbeFile(ffprobe, plan.Path, readEnd: false, ct).ConfigureAwait(false);
@@ -1125,15 +1129,12 @@ public static class TrackCleaner
         // The cleaned copy is written beside the original: it needs about the original's size free, plus a margin,
         // on top of what other files being cleaned right now are still writing, and the run leaves a floor free
         // for everything else on the drive. Checked and reserved in one step, so two files can't both pass.
-        long size = Size(plan.Path);
+        long size = original.Length;
         if (!Writing.TryReserve(size, () => DriveSpace(plan.Path), out long free, out long total, out long needed))
         {
             NotChanged(plan, Unchanged.NoSpace, $"its drive has {Gb(free)} free and the new copy needs about {Gb(needed)}, keeping {Gb(SpaceFloor(total))} free for everything else, so it was left alone");
             return;
         }
-
-        // To tell whether Sonarr or Radarr replaces the file while it's being cleaned.
-        var original = (Length: size, Written: File.GetLastWriteTimeUtc(plan.Path));
 
         string temp = TempPath(plan.Path);
         try
@@ -1144,7 +1145,9 @@ public static class TrackCleaner
             var args = new List<string> { "-nostdin", "-y", "-loglevel", "error", "-xerror", "-i", plan.Path, "-map", "0:v?", "-map", "0:t?", "-map_metadata", "0", "-map_chapters", "0" };
 
             // Separate subtitle files aren't in the container, so they're left out of the numbering.
-            int audioN = 0, subN = 0, outAudio = 0, outSub = 0;
+            int audioN = 0, subN = 0;
+            var outAudio = new List<string>();
+            var outSub = new List<string>();
             var tags = new List<string>();
             foreach (var t in plan.Tracks.Where(x => !x.External).OrderBy(x => x.Index))
             {
@@ -1153,8 +1156,8 @@ public static class TrackCleaner
                     if (t.Keep)
                     {
                         args.Add("-map"); args.Add($"0:a:{audioN}");
-                        AddLanguageTags(tags, t, $"a:{outAudio}");
-                        outAudio++;
+                        AddLanguageTags(tags, t, $"a:{outAudio.Count}");
+                        outAudio.Add(t.Overridden ? t.Language : t.FileLanguage);
                     }
 
                     audioN++;
@@ -1164,8 +1167,8 @@ public static class TrackCleaner
                     if (t.Keep)
                     {
                         args.Add("-map"); args.Add($"0:s:{subN}");
-                        AddLanguageTags(tags, t, $"s:{outSub}");
-                        outSub++;
+                        AddLanguageTags(tags, t, $"s:{outSub.Count}");
+                        outSub.Add(t.Overridden ? t.Language : t.FileLanguage);
                     }
 
                     subN++;
@@ -1179,7 +1182,7 @@ public static class TrackCleaner
             args.Add(temp);
 
             long before = Size(plan.Path);
-            var (exit, errors) = await RunFfmpeg(ffmpeg, args, temp, ct).ConfigureAwait(false);
+            var (exit, errors) = await RunFfmpeg(ffmpeg, args, temp, () => Plugin.Instance?.Configuration is { } live ? WatchingReason(live) : null, HoldCheckEvery, ct).ConfigureAwait(false);
 
             // Verify the new file is real and sound before touching the original.
             string? problem = exit != 0 ? "FFmpeg failed" + (errors.Length > 0 ? ": " + errors : string.Empty)
@@ -1961,7 +1964,11 @@ public static class TrackCleaner
         return n;
     }
 
-    /// <summary>Every folder that holds a local file in a non-streamed library.</summary>
+    /// <summary>
+    /// Every folder that holds a local file in a non-streamed library, and every folder under the libraries' own folders
+    /// that holds a .medic-originals folder, so originals left where Sonarr or Radarr moved the files away from are
+    /// still counted, put back and deleted.
+    /// </summary>
     private static HashSet<string> LibraryFolders(ILibraryManager library, IEnumerable<LibraryFacts> libraries, CancellationToken ct = default)
     {
         var folders = new HashSet<string>(StringComparer.Ordinal);
@@ -1993,9 +2000,45 @@ public static class TrackCleaner
             {
                 // Skip a library that can't be read.
             }
+
+            foreach (var root in lib.Locations.Where(LooksLocal))
+            {
+                folders.UnionWith(FoldersKeepingOriginals(root, ct));
+            }
         }
 
         return folders;
+    }
+
+    // Folders only, never their files, and not through links, which could lead out of the library or round in a loop.
+    // Hidden folders are walked too: .medic-originals is one.
+    private static readonly EnumerationOptions SubfolderWalk = new() { IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint };
+
+    /// <summary>The folders under root that hold a .medic-originals folder. A missing root (a drive that didn't mount) has none.</summary>
+    private static List<string> FoldersKeepingOriginals(string root, CancellationToken ct)
+    {
+        var found = new List<string>();
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.TryPop(out var dir))
+        {
+            ct.ThrowIfCancellationRequested();
+            IEnumerable<string> subfolders;
+            try { subfolders = Directory.EnumerateDirectories(dir, "*", SubfolderWalk).ToList(); } catch { continue; }
+            foreach (var sub in subfolders)
+            {
+                if (Path.GetFileName(sub) == OriginalsFolder)
+                {
+                    found.Add(dir);
+                }
+                else
+                {
+                    pending.Push(sub);
+                }
+            }
+        }
+
+        return found;
     }
 
     private static IEnumerable<string> SafeFiles(string dir)
@@ -2062,28 +2105,38 @@ public static class TrackCleaner
                 break;
             }
 
-            lock (Sync)
-            {
-                Progress.Waiting = reason;
-                Progress.WaitingSinceUtc ??= DateTime.UtcNow;
-            }
-
+            StartWaiting(reason);
             waited = true;
             await Task.Delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false);
         }
 
         if (waited)
         {
-            lock (Sync)
-            {
-                if (Progress.WaitingSinceUtc is { } since)
-                {
-                    Progress.WaitedSeconds += (DateTime.UtcNow - since).TotalSeconds;
-                }
+            StopWaiting();
+        }
+    }
 
-                Progress.WaitingSinceUtc = null;
-                Progress.Waiting = null;
+    /// <summary>Shows why the run is waiting; the time spent waiting is left out of its speed and time left.</summary>
+    private static void StartWaiting(string reason)
+    {
+        lock (Sync)
+        {
+            Progress.Waiting = reason;
+            Progress.WaitingSinceUtc ??= DateTime.UtcNow;
+        }
+    }
+
+    private static void StopWaiting()
+    {
+        lock (Sync)
+        {
+            if (Progress.WaitingSinceUtc is { } since)
+            {
+                Progress.WaitedSeconds += (DateTime.UtcNow - since).TotalSeconds;
             }
+
+            Progress.WaitingSinceUtc = null;
+            Progress.Waiting = null;
         }
     }
 
@@ -2099,17 +2152,25 @@ public static class TrackCleaner
             return string.Format(CultureInfo.InvariantCulture, "Waiting for {0:00}:00–{1:00}:00", cfg.TracksWindowStartHour, cfg.TracksWindowEndHour);
         }
 
-        if (cfg.TracksPauseWhileWatching)
+        return WatchingReason(cfg);
+    }
+
+    /// <summary>Why a run holds off for playback right now, or null: also checked while a file is being remuxed.</summary>
+    private static string? WatchingReason(PluginConfiguration cfg)
+    {
+        if (!cfg.TracksPauseWhileWatching)
         {
-            int watching = 0;
-            try { watching = WatchingCount?.Invoke() ?? 0; } catch { /* treat as nobody */ }
-            if (watching > 0)
-            {
-                return watching == 1 ? "Waiting: someone is watching" : $"Waiting: {watching} people are watching";
-            }
+            return null;
         }
 
-        return null;
+        int watching = 0;
+        try { watching = WatchingCount?.Invoke() ?? 0; } catch { /* treat as nobody */ }
+        return watching switch
+        {
+            0 => null,
+            1 => "Waiting: someone is watching",
+            _ => $"Waiting: {watching} people are watching",
+        };
     }
 
     private static bool InWindow(int hour, int start, int end)
@@ -2226,11 +2287,9 @@ public static class TrackCleaner
     /// <summary>What FFprobe printed, or null if it failed or took over 2 minutes.</summary>
     private static async Task<string?> RunFfprobe(string ffprobe, string[] args, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo(ffprobe) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args)
-        {
-            psi.ArgumentList.Add(a);
-        }
+        var psi = LowPriority(ffprobe, args);
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError = true;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(2));
@@ -2335,21 +2394,35 @@ public static class TrackCleaner
 
     /// <summary>
     /// Why the new file can't replace the original, or null when it's sound: FFprobe reads it, it has the same video
-    /// and attachments, exactly the audio and subtitle tracks that were kept, and the same length. When either length
-    /// is unknown, a file much smaller than the original fails instead. Its last packets have to reach that length too.
+    /// and attachments, exactly the audio and subtitle tracks that were kept, in their languages and order, and the
+    /// same length. When either length is unknown, a file much smaller than the original fails instead. Its last packets
+    /// have to reach that length too. audio and subtitles are the kept tracks' languages, as they should come out.
     /// </summary>
-    internal static string? CheckOutput(ProbedFile source, ProbedFile? output, int audio, int subtitles, long sourceBytes, long outputBytes)
+    internal static string? CheckOutput(ProbedFile source, ProbedFile? output, IReadOnlyList<string> audio, IReadOnlyList<string> subtitles, long sourceBytes, long outputBytes)
     {
         if (output is null)
         {
             return "FFprobe couldn't read it";
         }
 
-        foreach (var (kind, expected) in new[] { ("video", source.Count("video")), ("attachment", source.Count("attachment")), ("audio", audio), ("subtitle", subtitles) })
+        foreach (var (kind, expected) in new[] { ("video", source.Count("video")), ("attachment", source.Count("attachment")), ("audio", audio.Count), ("subtitle", subtitles.Count) })
         {
             if (output.Count(kind) != expected)
             {
                 return $"it has {output.Count(kind)} {kind} streams instead of {expected}";
+            }
+        }
+
+        // Same counts with other languages means the tracks were mapped from a file laid out differently from the plan.
+        foreach (var (kind, expected) in new[] { ("audio", audio), ("subtitle", subtitles) })
+        {
+            var got = output.Streams.Where(s => s.Kind == kind).Select(s => s.Language).ToList();
+            for (int i = 0; i < expected.Count; i++)
+            {
+                if (!SameLanguage(expected[i], got[i]))
+                {
+                    return $"its {kind} track {i + 1} is {got[i]} instead of {expected[i]}";
+                }
             }
         }
 
@@ -2406,33 +2479,92 @@ public static class TrackCleaner
     // A remux that writes nothing for this long is stuck (a hung network drive, for example) and is stopped.
     private static readonly TimeSpan StallLimit = TimeSpan.FromMinutes(10);
 
-    /// <summary>Runs FFmpeg writing to output. Returns its exit code and the end of its error output, for the note when it fails.</summary>
-    private static async Task<(int Exit, string Errors)> RunFfmpeg(string ffmpeg, List<string> args, string output, CancellationToken ct)
+    // How soon a remux under way is held once someone starts playing something.
+    private static readonly TimeSpan HoldCheckEvery = TimeSpan.FromSeconds(5);
+
+    // Sets the lowest CPU priority and the idle IO class, then becomes the tool ($0) with the same process ID, so
+    // stopping, holding and killing it reach the tool itself. Either is skipped where it isn't installed or allowed.
+    private const string LowPriorityScript = """
+        command -v ionice > /dev/null && ionice -c 3 -p $$ 2> /dev/null
+        command -v nice > /dev/null && exec nice -n 19 "$0" "$@"
+        exec "$0" "$@"
+        """;
+
+    /// <summary>
+    /// How to start FFmpeg or FFprobe so that a remux on the library's disks gives way to playback and everything else
+    /// on the server: at the lowest CPU priority and in the idle IO class, which only gets the disk when nothing else wants it.
+    /// </summary>
+    internal static ProcessStartInfo LowPriority(string tool, IEnumerable<string> args)
     {
-        var psi = new ProcessStartInfo(ffmpeg) { RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        var psi = new ProcessStartInfo { UseShellExecute = false, CreateNoWindow = true };
+        if (OperatingSystem.IsWindows())
+        {
+            psi.FileName = tool;
+        }
+        else
+        {
+            psi.FileName = "/bin/sh";
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add(LowPriorityScript);
+            psi.ArgumentList.Add(tool);
+        }
+
         foreach (var a in args)
         {
             psi.ArgumentList.Add(a);
         }
+
+        return psi;
+    }
+
+    /// <summary>
+    /// Runs FFmpeg writing to output. Returns its exit code and the end of its error output, for the note when it fails.
+    /// While holdOff gives a reason (someone is watching), FFmpeg is stopped where it is and carries on when it gives
+    /// none, so a long remux doesn't compete with playback for the disks. holdOff is asked every tick. Windows has no
+    /// way to stop a process for a while, so there the run only holds off between files.
+    /// </summary>
+    internal static async Task<(int Exit, string Errors)> RunFfmpeg(string ffmpeg, List<string> args, string output, Func<string?> holdOff, TimeSpan tick, CancellationToken ct)
+    {
+        var psi = LowPriority(ffmpeg, args);
+        psi.RedirectStandardError = true;
 
         using var p = new Process { StartInfo = psi };
         p.Start();
         var err = p.StandardError.ReadToEndAsync(CancellationToken.None);
         long lastSize = -1;
         var lastGrowth = DateTime.UtcNow;
+        bool held = false;
         try
         {
             while (!p.HasExited)
             {
-                using var tick = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                tick.CancelAfter(TimeSpan.FromSeconds(30));
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                wait.CancelAfter(tick);
                 try
                 {
-                    await p.WaitForExitAsync(tick.Token).ConfigureAwait(false);
+                    await p.WaitForExitAsync(wait.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     // Still running: check that the new file is growing.
+                }
+
+                string? hold = p.HasExited || OperatingSystem.IsWindows() ? null : holdOff();
+                if (hold is not null)
+                {
+                    if (held || await Signal(p, "STOP").ConfigureAwait(false))
+                    {
+                        held = true;
+                        StartWaiting(hold);
+                        continue; // a held FFmpeg writes nothing, which isn't a stall
+                    }
+                }
+                else if (held)
+                {
+                    await Signal(p, "CONT").ConfigureAwait(false);
+                    held = false;
+                    StopWaiting();
+                    lastGrowth = DateTime.UtcNow;
                 }
 
                 long size = Size(output);
@@ -2450,9 +2582,16 @@ public static class TrackCleaner
         }
         catch (OperationCanceledException)
         {
-            // Stop pressed: end FFmpeg too, or it carries on writing the file in the background.
+            // Stop pressed: end FFmpeg too, or it carries on writing the file in the background. A held one ends too.
             try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
             throw;
+        }
+        finally
+        {
+            if (held)
+            {
+                StopWaiting();
+            }
         }
 
         await Task.WhenAny(err, Task.Delay(1000, CancellationToken.None)).ConfigureAwait(false);
@@ -2463,6 +2602,27 @@ public static class TrackCleaner
         }
 
         return (p.ExitCode, errors.Replace('\n', ' ').Replace('\r', ' '));
+    }
+
+    /// <summary>Sends a signal (STOP or CONT) to a process with the shell's own kill; false if it couldn't.</summary>
+    private static async Task<bool> Signal(Process target, string signal)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("/bin/sh") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add("kill -s " + signal + " \"$1\"");
+            psi.ArgumentList.Add("sh");
+            psi.ArgumentList.Add(target.Id.ToString(CultureInfo.InvariantCulture));
+            using var kill = Process.Start(psi)!;
+            _ = kill.StandardError.ReadToEndAsync(CancellationToken.None);
+            await kill.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            return kill.ExitCode == 0;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Where the untouched original of a file is kept: a hidden folder beside it.</summary>

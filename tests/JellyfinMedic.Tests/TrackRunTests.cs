@@ -100,7 +100,78 @@ public sealed class TrackRunTests : IDisposable
             "The original wasn't kept. The run's notes: " + string.Join(" | ", TrackCleaner.CurrentProgress().Recent));
     }
 
+    [UnixFact]
+    public async Task A_file_replaced_right_after_it_was_read_is_not_cleaned_with_the_old_plan()
+    {
+        string folder = Directory.CreateDirectory(Path.Combine(_root, "Films")).FullName;
+        string film = Path.Combine(folder, "Film.mkv");
+        File.WriteAllText(film, "a film with English and French audio");
+
+        // Sonarr or Radarr puts a new release in place just after FFprobe has read the old one.
+        string bin = FakeTools(onProbe: """
+            if [ ! -e "$0.replaced" ]; then : > "$0.replaced"; echo 'a new release, its French track first' > "$last"; fi
+            """);
+
+        await TrackCleaner.RunAsync(OneFilm(film), new[] { Films }, Path.Combine(bin, "ffmpeg"), new PluginConfiguration(), dryRun: false).WaitAsync(Limit);
+
+        Assert.Equal("a new release, its French track first\n", File.ReadAllText(film));
+        Assert.False(
+            File.Exists(Path.Combine(folder, ".medic-originals", "Film.mkv")),
+            "The new release was cleaned with the old release's plan. The run's notes: " + string.Join(" | ", TrackCleaner.CurrentProgress().Recent));
+    }
+
+    [UnixFact]
+    public async Task FFmpeg_and_FFprobe_run_at_the_lowest_cpu_and_io_priority()
+    {
+        string folder = Directory.CreateDirectory(Path.Combine(_root, "Films")).FullName;
+        string film = Path.Combine(folder, "Film.mkv");
+        File.WriteAllText(film, "a film with English and French audio");
+        string bin = FakeTools(onProbe: "Priority \"$0.priority\"", onCopy: "Priority \"$0.priority\"");
+
+        await TrackCleaner.RunAsync(OneFilm(film), new[] { Films }, Path.Combine(bin, "ffmpeg"), new PluginConfiguration(), dryRun: false).WaitAsync(Limit);
+
+        foreach (string tool in new[] { "ffprobe", "ffmpeg" })
+        {
+            string[] seen = File.ReadAllLines(Path.Combine(bin, tool + ".priority"));
+            Assert.Equal("19", seen[0]);
+            if (OnPath("ionice"))
+            {
+                Assert.StartsWith("idle", seen[1], StringComparison.Ordinal);
+            }
+        }
+    }
+
+    [UnixFact]
+    public async Task A_remux_under_way_is_held_while_someone_watches_and_carries_on_after()
+    {
+        string output = Path.Combine(_root, "copy.mkv");
+        string writer = Path.Combine(_root, "writer");
+        Script(writer, """
+            #!/bin/sh
+            i=0
+            while [ $i -lt 20 ]; do echo $i >> "$1"; i=$((i+1)); sleep 0.05; done
+            """);
+        bool watching = true;
+
+        var run = TrackCleaner.RunFfmpeg(writer, new List<string> { output }, output, () => watching ? "Waiting: someone is watching" : null, TimeSpan.FromMilliseconds(20), CancellationToken.None);
+        await Task.Delay(300);
+        long held = new FileInfo(output).Length;
+        await Task.Delay(600);
+        long later = new FileInfo(output).Length;
+        watching = false;
+        var (exit, _) = await run.WaitAsync(Limit);
+
+        Assert.Equal(held, later);
+        Assert.Equal(0, exit);
+        Assert.Equal(20, File.ReadAllLines(output).Length);
+    }
+
     public void Dispose() => Directory.Delete(_root, recursive: true);
+
+    private static ILibraryManager OneFilm(string path) => FakeLibrary.Listing(() => new BaseItem[] { new Film { Path = path } });
+
+    private static bool OnPath(string tool) =>
+        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator).Any(d => d.Length > 0 && File.Exists(Path.Combine(d, tool)));
 
     // One library, handed out once the gate opens, like a library that's slow to list.
     private static IEnumerable<LibraryFacts> LibrariesAfter(ManualResetEventSlim gate)
@@ -125,12 +196,24 @@ public sealed class TrackRunTests : IDisposable
     }
 
     /// <summary>FFmpeg and FFprobe stand-ins in a folder of their own. Returns FFmpeg's path.</summary>
-    private string FakeFfmpeg()
+    private string FakeFfmpeg() => Path.Combine(FakeTools(), "ffmpeg");
+
+    /// <summary>
+    /// FFmpeg and FFprobe stand-ins in a folder of their own, which is returned. onProbe runs after FFprobe has read the
+    /// film (not its copy), onCopy before FFmpeg copies it; in both $0 is the tool and $last the file it was given.
+    /// </summary>
+    private string FakeTools(string onProbe = "", string onCopy = "")
     {
+        // Prints the tool's CPU niceness, then its IO scheduling class when ionice is there, into the file it's given.
+        const string priority = """
+            Priority() { nice > "$1"; command -v ionice > /dev/null && ionice -p $$ >> "$1"; }
+            """;
+
         // FFprobe's report on the film, and on its cleaned copy, which has lost the French track. Asked for the copy's
         // last packets, it says they reach the 60 s its report gives.
-        const string ffprobe = """
+        string ffprobe = $$$"""
             #!/bin/sh
+            {{{priority}}}
             case "$*" in *-read_intervals*) echo '59.960000,0.040000'; exit ;; esac
             for last; do :; done
             case "$last" in
@@ -138,11 +221,17 @@ public sealed class TrackRunTests : IDisposable
               *) french=',{"index":2,"codec_type":"audio","tags":{"language":"fre"}}' ;;
             esac
             echo '{"streams":[{"index":0,"codec_type":"video"},{"index":1,"codec_type":"audio","tags":{"language":"eng"}}'"$french"'],"format":{"duration":"60"}}'
+            case "$last" in *.medic-tmp*) ;; *)
+            {{{onProbe}}}
+            ;; esac
             """;
 
         // FFmpeg copies the film (the file after -i) to the new copy (the last argument).
-        const string ffmpeg = """
+        string ffmpeg = $$$"""
             #!/bin/sh
+            {{{priority}}}
+            for last; do :; done
+            {{{onCopy}}}
             while [ $# -gt 1 ]; do
               [ "$1" = -i ] && input=$2
               shift
@@ -153,7 +242,7 @@ public sealed class TrackRunTests : IDisposable
         string bin = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
         Script(Path.Combine(bin, "ffprobe"), ffprobe);
         Script(Path.Combine(bin, "ffmpeg"), ffmpeg);
-        return Path.Combine(bin, "ffmpeg");
+        return bin;
     }
 
     private static void Script(string path, string text)

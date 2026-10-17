@@ -75,11 +75,25 @@ public sealed class TruncatedCopyTests
     }
 
     [Fact]
+    public void A_cleaned_copy_that_kept_other_languages_than_the_plan_cannot_replace_the_original()
+    {
+        var source = new TrackCleaner.ProbedFile(
+            new List<(int, string, string)> { (0, "video", "und"), (1, "audio", "rus"), (2, "audio", "eng"), (3, "subtitle", "eng"), (4, "subtitle", "fre") }, 60);
+        TrackCleaner.ProbedFile Copy(string audio, string subtitle) =>
+            new(new List<(int, string, string)> { (0, "video", "und"), (1, "audio", audio), (2, "subtitle", subtitle) }, 60);
+
+        Assert.Equal("its audio track 1 is rus instead of eng", TrackCleaner.CheckOutput(source, Copy("rus", "eng"), ["eng"], ["eng"], 1000, 900));
+        Assert.Equal("its subtitle track 1 is fre instead of eng", TrackCleaner.CheckOutput(source, Copy("eng", "fre"), ["eng"], ["eng"], 1000, 900));
+        // The forms of a language FFprobe and Jellyfin use count as one, as when the plan is checked against the file.
+        Assert.Null(TrackCleaner.CheckOutput(source, Copy("en", "fra"), ["eng"], ["fre"], 1000, 900));
+    }
+
+    [Fact]
     public void A_cleaned_copy_cut_short_cannot_replace_the_original()
     {
-        Assert.Null(TrackCleaner.CheckOutput(Probed(1, 2, 60), Probed(1, 1, 60), 1, 0, 1000, 900));
+        Assert.Null(TrackCleaner.CheckOutput(Probed(1, 2, 60), Probed(1, 1, 60), ["eng"], [], 1000, 900));
         Assert.Equal("it stops at 30 s though it says it lasts 60 s",
-            TrackCleaner.CheckOutput(Probed(1, 2, 60), Probed(1, 1, 60, "it stops at 30 s though it says it lasts 60 s"), 1, 0, 1000, 900));
-        Assert.Equal("FFprobe couldn't read it", TrackCleaner.CheckOutput(Probed(1, 2, 60), null, 1, 0, 1000, 900));
+            TrackCleaner.CheckOutput(Probed(1, 2, 60), Probed(1, 1, 60, "it stops at 30 s though it says it lasts 60 s"), ["eng"], [], 1000, 900));
+        Assert.Equal("FFprobe couldn't read it", TrackCleaner.CheckOutput(Probed(1, 2, 60), null, ["eng"], [], 1000, 900));
     }
 }

@@ -95,6 +95,28 @@ public sealed class KeptOriginalsDeleteTests : IDisposable
         Assert.Equal(1, byDefault);
     }
 
+    [Fact]
+    public void Originals_left_in_a_folder_the_library_no_longer_uses_are_counted_and_deleted_as_orphans()
+    {
+        // Sonarr renamed "Season 1" to "Season 01" and moved the episode; Jellyfin has no item in the old folder.
+        string left = Directory.CreateDirectory(Path.Combine(_root, "Show", "Season 1", ".medic-originals")).FullName;
+        string episode = Path.Combine(left, "Show S01E01.mkv");
+        File.WriteAllText(episode, "original");
+        var shows = new LibraryFacts { Id = Films.Id, Name = "Shows", Locations = { _root } };
+
+        TrackCleaner.KeptOriginalsWalk.Clear();
+        var (files, _, orphans, _) = TrackCleaner.KeptOriginals(_library, new[] { shows });
+        int byDefault = TrackCleaner.DeleteOriginals(_library, new[] { shows }).Deleted;
+        bool keptByDefault = File.Exists(episode);
+        int withOrphans = TrackCleaner.DeleteOriginals(_library, new[] { shows }, orphans: true).Deleted;
+
+        Assert.Equal((4, 2), (files, orphans));
+        Assert.True(keptByDefault, "An orphan in a folder Jellyfin no longer lists was deleted without being asked for.");
+        Assert.Equal((1, 2), (byDefault, withOrphans));
+        Assert.False(File.Exists(episode));
+        Assert.False(Directory.Exists(left));
+    }
+
     /// <summary>"Tidy copies" (like the next run) puts the original back under its own name and drops the temp file.</summary>
     private async Task AssertPutBack()
     {
