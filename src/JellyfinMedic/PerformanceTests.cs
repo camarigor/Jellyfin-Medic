@@ -280,6 +280,8 @@ public static class TranscodeLogReader
             .Where(l => l.Length > 0 && (l.Contains("Error", StringComparison.Ordinal) || l.Contains("error while", StringComparison.OrdinalIgnoreCase)
                                          || l.Contains("Conversion failed", StringComparison.OrdinalIgnoreCase) || l.Contains("Impossible to convert", StringComparison.OrdinalIgnoreCase)
                                          || l.Contains("Failed", StringComparison.Ordinal)))
+            // Masked before the cut, as the banner does: an IPTV stream's address carries the account.
+            .Select(SettingsReader.MaskSecrets)
             .Select(l => l.Length > 220 ? l[..220] + "…" : l)
             .Distinct()
             .Take(8)
