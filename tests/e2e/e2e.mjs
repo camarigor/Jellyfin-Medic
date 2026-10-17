@@ -397,11 +397,23 @@ function adminRoutes() {
     for (const [file, include = () => true] of files) {
         const code = require('node:fs').readFileSync(new URL(file, root), 'utf8');
         const prefix = code.match(/^\[Route\("([^"]+)"\)\]/m)[1];
-        for (const m of code.matchAll(/\[Http(Get|Post|Put|Delete)(?:\("([^"]*)"\))?\]/g)) {
-            const route = m[2] || '';
-            if (!include(route)) continue;
-            const path = '/' + [prefix, route].filter(Boolean).join('/').replace(/\{(\w+)[^}]*\}/g, (_, p) => values[p] ?? '1');
-            routes.push([m[1].toUpperCase(), path]);
+        // Each public instance method of the controller is an action, routed by its [Http*] or [Route] templates, or
+        // at the controller's own route when it has neither.
+        for (const m of code.matchAll(/((?:^ {4}\[.*\]\s*\n)*)^ {4}public (?!static\b)[\w<>\[\],?. ]+? \w+\(/gm)) {
+            const attributes = m[1];
+            if (/\[NonAction\]/.test(attributes)) continue;
+            const verbs = [...attributes.matchAll(/\[Http(Get|Post|Put|Delete|Patch)(?:\("([^"]*)"\))?\]/g)];
+            const routed = [...attributes.matchAll(/\[Route\("([^"]*)"\)\]/g)].map((r) => r[1]);
+            // A verb with its own template answers there; a bare one takes the [Route] templates; a [Route] beside only
+            // templated verbs answers any verb, so GET stands in for it.
+            const pairs = verbs.flatMap(([, verb, template]) => (template !== undefined ? [template] : routed.length ? routed : ['']).map((t) => [verb, t]));
+            if (!verbs.some(([, , template]) => template === undefined)) pairs.push(...routed.map((t) => ['Get', t]));
+            if (!pairs.length) pairs.push(['Get', '']);
+            for (const [verb, route] of pairs) {
+                if (!include(route)) continue;
+                const path = '/' + [prefix, route].filter(Boolean).join('/').replace(/\{(\w+)[^}]*\}/g, (_, p) => values[p] ?? '1');
+                routes.push([verb.toUpperCase(), path]);
+            }
         }
     }
     return routes;
