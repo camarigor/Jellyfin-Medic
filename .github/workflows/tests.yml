@@ -30,8 +30,14 @@ jobs:
           shopt -s nullglob
           projects=(tests/*/*.Tests.csproj)
           if [ ${#projects[@]} -eq 0 ]; then
-            echo "No unit test projects yet."
-            exit 0
+            echo "::error::No unit test projects under tests/"
+            exit 1
+          fi
+          # A test project renamed or moved a folder deeper would otherwise be skipped while the others pass.
+          missed=$(comm -23 <(find tests -name '*.csproj' | sort) <(printf '%s\n' "${projects[@]}" | sort))
+          if [ -n "$missed" ]; then
+            echo "::error::Not run, as unit test projects must be tests/<folder>/<name>.Tests.csproj: ${missed//$'\n'/, }"
+            exit 1
           fi
           for project in "${projects[@]}"; do
             dotnet test "$project" -c Release

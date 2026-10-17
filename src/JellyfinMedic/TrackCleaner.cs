@@ -1080,12 +1080,11 @@ public static class TrackCleaner
             return;
         }
 
-        // A file with more than one link is shared, usually with a torrent client seeding it. The cleaned copy
-        // would be a new file beside the shared one, so the drive would fill up instead of gaining space.
+        // Windows has no stat to count hard links with, so only symlinks are checked there.
         var facts = await FileFacts(plan.Path, ct).ConfigureAwait(false);
-        if (facts is { Links: > 1 } shared)
+        if (LinkSkipReason(facts, IsSymlink(plan.Path), countLinks: !OperatingSystem.IsWindows()) is { } why)
         {
-            Skipped(plan, $"it has {shared.Links} hard links (a torrent client is probably seeding it), so cleaning it would use more space, not less");
+            Skipped(plan, why);
             return;
         }
 
@@ -1244,20 +1243,77 @@ public static class TrackCleaner
         Note($"Skipped {plan.Title}: {why}");
     }
 
+    /// <summary>
+    /// Why the file's links rule out cleaning it, or null when they don't. Facts are null when stat couldn't read them.
+    /// Where hard links aren't counted (countLinks false), only a symlink rules a file out.
+    /// </summary>
+    internal static string? LinkSkipReason((int Links, uint Uid, uint Gid)? facts, bool isSymlink, bool countLinks)
+    {
+        // Cleaning works on the path, so the link would give way to a full copy and the file it points to would stay as it is.
+        if (isSymlink)
+        {
+            return "it's a symbolic link, so cleaning it would replace the link with a full copy instead of changing the file it points to";
+        }
+
+        if (!countLinks)
+        {
+            return null;
+        }
+
+        // A file with more than one link is shared, usually with a torrent client seeding it. The cleaned copy
+        // would be a new file beside the shared one, so the drive would fill up instead of gaining space.
+        // Without the count there's no telling, so the file is left alone too.
+        if (facts is not { } f)
+        {
+            return "its hard links couldn't be counted with stat, so it was left alone in case a torrent client is seeding it";
+        }
+
+        return f.Links > 1 ? $"it has {f.Links} hard links (a torrent client is probably seeding it), so cleaning it would use more space, not less" : null;
+    }
+
+    private static bool IsSymlink(string path)
+    {
+        try
+        {
+            return new FileInfo(path).LinkTarget is not null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false; // gone or unreadable, so FFmpeg can't read it either and nothing is replaced
+        }
+    }
+
     /// <summary>How many hard links the file has and who owns it, or null where that can't be read (Windows, or no stat).</summary>
-    private static async Task<(int Links, int Uid, int Gid)?> FileFacts(string path, CancellationToken ct)
+    internal static Task<(int Links, uint Uid, uint Gid)?> FileFacts(string path, CancellationToken ct) => FileFacts(path, "stat", ct);
+
+    // Which stat to run is a parameter so tests can stand in for BSD's.
+    internal static async Task<(int Links, uint Uid, uint Gid)?> FileFacts(string path, string stat, CancellationToken ct)
     {
         if (OperatingSystem.IsWindows())
         {
             return null;
         }
 
-        var (exit, output) = await RunTool("stat", new[] { "-c", "%h %u %g", "--", path }, ct).ConfigureAwait(false);
+        // GNU and busybox stat take -c. BSD and macOS stat refuse it and take -f, where the link count is %l.
+        // -1 means stat didn't run at all, so there's nothing to try again.
+        var (exit, output) = await RunTool(stat, new[] { "-c", "%h %u %g", "--", path }, ct).ConfigureAwait(false);
+        if (exit > 0)
+        {
+            (exit, output) = await RunTool(stat, new[] { "-f", "%l %u %g", "--", path }, ct).ConfigureAwait(false);
+        }
+
+        return exit == 0 ? ParseStat(output) : null;
+    }
+
+    /// <summary>Reads the "links uid gid" line that both stat formats print, or null when it isn't one.</summary>
+    internal static (int Links, uint Uid, uint Gid)? ParseStat(string output)
+    {
+        // Owners are unsigned, and some go past int's range (nfsnobody is 4294967294).
         var parts = output.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return exit == 0 && parts.Length == 3
+        return parts.Length == 3
             && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int links)
-            && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int uid)
-            && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int gid)
+            && uint.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out uint uid)
+            && uint.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out uint gid)
             ? (links, uid, gid)
             : null;
     }
@@ -1266,7 +1322,7 @@ public static class TrackCleaner
     /// Gives the cleaned copy the original's permissions and, when Jellyfin is allowed to, its owner, so Sonarr or
     /// Radarr running as another user can still replace or delete it. Best effort: the copy is fine without it.
     /// </summary>
-    private static async Task KeepOwnership(string original, string copy, (int Links, int Uid, int Gid)? facts, CancellationToken ct)
+    private static async Task KeepOwnership(string original, string copy, (int Links, uint Uid, uint Gid)? facts, CancellationToken ct)
     {
         if (OperatingSystem.IsWindows())
         {

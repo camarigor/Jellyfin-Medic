@@ -321,6 +321,9 @@ films for it to leave alone.
 What it leaves alone:
   - Folders, shows or films you list under "Leave these alone" (a folder, or
     part of a name, one per line).
+  - Files with more than one hard link (usually a torrent client seeding
+    them), symlinked files, and files whose link count can't be read. On
+    Windows only the link count isn't checked.
 
 What it keeps:
   - Your chosen languages (default: eng). Codes with two forms (fre/fra,
