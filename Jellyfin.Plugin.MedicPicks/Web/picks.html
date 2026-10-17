@@ -829,6 +829,7 @@
 
   // Saving the choices rebuilds this person's picks straight away. Poll until the server says the rebuild
   // has finished (it saves part-way through, so a new timestamp alone isn't enough), for up to 3 minutes.
+  // A rebuild that works always saves a new timestamp, so a finished one without it failed.
   function rebuildAndWait(send, busyText) {
     var note = document.getElementById('prefs-note');
     var buttons = [document.getElementById('apply'), document.getElementById('more')];
@@ -842,14 +843,16 @@
         (function poll() {
           var secs = Math.round((Date.now() - started) / 1000);
           getJson('Me', session).then(function (data) {
-            var done = !data.rebuilding && (data.generatedUtc !== before || secs >= 10);
+            var done = !data.rebuilding;
             if (done || secs >= 180) {
               render(data);
               setBusy(false);
               var n = (data.inLibrary || []).length + (data.linked || []).length + (data.discover || []).length;
-              note.textContent = done
-                ? 'Updated just now: ' + n + (n === 1 ? ' pick.' : ' picks.')
-                : 'Still working on your picks. They\u2019ll appear when you reload this page.';
+              note.textContent = !done
+                ? 'Still working on your picks. They\u2019ll appear when you reload this page.'
+                : (data.generatedUtc || null) !== before
+                  ? 'Updated just now: ' + n + (n === 1 ? ' pick.' : ' picks.')
+                  : 'Couldn\u2019t update your picks just now, so they\u2019re as they were.';
             } else {
               note.textContent = busyText + (secs >= 5 ? ' (' + secs + 's)' : '');
               setTimeout(poll, 1500);

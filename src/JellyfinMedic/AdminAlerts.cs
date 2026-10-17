@@ -22,13 +22,13 @@ public class AdminAlert
 /// Serious problems worth telling an admin about straight away, however often they've happened:
 /// a damaged database, a full disk, a failed database upgrade, a plugin that couldn't load, or a
 /// fatal error; and Jellyfin waiting for a restart to finish installing updates.
-/// Reads only the end of the newest log files, and keeps the result for 2 minutes.
+/// Reads only the end of the newest server log files, and keeps the result for 2 minutes.
 /// </summary>
 public static class AdminAlerts
 {
     private const long TailBytes = 8L * 1024 * 1024;
     private static readonly object Sync = new();
-    private static (DateTime At, List<AdminAlert> Result)? _cache;
+    private static readonly Dictionary<string, (DateTime At, List<AdminAlert> Result)> Cache = new(StringComparer.Ordinal);
 
     private static readonly (string Key, string Title, string Advice, Regex Pattern)[] Critical =
     {
@@ -78,12 +78,12 @@ public static class AdminAlerts
         return alerts;
     }
 
-    /// <summary>Serious errors in the newest logs, for the banners and for Checks.</summary>
+    /// <summary>Serious errors in the newest server logs, for the banners and for Checks.</summary>
     public static List<AdminAlert> CriticalFromLogs(string logDirectory)
     {
         lock (Sync)
         {
-            if (_cache is { } c && DateTime.UtcNow - c.At < TimeSpan.FromMinutes(2))
+            if (Cache.TryGetValue(logDirectory, out var c) && DateTime.UtcNow - c.At < TimeSpan.FromMinutes(2))
             {
                 return c.Result;
             }
@@ -93,10 +93,8 @@ public static class AdminAlerts
         try
         {
             // Today's and yesterday's logs, newest last so the latest sighting wins.
-            var files = new DirectoryInfo(logDirectory).GetFiles("*.log")
-                .Where(f => f.LastWriteTimeUtc > DateTime.UtcNow.AddDays(-2))
-                .OrderBy(f => f.LastWriteTimeUtc)
-                .TakeLast(3);
+            var files = LogScanner.ServerLogs(logDirectory, DateTime.UtcNow.AddDays(-2), 3);
+            files.Reverse();
             foreach (var file in files)
             {
                 // Only errors and fatal errors count, with the exception text printed under them. Warnings
@@ -151,7 +149,7 @@ public static class AdminAlerts
 
         lock (Sync)
         {
-            _cache = (DateTime.UtcNow, result);
+            Cache[logDirectory] = (DateTime.UtcNow, result);
         }
 
         return result;

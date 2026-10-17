@@ -5,12 +5,17 @@ Jellyfin Medic and Medic Picks have their own changelogs.
 
 ## Unreleased
 
+### Changed
+- **A refused qBittorrent sign-in is only tried again when you ask.** Since 1.1.3, saving the settings, Test, Remove key, Block and Stop blocking each tried a refused password again at once. qBittorrent bans the server's address after 5 failed sign-ins by default, so a few ordinary clicks with a wrong password got Medic Profiles banned. Those buttons no longer sign in after a refusal. A new password typed in Medic Profiles is still tried at once. If you fixed the password in qBittorrent, or its ban has ended, the new **Try qBittorrent again** button signs in exactly once per click. After one refusal Medic Profiles waits 5 minutes before trying the same details again; after two it stops until the password changes or you press the button.
+
 ### Fixed
 - **An error answer from Sonarr or Radarr is never taken for them being out of reach.** One that came as a list without the usual error entries made the Downloads tab say Sonarr or Radarr couldn't be reached. It now says the status they answered with ("Sonarr answered with 400.", say).
 - **The action history survives a damaged file.** A history file that couldn't be read was written over by the next action on the Downloads tab, losing every earlier action in it. It's now kept beside it, as the keys file already was, and a new history starts.
 - **Each damaged file is kept.** A file set aside is now named with the time (`secrets.json.20261016-153000.bad`, say), so a second damaged keys file no longer replaces the first `secrets.json.bad`.
 - **Saved files reach the disk before they replace the old ones.** The keys file and the action history are written to a temporary file and then swapped in; that file is now flushed to disk first, as Jellyfin Medic's own files are, so a power cut at the wrong moment can't leave an empty file in its place on file systems that would otherwise allow it.
 - **The Indexers tab shows which indexers are failing.** It asked Sonarr and Radarr for a status list only Prowlarr has, so every enabled indexer showed as working, even while paused after failures. Failing indexers now come from Sonarr's and Radarr's own health checks, in any interface language, and the rest show as enabled. How long an indexer stays paused isn't shown any more, as neither app reports it.
+- **Test and Import check they reached Sonarr or Radarr.** Anything that answered at the saved address was taken for Sonarr or Radarr, so a proxy's sign-in page, or Radarr at Sonarr's address, passed the Test, and an import sent on by a redirect said it was importing when nothing was. Test now passes only when the app itself answers, and fails on any redirect, naming the address it went to. Other calls fail when a redirect turned them into a different request. A "not found" that didn't come from Sonarr or Radarr now says to check the address and URL base (/sonarr, say) instead of saying the item may have been removed already.
+- **The Downloads tab no longer waits for Sonarr before asking Radarr.** Both are asked at once, so a slow one doesn't hold up the other's downloads. One that takes too long now says it didn't answer within 30 seconds, instead of that it couldn't be reached.
 
 ## [1.1.3] – 2026-10-15
 

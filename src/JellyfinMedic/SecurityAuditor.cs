@@ -15,13 +15,22 @@ public static class SecurityAuditor
     private const string Area = "Security";
     private const string WhereUsers = "Dashboard → Users";
 
-    // Signing in from this many addresses (IPv6 by /64) in a week is worth a look.
+    // Signing in from this many places in a week is worth a look: each address is a place (an IPv6 one by its /64
+    // network), and the whole home network is one.
     private const int RoamingAddresses = 3;
 
-    public static List<Finding> Audit(object? activityManager, IUserManager userManager, List<object> users)
+    // The Report and the Dashboard read the activity log through this one reader, so they can share a reading.
+    private static readonly ActivityLogReader SharedReader = new(TimeProvider.System);
+
+    /// <summary>
+    /// The Report's security findings. The activity log is read afresh, as "Run checks" asks for, unless a reading
+    /// is already under way: that one started moments ago.
+    /// </summary>
+    public static async Task<List<Finding>> AuditAsync(object? activityManager, IUserManager userManager, List<object> users, CancellationToken cancellationToken)
     {
+        var log = await SharedReader.ReadAsync(activityManager, reuse: false, cancellationToken).ConfigureAwait(false);
         var findings = new List<Finding>();
-        Guard(() => LoginAttempts(activityManager, UserNames(users), findings));
+        Guard(() => LoginAttempts(log, UserNames(users), findings));
         Guard(() => LibraryAccess(userManager, users, findings));
         return findings;
     }
@@ -45,30 +54,34 @@ public static class SecurityAuditor
         return names;
     }
 
-    private static void LoginAttempts(object? activityManager, Dictionary<string, string> userNames, List<Finding> findings)
+    private static void LoginAttempts(ActivityReading log, Dictionary<string, string> userNames, List<Finding> findings)
     {
-        var entries = ActivityEntries(activityManager, DateTime.UtcNow.AddDays(-7));
-        if (entries is null)
+        if (log.Entries is null)
         {
             findings.Add(new Finding
             {
                 Area = Area,
                 Severity = Sev.Tip,
                 Title = "Sign-ins couldn't be checked this time",
-                Current = "The activity log didn't answer within 15 seconds",
-                Recommended = "Open Medic again later; if this keeps happening, the database may be busy or need optimising",
+                Current = log.Reason,
+                Recommended = "Open Medic again later; if this keeps happening, the database may be busy or need optimising, or Medic may need an update for this version of Jellyfin",
                 Why = "Failed sign-ins and sign-ins from new places are found in the activity log. Without it, this check can't say whether there were any.",
                 Where = "Dashboard → Activity"
             });
             return;
         }
 
-        if (entries.Count == 0)
+        if (log.Entries.Count == 0)
         {
             return;
         }
 
-        var (failures, networks) = SignIns(entries, userNames);
+        var (failures, networks) = SignIns(log.Entries, userNames);
+        int foundBefore = findings.Count;
+
+        // The oldest part of a week past the page limit went unread, so there may be more than these.
+        string newest = $"the newest {PageSize * MaxPages:N0} entries of the activity log";
+        string partly = log.Capped ? $"; only {newest} were read" : string.Empty;
 
         if (failures.Count >= 10)
         {
@@ -86,7 +99,7 @@ public static class SecurityAuditor
                 Area = Area,
                 Severity = failures.Count >= 50 ? Sev.Problem : Sev.Improve,
                 Title = "A lot of failed sign-ins",
-                Current = detail,
+                Current = detail + partly,
                 Recommended = (fromProxy
                         ? $"If {worst!.Key} is your reverse proxy, add it under Known proxies so Jellyfin sees the real addresses. "
                         : string.Empty)
@@ -105,10 +118,25 @@ public static class SecurityAuditor
                 Severity = Sev.Tip,
                 Title = roaming.Count == 1 ? "An account signs in from several places" : $"{roaming.Count} accounts sign in from several places",
                 Id = "security.roaming-accounts",
-                Current = string.Join("; ", roaming.Select(r => $"{r.Key}: {r.Value.Count} addresses")),
+                Current = string.Join("; ", roaming.Select(r => $"{r.Key}: {r.Value.Count} addresses")) + partly,
                 Recommended = "Check these are all the right person. If not, change the password and review who has it",
                 Why = "Signing in from several different addresses in a week can be normal (phone, work, travel), but it can also mean a password is being shared or has been stolen.",
                 Where = WhereUsers
+            });
+        }
+
+        // With no sign-in finding to carry that note, a week cut short would pass for one checked in full.
+        if (log.Capped && findings.Count == foundBefore)
+        {
+            findings.Add(new Finding
+            {
+                Area = Area,
+                Severity = Sev.Tip,
+                Title = "Sign-ins were only partly checked",
+                Current = $"Only {newest} were read, so older sign-ins in the week weren't checked",
+                Recommended = "Look through the rest of the week in Dashboard → Activity for failed sign-ins and sign-ins from new places",
+                Why = "Failed sign-ins and sign-ins from new places are found in the activity log. This week's holds more entries than Medic reads, so any in its oldest part weren't counted.",
+                Where = "Dashboard → Activity"
             });
         }
     }
@@ -152,12 +180,13 @@ public static class SecurityAuditor
     }
 
     /// <summary>
-    /// Accounts that signed in from 3 or more places in the last 7 days, with how many, most first. Never the
-    /// addresses. Null when the activity log didn't answer in time.
+    /// Accounts that signed in from 3 or more places in the last 7 days, with how many, most first; on a week too busy
+    /// to read in full, from its newest entries only. Never the addresses. Null when the activity log couldn't be read.
+    /// For the Dashboard, a good reading under a minute old will do, such as the one the Report just made.
     /// </summary>
-    internal static List<RoamingAccount>? RoamingAccounts(object? activityManager, List<object> users)
+    internal static async Task<List<RoamingAccount>?> RoamingAccountsAsync(object? activityManager, List<object> users, CancellationToken cancellationToken)
     {
-        var entries = ActivityEntries(activityManager, DateTime.UtcNow.AddDays(-7));
+        var entries = (await SharedReader.ReadAsync(activityManager, reuse: true, cancellationToken).ConfigureAwait(false)).Entries;
         if (entries is null)
         {
             return null;
@@ -246,69 +275,149 @@ public static class SecurityAuditor
 
     // ---------- Reading the activity log ----------
 
-    /// <summary>The activity log since a date; empty when there's no log to read, null when it didn't answer in time.</summary>
-    private static List<object>? ActivityEntries(object? activityManager, DateTime sinceUtc)
+    // The log is read newest first, PageSize entries at a time. Reading stops after MaxPages pages so that a very busy
+    // week can't hold the report up; the findings then say only the newest entries were read.
+    private const int PageSize = 500;
+    private const int MaxPages = 20;
+
+    // For all the pages together. A log too slow to answer is reported as such, rather than as a week with no
+    // failed sign-ins.
+    private static readonly TimeSpan ReadingTime = TimeSpan.FromSeconds(15);
+
+    private const string NotAvailable = "Jellyfin's activity log isn't available to Medic";
+
+    /// <summary>
+    /// The activity log as read: its entries, newest first, and whether reading stopped at <see cref="MaxPages"/> full
+    /// pages, so older ones may be left. Entries is null when the log couldn't be read, and Reason then says why.
+    /// </summary>
+    internal sealed record ActivityReading(List<object>? Entries, bool Capped, string Reason)
     {
-        if (activityManager is null)
+        public static ActivityReading Failed(string reason) => new(null, false, reason);
+    }
+
+    /// <summary>
+    /// Reads the last 7 days of the activity log without holding a thread while Jellyfin answers, and lets callers
+    /// share a reading: one under way is shared by everyone, and a good one is reused for a minute by callers that
+    /// don't need it fresh. A failed one is shared only by the callers already waiting for it.
+    /// </summary>
+    internal sealed class ActivityLogReader
+    {
+        // Long enough for the Dashboard to use the reading of the Report it was opened with.
+        private static readonly TimeSpan KeepFor = TimeSpan.FromSeconds(60);
+
+        private readonly TimeProvider _clock;
+        private readonly object _gate = new();
+        private Shared? _last;
+
+        internal ActivityLogReader(TimeProvider clock) => _clock = clock;
+
+        /// <summary>
+        /// The last 7 days of the log. A reading under way is always shared; with <paramref name="reuse"/>, so is a
+        /// good one under a minute old.
+        /// </summary>
+        internal Task<ActivityReading> ReadAsync(object? activityManager, bool reuse, CancellationToken cancellationToken)
         {
-            return new List<object>();
+            Lazy<Task<ActivityReading>> reading;
+            lock (_gate)
+            {
+                var now = _clock.GetUtcNow();
+                if (_last is null || !ReferenceEquals(_last.Manager, activityManager) || !Usable(_last, now, reuse))
+                {
+                    // Started by the first caller to ask for its value, outside this lock, as it calls into Jellyfin.
+                    _last = new Shared(activityManager, now, new Lazy<Task<ActivityReading>>(() => ReadWeekAsync(activityManager, now.UtcDateTime.AddDays(-7))));
+                }
+
+                reading = _last.Reading;
+            }
+
+            // A caller that gives up stops waiting, but the reading goes on for the others sharing it.
+            return reading.Value.WaitAsync(cancellationToken);
         }
 
-        try
+        private static bool Usable(Shared last, DateTimeOffset now, bool reuse)
         {
-            // Jellyfin 10.9 and later: GetPagedResultAsync(ActivityLogQuery), newest first.
-            var asyncMethod = activityManager.GetType().GetMethods()
-                .FirstOrDefault(m => m.Name == "GetPagedResultAsync" && m.GetParameters().Length == 1);
-            if (asyncMethod is not null)
+            // Under way: it started moments ago, so it's fresh enough for anyone.
+            if (!last.Reading.IsValueCreated || !last.Reading.Value.IsCompleted)
             {
-                object? query = Activator.CreateInstance(asyncMethod.GetParameters()[0].ParameterType);
-                SetIfPresent(query, "MinDate", sinceUtc);
-                SetIfPresent(query, "Limit", 500);
-                if (asyncMethod.Invoke(activityManager, new[] { query }) is System.Threading.Tasks.Task task)
+                return true;
+            }
+
+            // "Open Medic again later" has to mean a new reading, so a failed one is never kept.
+            var done = last.Reading.Value;
+            return reuse && now - last.At < KeepFor && done.IsCompletedSuccessfully && done.Result.Entries is not null;
+        }
+
+        private async Task<ActivityReading> ReadWeekAsync(object? activityManager, DateTime sinceUtc)
+        {
+            try
+            {
+                // Jellyfin 10.9 and later: GetPagedResultAsync(ActivityLogQuery), newest first.
+                var getPage = activityManager?.GetType().GetMethods()
+                    .FirstOrDefault(m => m.Name == "GetPagedResultAsync" && m.GetParameters().Length == 1);
+                if (getPage is null)
                 {
-                    if (!task.Wait(TimeSpan.FromSeconds(15)))
+                    return ActivityReading.Failed(NotAvailable);
+                }
+
+                var entries = new List<object>();
+                var ids = new HashSet<string>(StringComparer.Ordinal);
+                long started = _clock.GetTimestamp();
+                for (int page = 0; page < MaxPages; page++)
+                {
+                    object? query = Activator.CreateInstance(getPage.GetParameters()[0].ParameterType);
+                    SetIfPresent(query, "MinDate", sinceUtc);
+                    SetIfPresent(query, "Skip", page * PageSize);
+                    SetIfPresent(query, "Limit", PageSize);
+                    if (getPage.Invoke(activityManager, new[] { query }) is not Task task)
                     {
-                        return null; // too slow to answer: say so, rather than report a week with no failed sign-ins
+                        return ActivityReading.Failed(NotAvailable);
+                    }
+
+                    TimeSpan left = ReadingTime - _clock.GetElapsedTime(started);
+                    try
+                    {
+                        await task.WaitAsync(left > TimeSpan.Zero ? left : TimeSpan.Zero, _clock).ConfigureAwait(false);
+                    }
+                    catch (TimeoutException)
+                    {
+                        // Jellyfin's call takes no token, so this page is left to finish on its own, and nothing waits for it.
+                        return ActivityReading.Failed($"The activity log didn't answer within {ReadingTime.TotalSeconds:0} seconds");
                     }
 
                     object? result = task.GetType().GetProperty("Result")?.GetValue(task);
-                    if (SettingsReader.Get(result, "Items") is IEnumerable found && found is not string)
+                    if (SettingsReader.Get(result, "Items") is not IEnumerable items || items is string)
                     {
-                        return found.Cast<object>().Where(e => e is not null).ToList();
+                        return ActivityReading.Failed(NotAvailable);
+                    }
+
+                    int onPage = 0;
+                    foreach (var entry in items)
+                    {
+                        onPage++;
+
+                        // Entries logged while the pages are read push the older ones down, so one can come on two pages.
+                        string? id = SettingsReader.Text(entry, "Id");
+                        if (entry is not null && (id is null || ids.Add(id)))
+                        {
+                            entries.Add(entry);
+                        }
+                    }
+
+                    if (onPage < PageSize)
+                    {
+                        return new ActivityReading(entries, false, string.Empty);
                     }
                 }
-            }
 
-            // Older versions.
-            foreach (var method in activityManager.GetType().GetMethods().Where(m => m.Name is "GetPagedResult" or "GetActivityLogEntries"))
+                return new ActivityReading(entries, true, string.Empty);
+            }
+            catch (Exception ex)
             {
-                var parameters = method.GetParameters();
-                var args = new object?[parameters.Length];
-                for (int i = 0; i < parameters.Length; i++)
-                {
-                    args[i] = parameters[i].ParameterType switch
-                    {
-                        { } t when t == typeof(int) => i == parameters.Length - 1 ? 500 : 0,
-                        { } t when t == typeof(DateTime) => sinceUtc,
-                        { } t when t == typeof(DateTime?) => sinceUtc,
-                        _ => parameters[i].HasDefaultValue ? parameters[i].DefaultValue : null
-                    };
-                }
-
-                object? result = method.Invoke(activityManager, args);
-                var items = SettingsReader.Get(result, "Items") ?? result;
-                if (items is IEnumerable list && items is not string)
-                {
-                    return list.Cast<object>().Where(e => e is not null).ToList();
-                }
+                return ActivityReading.Failed($"Reading the activity log failed ({ex.GetBaseException().GetType().Name})");
             }
         }
-        catch
-        {
-            // Activity log unavailable in this version: skip these checks.
-        }
 
-        return new List<object>();
+        private sealed record Shared(object? Manager, DateTimeOffset At, Lazy<Task<ActivityReading>> Reading);
     }
 
     private static void SetIfPresent(object? target, string name, object value)
@@ -345,10 +454,22 @@ public static class SecurityAuditor
         return null;
     }
 
-    // An IPv6 address counts by its /64 network (one home or phone connection); IPv4 as it is.
+    // The place an address counts as. Each device at home has its own address, so every address only seen from inside
+    // the home network is one place: the private ones, and 100.64.0.0/10. An IPv6 address counts by its /64 network
+    // (one home or phone connection); any other IPv4 address as it is.
     private static string Network(string ip)
     {
-        if (!IPAddress.TryParse(ip, out var address) || address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6 || address.IsIPv4MappedToIPv6)
+        if (!IPAddress.TryParse(ip, out var address))
+        {
+            return ip;
+        }
+
+        if (IsPrivate(address) || IsSharedAddressSpace(address))
+        {
+            return "home network";
+        }
+
+        if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6 || address.IsIPv4MappedToIPv6)
         {
             return ip;
         }
@@ -356,6 +477,14 @@ public static class SecurityAuditor
         var bytes = address.GetAddressBytes();
         Array.Clear(bytes, 8, 8);
         return new IPAddress(bytes) + "/64";
+    }
+
+    // 100.64.0.0/10: Tailscale gives each device an address here, and carrier-grade NAT uses it inside an internet
+    // provider's network. Neither is reachable from the internet.
+    private static bool IsSharedAddressSpace(IPAddress ip)
+    {
+        var b = (ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip).GetAddressBytes();
+        return b.Length == 4 && b[0] == 100 && (b[1] & 0xc0) == 0x40;
     }
 
     // Addresses only seen inside a home or a Docker network: 10/8, 172.16/12, 192.168/16, IPv6 unique local and link-local.

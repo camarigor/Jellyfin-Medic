@@ -209,17 +209,17 @@ public class DownloadsService
     /// </summary>
     public async Task<(List<DownloadRow> Rows, Dictionary<string, string> Errors, Dictionary<string, string> Notes)> QueueAsync(CancellationToken ct)
     {
+        // Asked at once, so a slow app doesn't hold up the other's rows.
+        var apps = new[] { ArrApp.Sonarr, ArrApp.Radarr }.Where(_arr.IsConfigured).ToList();
+        var answers = await Task.WhenAll(apps.Select(app => QueueRecordsAsync(app, ct))).ConfigureAwait(false);
+
         var rows = new List<DownloadRow>();
         var errors = new Dictionary<string, string>();
         var notes = new Dictionary<string, string>();
-        foreach (var app in new[] { ArrApp.Sonarr, ArrApp.Radarr })
+        for (int i = 0; i < apps.Count; i++)
         {
-            if (!_arr.IsConfigured(app))
-            {
-                continue;
-            }
-
-            var (records, error, total) = await QueueRecordsAsync(app, ct).ConfigureAwait(false);
+            var app = apps[i];
+            var (records, error, total) = answers[i];
             if (error is not null)
             {
                 errors[Key(app)] = error;
@@ -705,6 +705,12 @@ public class DownloadsService
         if (!result.Ok)
         {
             return (false, result.Message);
+        }
+
+        // A started command comes back with its id; a sign-in page or a list means it reached something else.
+        if (result.Json is not { } started || Json.Int(started.RootElement, "id") is null)
+        {
+            return (false, $"{ArrClient.Name(app)} didn't confirm the import. Check its address and URL base on the Settings tab, then try again.");
         }
 
         _store.Record(new ActionRecord

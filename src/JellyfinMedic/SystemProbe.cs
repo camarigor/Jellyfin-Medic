@@ -13,7 +13,7 @@ public sealed class HardwareInfo
 
     public double? HostMemoryGb { get; set; }
 
-    public bool InDocker { get; set; }
+    public bool RandomHostname { get; set; }
 
     // intel, amd, nvidia, unknown or none
     public string GpuVendor { get; set; } = "none";
@@ -48,7 +48,7 @@ public static class SystemProbe
         {
             CpuThreads = Environment.ProcessorCount,
             MemoryGb = Math.Round(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / GiB, 1),
-            InDocker = HostPlatform.IsDockerLike // one detector, so the two can't disagree
+            RandomHostname = HostPlatform.HostnameIsRandom // one detector, so the two can't disagree
         };
 
         info.CpuModel = HostPlatform.Lines("/proc/cpuinfo")
@@ -91,7 +91,7 @@ public static class SystemProbe
             // Not readable: treat as no GPU nodes.
         }
 
-        info.NvidiaDevice = File.Exists("/dev/nvidia0") || Directory.Exists("/proc/driver/nvidia/gpus");
+        info.NvidiaDevice = NvidiaPresent(NvidiaDeviceNames(), Directory.Exists("/proc/driver/nvidia/gpus"), HostPlatform.IsContainer);
 
         var vendors = new List<(string Vendor, string? Device)>();
         foreach (var node in info.RenderNodes)
@@ -133,6 +133,27 @@ public static class SystemProbe
         return info;
     }
 
+    /// <summary>Whether an NVIDIA GPU is usable here, from the names of the /dev/nvidia* nodes and whether the driver lists GPUs in /proc.</summary>
+    internal static bool NvidiaPresent(IEnumerable<string> devNames, bool procGpus, bool inContainer)
+    {
+        // /proc/driver/nvidia shows the host's driver even in a container given no GPU, and a container given only its
+        // second GPU has /dev/nvidia1 but no /dev/nvidia0. On bare metal the nodes can appear only on first use.
+        bool node = devNames.Any(n => n == "nvidiactl" || System.Text.RegularExpressions.Regex.IsMatch(n, @"^nvidia\d+$"));
+        return node || (!inContainer && procGpus);
+    }
+
+    private static string[] NvidiaDeviceNames()
+    {
+        try
+        {
+            return Directory.GetFiles("/dev", "nvidia*").Select(Path.GetFileName).OfType<string>().ToArray();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
     /// <summary>Free and total space on the drive holding a path.</summary>
     public static (double FreeGb, double TotalGb)? Space(string? path)
     {
@@ -161,10 +182,12 @@ public static class SystemProbe
     /// Whether the disk behind a path spins (a hard drive), from /sys/block. Null when it can't be
     /// told, for example on Windows, for network shares, or for pooled and virtual devices.
     /// </summary>
-    public static bool? Spinning(string? path)
+    public static bool? Spinning(string? path) => MountDevice(path) is { } device ? Spinning(device, HostPlatform.Lines, LinkTarget) : null;
+
+    /// <summary>Whether a block device spins, from the given readers of /sys, so it can be worked out without the real disk.</summary>
+    internal static bool? Spinning(string device, Func<string, string[]> lines, Func<string, string?> linkTarget)
     {
-        string? device = MountDevice(path);
-        if (device is null || !device.StartsWith("/dev/", StringComparison.Ordinal))
+        if (!device.StartsWith("/dev/", StringComparison.Ordinal))
         {
             return null;
         }
@@ -173,7 +196,7 @@ public static class SystemProbe
         foreach (string candidate in new[] { name, System.Text.RegularExpressions.Regex.Replace(name, @"(?<=\D)\d+$|(?<=nvme\d+n\d+)p\d+$|(?<=mmcblk\d+)p\d+$", string.Empty) })
         {
             // Virtual disks (virtio, Xen, QEMU, VMware, Hyper-V) say they spin even when the host has an SSD.
-            string model = string.Join(' ', HostPlatform.Lines($"/sys/block/{candidate}/device/vendor").Concat(HostPlatform.Lines($"/sys/block/{candidate}/device/model")));
+            string model = string.Join(' ', lines($"/sys/block/{candidate}/device/vendor").Concat(lines($"/sys/block/{candidate}/device/model")));
             if (candidate.StartsWith("vd", StringComparison.Ordinal) || candidate.StartsWith("xvd", StringComparison.Ordinal)
                 || System.Text.RegularExpressions.Regex.IsMatch(model, "QEMU|VMware|Virtual|VBOX|Msft", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
             {
@@ -181,14 +204,32 @@ public static class SystemProbe
             }
 
             string file = $"/sys/block/{candidate}/queue/rotational";
-            var text = HostPlatform.Lines(file).FirstOrDefault()?.Trim();
+            var text = lines(file).FirstOrDefault()?.Trim();
             if (text is "0" or "1")
             {
+                // A USB bridge often says its disk spins whatever is behind it, so only a USB disk that says it doesn't is believed.
+                if (text == "1" && linkTarget($"/sys/block/{candidate}")?.Contains("/usb", StringComparison.Ordinal) == true)
+                {
+                    return null;
+                }
+
                 return text == "1";
             }
         }
 
         return null;
+    }
+
+    private static string? LinkTarget(string path)
+    {
+        try
+        {
+            return new DirectoryInfo(path).LinkTarget;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string? MountDevice(string? path)

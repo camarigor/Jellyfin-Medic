@@ -238,6 +238,9 @@ public class TrackRunProgress
     public List<string> Recent { get; set; } = new();
 }
 
+/// <summary>A title "Tidy copies" left as it was: its file name, and why its earlier copy didn't check out.</summary>
+public sealed record TidyLeft(string Name, string Reason);
+
 // ---------- Engine ----------
 
 /// <summary>
@@ -255,6 +258,7 @@ public static class TrackCleaner
     private static CancellationTokenSource? _cancel;
     private static long _bytesFreed; // space freed by this run right away (not held in kept originals)
     private static long _writing; // bytes the files being cleaned right now may still write
+    private static bool _ownerNoted; // a folder that couldn't get its parent's owner was noted this run
     private const string StrippedSuffix = ".medic-stripped";   // used by Medic 1.0.4–1.0.7; tidied up by TidyEarlierCopies
     private const string OriginalsFolder = ".medic-originals"; // hidden, and ignored by Jellyfin, Sonarr and Radarr
 
@@ -893,15 +897,14 @@ public static class TrackCleaner
     // Words in a subtitle file's name that Jellyfin reads as flags rather than a language.
     private static readonly HashSet<string> SubtitleFlags = new(StringComparer.OrdinalIgnoreCase) { "forced", "foreign", "default", "sdh", "cc", "hi" };
 
-    /// <summary>A 2 or 3 letter language code, as the 3 letter form files use (e.g. "en" → "eng"), or null if it isn't one.</summary>
+    /// <summary>A 2 or 3 letter language code, as the 3 letter B form files use (e.g. "en" → "eng", "ell" → "gre"), or null if it isn't one.</summary>
     private static string? LanguageCode(string? language)
     {
         string code = (language ?? string.Empty).Trim().ToLowerInvariant();
-        return code.Length is 2 or 3 && code.All(c => c is >= 'a' and <= 'z') ? TwoToThree(code) : null;
+        return code.Length is 2 or 3 && code.All(c => c is >= 'a' and <= 'z') ? LanguageCodes.FileCode(code) : null;
     }
 
-    private static bool InLanguage(TrackInfo t, HashSet<string> keep) =>
-        keep.Contains(t.Language) || keep.Contains(ThreeToTwo(t.Language));
+    private static bool InLanguage(TrackInfo t, HashSet<string> keep) => keep.Contains(LanguageCodes.Canonical(t.Language));
 
     // ---------- Run ----------
 
@@ -934,6 +937,7 @@ public static class TrackCleaner
             Progress.WaitingSinceUtc = null;
             _paused = false;
             Progress.Recent.Clear();
+            _ownerNoted = false;
             _cancel = new CancellationTokenSource();
         }
 
@@ -941,8 +945,17 @@ public static class TrackCleaner
         var keep = KeepLanguages(cfg);
         var exclude = ExcludeList(cfg.TracksExclude);
 
+        // cfg is the live settings object that a save changes in place, so reading this for each file
+        // would let a save during the run switch keep or replace for the files not started yet.
+        bool replaceInPlace = cfg.TracksReplaceInPlace;
+
         try
         {
+            // Hands the request back now: the controller doesn't wait for the run, and without this its request
+            // would last through planning, which goes through every file in every library, and through a whole
+            // dry run. Running is already set, so a second start is refused meanwhile.
+            await Task.Yield();
+
             // Jellyfin's track list can be older than the file, so every file is probed again right before its remux.
             string? ffprobe = dryRun ? null : FfprobePath(ffmpeg);
             if (!dryRun && ffprobe is null)
@@ -953,12 +966,13 @@ public static class TrackCleaner
 
             if (!dryRun)
             {
-                RecoverInterruptedSwaps(LibraryFolders(library, libraries));
+                RecoverInterruptedSwaps(LibraryFolders(library, libraries, ct), ct);
             }
 
             var plans = new List<(FilePlan Plan, BaseItem Item)>();
             foreach (var lib in libraries.Where(l => !l.IsStreamed))
             {
+                ct.ThrowIfCancellationRequested();
                 if (!Guid.TryParse(lib.Id, out var id))
                 {
                     continue;
@@ -967,6 +981,7 @@ public static class TrackCleaner
                 var items = library.GetItemList(new InternalItemsQuery { ParentId = id, Recursive = true, IsFolder = false });
                 foreach (var item in items)
                 {
+                    ct.ThrowIfCancellationRequested();
                     string path = item.Path ?? string.Empty;
                     if (string.IsNullOrEmpty(path) || path.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) || !LooksLocal(path) || IsMedicFile(path) || IsExcluded(path, exclude) || !File.Exists(path))
                     {
@@ -983,6 +998,7 @@ public static class TrackCleaner
 
             foreach (var (plan, _) in plans)
             {
+                ct.ThrowIfCancellationRequested();
                 try { plan.SizeBytes = new FileInfo(plan.Path).Length; } catch { plan.SizeBytes = 0; }
             }
 
@@ -1007,7 +1023,7 @@ public static class TrackCleaner
                         await WaitUntilAllowedAsync(cfg, ct).ConfigureAwait(false);
                     }
 
-                    await ProcessOne(p.Plan, p.Item, ffmpeg, ffprobe, threads, dryRun, cfg.TracksReplaceInPlace, ct).ConfigureAwait(false);
+                    await ProcessOne(p.Plan, p.Item, ffmpeg, ffprobe, threads, dryRun, replaceInPlace, ct).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -1196,7 +1212,7 @@ public static class TrackCleaner
                 {
                     // Two moves: if Jellyfin stops between them, the next run (or "Tidy copies") puts the original
                     // back, as the temp file beside the empty path shows the swap didn't finish.
-                    EnsureOriginalsFolder(plan.Path);
+                    await EnsureOriginalsFolder(plan.Path, ct).ConfigureAwait(false);
                     File.Move(plan.Path, kept);
                     try
                     {
@@ -1452,75 +1468,114 @@ public static class TrackCleaner
     /// Earlier versions left "Name.medic-stripped.mkv" beside the original, and could then strip that copy
     /// again ("Name.medic-stripped.medic-stripped.mkv"). This puts each title back to one file: the first
     /// stripped copy takes the original's name, the original moves to .medic-originals, and copies of
-    /// copies are deleted. Nothing is deleted unless a good file remains under the original name.
+    /// copies are deleted. Nothing is deleted unless a good file remains under the original name, and a copy
+    /// FFprobe doesn't read like the film leaves its title as it is.
     /// </summary>
-    public static (int Titles, int CopiesDeleted, long Freed) TidyEarlierCopies(ILibraryManager library, IEnumerable<LibraryFacts> libraries, bool deleteOriginals = false)
+    public static async Task<(int Titles, int CopiesDeleted, long Freed, List<TidyLeft> Left)> TidyEarlierCopies(ILibraryManager library, IEnumerable<LibraryFacts> libraries, string ffprobe, bool deleteOriginals = false)
     {
+        lock (Sync)
+        {
+            _ownerNoted = false;
+        }
+
         int titles = 0, deletedCopies = 0;
+        var left = new List<TidyLeft>();
         long freed = 0;
         foreach (var dir in LibraryFolders(library, libraries))
         {
-            var copies = SafeFiles(dir).Where(f => Path.GetFileName(f).Contains(StrippedSuffix, StringComparison.OrdinalIgnoreCase)).ToList();
-            foreach (var group in copies.GroupBy(f => OriginalNameFor(f), StringComparer.Ordinal))
+            var (t, d, f, l) = await TidyFolder(dir, path => ProbeFile(ffprobe, path, CancellationToken.None), deleteOriginals, CancellationToken.None).ConfigureAwait(false);
+            titles += t;
+            deletedCopies += d;
+            freed += f;
+            left.AddRange(l);
+        }
+
+        return (titles, deletedCopies, freed, left);
+    }
+
+    /// <summary>Tidies one folder. probe reads a file with FFprobe; it's passed in so the tests can run without it.</summary>
+    internal static async Task<(int Titles, int CopiesDeleted, long Freed, List<TidyLeft> Left)> TidyFolder(string dir, Func<string, Task<ProbedFile?>> probe, bool deleteOriginals, CancellationToken ct)
+    {
+        int titles = 0, deletedCopies = 0;
+        var left = new List<TidyLeft>();
+        long freed = 0;
+        var copies = SafeFiles(dir).Where(f => Path.GetFileName(f).Contains(StrippedSuffix, StringComparison.OrdinalIgnoreCase)).ToList();
+        foreach (var group in copies.GroupBy(f => OriginalNameFor(f), StringComparer.Ordinal))
+        {
+            try
             {
-                try
+                string original = group.Key;
+                // Shallowest copy first: "Name.medic-stripped.mkv" before "Name.medic-stripped.medic-stripped.mkv".
+                var ordered = group.OrderBy(f => CountSuffix(f)).ThenBy(f => f.Length).ToList();
+                string best = ordered[0];
+
+                string keptOriginal = OriginalPath(original);
+
+                // Versions 1.0.4 to 1.0.7 made these copies with optional maps and checked nothing, so a copy
+                // missing its video, audio or end must not take the place of a good file. A kept original is
+                // the true one; without either, the copy only has to read.
+                string? reference = File.Exists(keptOriginal) ? keptOriginal : File.Exists(original) ? original : null;
+                string? problem = CheckLeftover(
+                    reference is null ? null : await probe(reference).ConfigureAwait(false),
+                    await probe(best).ConfigureAwait(false),
+                    reference is null ? 0 : Size(reference),
+                    Size(best));
+                if (problem is not null)
                 {
-                    string original = group.Key;
-                    // Shallowest copy first: "Name.medic-stripped.mkv" before "Name.medic-stripped.medic-stripped.mkv".
-                    var ordered = group.OrderBy(f => CountSuffix(f)).ThenBy(f => f.Length).ToList();
-                    string best = ordered[0];
+                    left.Add(new TidyLeft(Path.GetFileName(original), problem));
+                    Note($"Left {Path.GetFileName(original)} and its earlier copy as they are: the copy didn't check out ({problem})");
+                    continue;
+                }
 
-                    string keptOriginal = OriginalPath(original);
-                    if (File.Exists(original))
+                if (File.Exists(original))
+                {
+                    if (deleteOriginals || File.Exists(keptOriginal))
                     {
-                        if (deleteOriginals || File.Exists(keptOriginal))
-                        {
-                            // Either you asked to keep only the cleaned file, or a true original is already
-                            // kept and the file in place is an older cleaned copy. The copy replaces it in one
-                            // rename below, so the title is never left without a file if that fails.
-                            freed += Size(original);
-                            deletedCopies++;
-                        }
-                        else
-                        {
-                            EnsureOriginalsFolder(original);
-                            File.Move(original, keptOriginal);
-                        }
-                    }
-
-                    File.Move(best, original, overwrite: true);
-                    titles++;
-
-                    if (deleteOriginals && File.Exists(keptOriginal))
-                    {
-                        freed += Size(keptOriginal);
-                        File.Delete(keptOriginal);
-                        RemoveIfEmpty(Path.GetDirectoryName(keptOriginal)!);
-                    }
-
-                    foreach (var extra in ordered.Skip(1))
-                    {
-                        freed += Size(extra);
-                        File.Delete(extra);
+                        // Either you asked to keep only the cleaned file, or a true original is already
+                        // kept and the file in place is an older cleaned copy. The copy replaces it in one
+                        // rename below, so the title is never left without a file if that fails.
+                        freed += Size(original);
                         deletedCopies++;
                     }
+                    else
+                    {
+                        await EnsureOriginalsFolder(original, ct).ConfigureAwait(false);
+                        File.Move(original, keptOriginal);
+                    }
                 }
-                catch (Exception ex)
+
+                File.Move(best, original, overwrite: true);
+                titles++;
+
+                if (deleteOriginals && File.Exists(keptOriginal))
                 {
-                    // Leave anything locked or odd as it is, but say so.
-                    Note($"Couldn't tidy {Path.GetFileName(group.Key)}: {ex.Message}");
+                    freed += Size(keptOriginal);
+                    File.Delete(keptOriginal);
+                    RemoveIfEmpty(Path.GetDirectoryName(keptOriginal)!);
+                }
+
+                foreach (var extra in ordered.Skip(1))
+                {
+                    freed += Size(extra);
+                    File.Delete(extra);
+                    deletedCopies++;
                 }
             }
-
-            // Temp files from interrupted runs, once any original they belong to is back in place.
-            RecoverInterruptedSwaps(new[] { dir });
-            foreach (var tmp in SafeFiles(dir).Where(f => Path.GetFileName(f).Contains(".medic-tmp", StringComparison.OrdinalIgnoreCase)))
+            catch (Exception ex)
             {
-                try { freed += Size(tmp); File.Delete(tmp); } catch { /* skip */ }
+                // Leave anything locked or odd as it is, but say so.
+                Note($"Couldn't tidy {Path.GetFileName(group.Key)}: {ex.Message}");
             }
         }
 
-        return (titles, deletedCopies, freed);
+        // Temp files from interrupted runs, once any original they belong to is back in place.
+        RecoverInterruptedSwaps(new[] { dir });
+        foreach (var tmp in SafeFiles(dir).Where(f => Path.GetFileName(f).Contains(".medic-tmp", StringComparison.OrdinalIgnoreCase)))
+        {
+            try { freed += Size(tmp); File.Delete(tmp); } catch { /* skip */ }
+        }
+
+        return (titles, deletedCopies, freed, left);
     }
 
     /// <summary>How many originals Medic is keeping in .medic-originals folders, and their total size.</summary>
@@ -1572,11 +1627,12 @@ public static class TrackCleaner
     }
 
     /// <summary>Every folder that holds a local file in a non-streamed library.</summary>
-    private static HashSet<string> LibraryFolders(ILibraryManager library, IEnumerable<LibraryFacts> libraries)
+    private static HashSet<string> LibraryFolders(ILibraryManager library, IEnumerable<LibraryFacts> libraries, CancellationToken ct = default)
     {
         var folders = new HashSet<string>(StringComparer.Ordinal);
         foreach (var lib in libraries.Where(l => !l.IsStreamed))
         {
+            ct.ThrowIfCancellationRequested();
             if (!Guid.TryParse(lib.Id, out var id))
             {
                 continue;
@@ -1731,23 +1787,17 @@ public static class TrackCleaner
 
     // ---------- Helpers ----------
 
+    // Stored in the form tracks are compared in (LanguageCodes.Canonical), so "fre", "fra" and "fr" each keep a
+    // French track, whichever form the file uses.
     internal static HashSet<string> KeepLanguages(PluginConfiguration cfg)
     {
         var set = (cfg.TracksKeepLanguages ?? "eng")
             .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim().ToLowerInvariant())
+            .Select(LanguageCodes.Canonical)
             .ToHashSet(StringComparer.Ordinal);
         if (set.Count == 0)
         {
             set.Add("eng");
-        }
-
-        // Accept 2-letter codes and both 3-letter forms for the common ones ("fre" and "fra" are
-        // both French), by also adding each entry's 2-letter code, which tracks are compared on too.
-        foreach (var code in set.ToList())
-        {
-            set.Add(TwoToThree(code));
-            set.Add(ThreeToTwo(code));
         }
 
         return set;
@@ -1772,14 +1822,14 @@ public static class TrackCleaner
     }
 
     /// <summary>FFprobe from the same folder as FFmpeg, as Jellyfin ships them together; null if it isn't there.</summary>
-    private static string? FfprobePath(string ffmpeg)
+    internal static string? FfprobePath(string ffmpeg)
     {
         string path = Path.Combine(Path.GetDirectoryName(ffmpeg) ?? string.Empty, "ffprobe" + Path.GetExtension(ffmpeg));
         return File.Exists(path) ? path : null;
     }
 
     /// <summary>What FFprobe reports about a file: every stream in order (kind is video, audio, subtitle, attachment...) and the duration when known.</summary>
-    private sealed record ProbedFile(List<(int Index, string Kind, string Language)> Streams, double? DurationSeconds)
+    internal sealed record ProbedFile(List<(int Index, string Kind, string Language)> Streams, double? DurationSeconds)
     {
         public int Count(string kind) => Streams.Count(s => s.Kind == kind);
     }
@@ -1871,12 +1921,11 @@ public static class TrackCleaner
         return null;
     }
 
-    /// <summary>Jellyfin may store "deu" for a file tagged "ger", so both 3-letter forms and the 2-letter code count as one.</summary>
-    private static bool SameLanguage(string a, string b)
+    /// <summary>Jellyfin stores "ell" for a file tagged "gre", so both 3-letter forms and the 2-letter code count as one.</summary>
+    internal static bool SameLanguage(string a, string b)
     {
-        static string Norm(string code) => string.IsNullOrWhiteSpace(code) ? "und" : code.Trim().ToLowerInvariant();
-        string x = Norm(a), y = Norm(b);
-        return x == y || ThreeToTwo(x) == ThreeToTwo(y) || TwoToThree(x) == TwoToThree(y);
+        static string Norm(string code) => LanguageCodes.Canonical(string.IsNullOrWhiteSpace(code) ? "und" : code);
+        return Norm(a) == Norm(b);
     }
 
     /// <summary>
@@ -1899,13 +1948,44 @@ public static class TrackCleaner
             }
         }
 
-        if (source.DurationSeconds is { } want && output.DurationSeconds is { } got)
+        return LengthProblem(source, output, sourceBytes, outputBytes);
+    }
+
+    /// <summary>
+    /// Why an earlier copy can't take the original's place, or null when it can. Lighter than CheckOutput, as the
+    /// tracks those versions kept aren't known and they dropped attachments: FFprobe reads it, it has the original's
+    /// video, some audio, and the same length. Without an original to compare, video and audio are enough.
+    /// </summary>
+    internal static string? CheckLeftover(ProbedFile? reference, ProbedFile? leftover, long referenceBytes, long leftoverBytes)
+    {
+        if (leftover is null)
+        {
+            return "FFprobe couldn't read it";
+        }
+
+        if (reference is null)
+        {
+            return leftover.Count("video") == 0 ? "it has no video" : leftover.Count("audio") == 0 ? "it has no audio" : null;
+        }
+
+        if (leftover.Count("video") != reference.Count("video"))
+        {
+            return $"it has {leftover.Count("video")} video streams instead of {reference.Count("video")}";
+        }
+
+        return leftover.Count("audio") == 0 ? "it has no audio" : LengthProblem(reference, leftover, referenceBytes, leftoverBytes);
+    }
+
+    /// <summary>Why the copy isn't as long as the original, or null. When either length is unknown, a copy much smaller than the original fails instead.</summary>
+    private static string? LengthProblem(ProbedFile source, ProbedFile copy, long sourceBytes, long copyBytes)
+    {
+        if (source.DurationSeconds is { } want && copy.DurationSeconds is { } got)
         {
             double tolerance = Math.Max(2, want * 0.01);
             return Math.Abs(want - got) > tolerance ? $"it lasts {got:0} s instead of {want:0} s" : null;
         }
 
-        return sourceBytes > 0 && outputBytes < sourceBytes / 3 ? "it's much smaller than the original and its length can't be read" : null;
+        return sourceBytes > 0 && copyBytes < sourceBytes / 3 ? "it's much smaller than the original and its length can't be read" : null;
     }
 
     /// <summary>Makes sure the new file is on the disk before it takes the original's place, so a power cut can't leave an empty file.</summary>
@@ -1989,12 +2069,14 @@ public static class TrackCleaner
     /// moving the cleaned copy in): the path is empty, the original is kept, and the temp file is still beside it.
     /// Without the temp file the title was removed on purpose, so it's left alone. Also handles the ".medic-orig"
     /// backups that "replace in place" used before it swapped in one step. Returns how many were put back.
+    /// A stop takes effect between folders, never during a move.
     /// </summary>
-    private static int RecoverInterruptedSwaps(IEnumerable<string> folders)
+    private static int RecoverInterruptedSwaps(IEnumerable<string> folders, CancellationToken ct = default)
     {
         int restored = 0;
         foreach (var dir in folders)
         {
+            ct.ThrowIfCancellationRequested();
             var candidates = new List<(string From, string To)>();
             string kept = Path.Combine(dir, OriginalsFolder);
             if (Directory.Exists(kept))
@@ -2035,18 +2117,98 @@ public static class TrackCleaner
         || path.Contains(".medic-tmp", StringComparison.OrdinalIgnoreCase)
         || path.EndsWith(".medic-orig", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Makes the originals folder, with a .ignore file so Jellyfin never adds what's inside it to the library.</summary>
-    private static string EnsureOriginalsFolder(string mediaPath)
+    /// <summary>
+    /// Makes the originals folder, with a .ignore file so Jellyfin never adds what's inside it to the library. What
+    /// it makes gets the permissions and owner of the folder it's in: with Jellyfin's own, Sonarr or Radarr running
+    /// as another user couldn't delete the film's folder, and with the setgid bit, files keep the shared group.
+    /// </summary>
+    internal static async Task<string> EnsureOriginalsFolder(string mediaPath, CancellationToken ct)
     {
-        string folder = Path.Combine(Path.GetDirectoryName(mediaPath) ?? string.Empty, OriginalsFolder);
-        Directory.CreateDirectory(folder);
+        string parent = Path.GetDirectoryName(mediaPath) ?? string.Empty;
+        string folder = Path.Combine(parent, OriginalsFolder);
+        var made = new List<string>();
+        if (!Directory.Exists(folder))
+        {
+            Directory.CreateDirectory(folder);
+            made.Add(folder);
+        }
+
         string ignore = Path.Combine(folder, ".ignore");
         if (!File.Exists(ignore))
         {
             File.WriteAllText(ignore, string.Empty);
+            made.Add(ignore);
+        }
+
+        if (made.Count == 0 || OperatingSystem.IsWindows())
+        {
+            return folder;
+        }
+
+        // Owner first: a change of owner can clear the setgid bit.
+        if (await FileFacts(parent, ct).ConfigureAwait(false) is { } facts)
+        {
+            foreach (var path in made)
+            {
+                if (!await MatchOwner(path, facts.Uid, facts.Gid, ct).ConfigureAwait(false))
+                {
+                    OwnerNotMatched(folder);
+                    break;
+                }
+            }
+        }
+
+        try
+        {
+            var mode = new DirectoryInfo(parent).UnixFileMode;
+            const UnixFileMode NotForFiles = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute
+                | UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit;
+            foreach (var path in made)
+            {
+                FileSystemInfo info = path == folder ? new DirectoryInfo(path) : new FileInfo(path);
+                var wanted = path == folder ? mode : mode & ~NotForFiles;
+                // Skipped when already right: a chmod by someone outside the folder's group drops the setgid bit it inherited.
+                if (info.UnixFileMode != wanted)
+                {
+                    info.UnixFileMode = wanted;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Keep the default permissions.
         }
 
         return folder;
+    }
+
+    /// <summary>Gives the path this owner and group, or only the group where Jellyfin may not give files away; false when neither works.</summary>
+    internal static async Task<bool> MatchOwner(string path, uint uid, uint gid, CancellationToken ct)
+    {
+        var (owner, _) = await RunTool("chown", new[] { $"{uid}:{gid}", "--", path }, ct).ConfigureAwait(false);
+        if (owner == 0)
+        {
+            return true;
+        }
+
+        var (group, _) = await RunTool("chgrp", new[] { gid.ToString(CultureInfo.InvariantCulture), "--", path }, ct).ConfigureAwait(false);
+        return group == 0;
+    }
+
+    // Once per run: Jellyfin running as its own user can't give folders away, so a note for each would bury the others.
+    private static void OwnerNotMatched(string folder)
+    {
+        lock (Sync)
+        {
+            if (_ownerNoted)
+            {
+                return;
+            }
+
+            _ownerNoted = true;
+        }
+
+        Note($"Couldn't give {folder} the owner or group of the folder it's in, so Sonarr or Radarr running as another user may not be able to delete it. Other folders may be the same.");
     }
 
     /// <summary>The exclusion lines: trimmed, no blanks or repeats, at most 200.</summary>
@@ -2122,19 +2284,5 @@ public static class TrackCleaner
         BytesTotal = p.BytesTotal, BytesDone = p.BytesDone, WorkStartedUtc = p.WorkStartedUtc, SecondsLeft = EstimateSecondsLeft(p),
         Paused = p.Paused, Waiting = p.Waiting, WaitedSeconds = p.WaitedSeconds, WaitingSinceUtc = p.WaitingSinceUtc,
         FinishedUtc = p.FinishedUtc, Recent = p.Recent.ToList()
-    };
-
-    private static string ThreeToTwo(string code) => code switch
-    {
-        "eng" => "en", "jpn" => "ja", "fre" or "fra" => "fr", "ger" or "deu" => "de", "spa" => "es",
-        "ita" => "it", "dut" or "nld" => "nl", "rus" => "ru", "por" => "pt", "chi" or "zho" => "zh",
-        "kor" => "ko", "swe" => "sv", "dan" => "da", "nor" => "no", "fin" => "fi", "pol" => "pl", _ => code
-    };
-
-    private static string TwoToThree(string code) => code switch
-    {
-        "en" => "eng", "ja" => "jpn", "fr" => "fre", "de" => "ger", "es" => "spa", "it" => "ita",
-        "nl" => "dut", "ru" => "rus", "pt" => "por", "zh" => "chi", "ko" => "kor", "sv" => "swe",
-        "da" => "dan", "no" => "nor", "fi" => "fin", "pl" => "pol", _ => code
     };
 }

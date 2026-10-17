@@ -19,6 +19,9 @@ public sealed class FileFilterState
 
     public string Message { get; set; } = string.Empty;
 
+    // qBittorrent turned the sign-in down, so Medic Profiles waits for the password to change or for Try again.
+    public bool Refused { get; set; }
+
     public bool ListOn { get; set; }
 
     // Which of Medic Profiles' patterns are in the list.
@@ -61,7 +64,15 @@ public class QbitFileFilter
         return string.IsNullOrWhiteSpace(url) ? null : url.Trim().TrimEnd('/');
     }
 
-    public async Task<FileFilterState> StateAsync(CancellationToken ct)
+    public Task<FileFilterState> StateAsync(CancellationToken ct) => StateAsync(retry: false, ct);
+
+    /// <summary>
+    /// The state, signing in once even after a refusal: for the owner who fixed the password in qBittorrent,
+    /// or waited out its ban, since Medic Profiles can't tell that on its own.
+    /// </summary>
+    public Task<FileFilterState> RetryAsync(CancellationToken ct) => StateAsync(retry: true, ct);
+
+    private async Task<FileFilterState> StateAsync(bool retry, CancellationToken ct)
     {
         var state = new FileFilterState { Configured = BaseUrl() is not null };
         if (!state.Configured)
@@ -70,9 +81,10 @@ public class QbitFileFilter
             return state;
         }
 
-        var (prefs, error) = await WithSessionAsync(client => GetPrefsAsync(client, ct), ct).ConfigureAwait(false);
+        var (prefs, error, refused) = await WithSessionAsync(client => GetPrefsAsync(client, ct), retry, ct).ConfigureAwait(false);
         if (prefs is null)
         {
+            state.Refused = refused;
             state.Message = error.Length > 0 ? error : "qBittorrent answered, but didn't return its settings.";
             return state;
         }
@@ -90,10 +102,10 @@ public class QbitFileFilter
     /// removed, so entries the owner had (even the same ones) stay, and unblocking switches the list back
     /// on or off as it was before.
     /// </summary>
-    public async Task<(bool Ok, string Message)> ApplyAsync(bool block, bool archives, CancellationToken ct)
+    public async Task<(bool Ok, string Message, bool Refused)> ApplyAsync(bool block, bool archives, CancellationToken ct)
     {
-        var (result, error) = await WithSessionAsync(client => ApplyWithAsync(client, block, archives, ct), ct).ConfigureAwait(false);
-        return result ?? (false, error);
+        var (result, error, refused) = await WithSessionAsync(client => ApplyWithAsync(client, block, archives, ct), retry: false, ct).ConfigureAwait(false);
+        return result is { } done ? (done.Ok, done.Message, false) : (false, error, refused);
     }
 
     private async Task<(bool Ok, string Message)?> ApplyWithAsync(HttpClient client, bool block, bool archives, CancellationToken ct)
@@ -204,18 +216,21 @@ public class QbitFileFilter
     // ---------- Signing in ----------
 
     // One signed-in session is kept and reused, so opening the page doesn't sign in each time: every failed
-    // sign-in counts towards qBittorrent's ban on this server's address. A refused password isn't tried again
-    // for a while, unless the address, user name or password change, or the settings are saved again.
+    // sign-in counts towards qBittorrent's ban on this server's address (5 by default). Saving the settings,
+    // Test and the other buttons all reload this state, so a refusal can't be retried on its own: after the
+    // first it waits 5 minutes, after the second it stops. New details are tried at once, and Try again
+    // spends exactly one sign-in.
     private static readonly TimeSpan SessionLife = TimeSpan.FromMinutes(20);
     private static readonly TimeSpan RefusedPause = TimeSpan.FromMinutes(5);
+    private const int RefusalsBeforeStopping = 2;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private HttpClient? _session;
     private string _sessionBase = string.Empty;
-    private int _signedInAs; // the address, user name and password the session, or the refusal, is for
+    private int _signedInAs; // the address, user name and password the session, or the refusals, are for
     private DateTime _sessionUntil;
     private string? _refusal;
+    private int _refusals;
     private DateTime _refusedUntil;
-    private volatile bool _retryNow;
 
     /// <summary>qBittorrent answered 403 to a call after signing in: the session has ended on its side.</summary>
     private sealed class SessionExpiredException : Exception
@@ -224,21 +239,22 @@ public class QbitFileFilter
 
     /// <summary>
     /// Runs work with a signed-in session; if qBittorrent has dropped the session, signs in once more and runs it again.
-    /// Returns the work's result, or default and the reason it couldn't run.
+    /// Returns the work's result, or default, the reason it couldn't run and whether qBittorrent refused the sign-in.
+    /// With retry, a refused sign-in is tried once more.
     /// </summary>
-    private async Task<(T? Result, string Error)> WithSessionAsync<T>(Func<HttpClient, Task<T>> work, CancellationToken ct)
+    private async Task<(T? Result, string Error, bool Refused)> WithSessionAsync<T>(Func<HttpClient, Task<T>> work, bool retry, CancellationToken ct)
     {
         for (int attempt = 0; ; attempt++)
         {
-            var (client, error) = await SessionAsync(ct).ConfigureAwait(false);
+            var (client, error, refused) = await SessionAsync(retry && attempt == 0, ct).ConfigureAwait(false);
             if (client is null)
             {
-                return (default, error);
+                return (default, error, refused);
             }
 
             try
             {
-                return (await work(client).ConfigureAwait(false), string.Empty);
+                return (await work(client).ConfigureAwait(false), string.Empty, false);
             }
             catch (SessionExpiredException) when (attempt == 0)
             {
@@ -247,23 +263,23 @@ public class QbitFileFilter
             catch (SessionExpiredException)
             {
                 await ForgetSessionAsync().ConfigureAwait(false);
-                return (default, "qBittorrent keeps ending Medic Profiles' session. Check the user name and password.");
+                return (default, "qBittorrent keeps ending Medic Profiles' session. Check the user name and password.", false);
             }
             catch (Exception ex) when (ex is HttpRequestException || (ex is TaskCanceledException && !ct.IsCancellationRequested))
             {
                 _logger.LogInformation("Medic Profiles: couldn't reach qBittorrent: {Message}", ex.Message);
                 await ForgetSessionAsync().ConfigureAwait(false);
-                return (default, "Couldn't reach qBittorrent at that address from the Jellyfin server.");
+                return (default, "Couldn't reach qBittorrent at that address from the Jellyfin server.", false);
             }
         }
     }
 
-    private async Task<(HttpClient? Client, string Error)> SessionAsync(CancellationToken ct)
+    private async Task<(HttpClient? Client, string Error, bool Refused)> SessionAsync(bool retry, CancellationToken ct)
     {
         string? baseUrl = BaseUrl();
         if (baseUrl is null)
         {
-            return (null, "Add qBittorrent's address first.");
+            return (null, "Add qBittorrent's address first.", false);
         }
 
         string user = Plugin.Instance?.Configuration.QbitUser ?? string.Empty;
@@ -276,49 +292,48 @@ public class QbitFileFilter
             var now = DateTime.UtcNow;
             if (who == _signedInAs && _session is not null && now < _sessionUntil)
             {
-                return (_session, string.Empty);
+                return (_session, string.Empty, false);
             }
 
-            if (_retryNow)
+            if (who != _signedInAs)
             {
-                _retryNow = false;
+                _refusals = 0;
                 _refusal = null;
             }
-
-            if (who == _signedInAs && _refusal is not null && now < _refusedUntil)
+            else if (_refusal is not null && !retry && (_refusals >= RefusalsBeforeStopping || now < _refusedUntil))
             {
-                return (null, _refusal);
+                return (null, _refusal, true);
             }
 
             await SignOutLockedAsync().ConfigureAwait(false);
             _signedInAs = who;
-            _refusal = null;
             var (client, error, refused) = await SignInAsync(baseUrl, user, password, ct).ConfigureAwait(false);
             if (client is not null)
             {
                 _session = client;
                 _sessionBase = baseUrl;
                 _sessionUntil = now + SessionLife;
+                _refusals = 0;
+                _refusal = null;
             }
             else if (refused)
             {
-                _refusal = error;
+                _refusals++;
                 _refusedUntil = now + RefusedPause;
+                _refusal = error + (_refusals >= RefusalsBeforeStopping
+                    ? " After two refusals Medic Profiles has stopped signing in, since qBittorrent blocks this server after 5 by default."
+                    : " Medic Profiles won't try again for 5 minutes, so qBittorrent doesn't block this server.")
+                    + " A new password saved here is tried at once. If you fixed it in qBittorrent, press Try qBittorrent again.";
+                error = _refusal;
             }
 
-            return (client, error);
+            return (client, error, refused);
         }
         finally
         {
             _gate.Release();
         }
     }
-
-    /// <summary>
-    /// Lets the next call sign in again straight away, even with the same user name and password. Called when the
-    /// settings are saved, so fixing the password in qBittorrent (or waiting out its ban) and saving retries at once.
-    /// </summary>
-    public void ForgetRefusal() => _retryNow = true;
 
     private async Task ForgetSessionAsync()
     {
@@ -378,13 +393,13 @@ public class QbitFileFilter
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 client.Dispose();
-                return (null, "qBittorrent has blocked sign-ins from this server after too many wrong passwords. Wait for the ban to end (an hour by default) or restart qBittorrent, then save the settings again.", true);
+                return (null, "qBittorrent has blocked sign-ins from this server after too many wrong passwords. Its ban lasts an hour by default, or until qBittorrent restarts.", true);
             }
 
             if (!response.IsSuccessStatusCode || body.Contains("Fails", StringComparison.OrdinalIgnoreCase))
             {
                 client.Dispose();
-                return (null, "qBittorrent didn't accept the user name and password. Medic Profiles won't try them again for 5 minutes, so qBittorrent doesn't block this server. Saving the settings tries again straight away.", true);
+                return (null, "qBittorrent didn't accept the user name and password.", true);
             }
 
             return (client, string.Empty, false);
