@@ -3,7 +3,7 @@
 All notable changes to Medic Profiles are recorded here. The newest version is at the top.
 Jellyfin Medic and Medic Picks have their own changelogs.
 
-## Unreleased
+## [1.1.4] – 2026-10-17
 
 ### Changed
 - **A refused qBittorrent sign-in is only tried again when you ask.** Since 1.1.3, saving the settings, Test, Remove key, Block and Stop blocking each tried a refused password again at once. qBittorrent bans the server's address after 5 failed sign-ins by default, so a few ordinary clicks with a wrong password got Medic Profiles banned. Those buttons no longer sign in after a refusal. A new password typed in Medic Profiles is still tried at once. If you fixed the password in qBittorrent, or its ban has ended, the new **Try qBittorrent again** button signs in exactly once per click. After one refusal Medic Profiles waits 5 minutes before trying the same details again; after two it stops until the password changes or you press the button.
