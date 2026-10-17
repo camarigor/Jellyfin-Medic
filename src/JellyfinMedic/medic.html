@@ -736,14 +736,34 @@
             };
             const HATCH = 'repeating-linear-gradient(135deg, #ffb648 0 6px, #c97a18 6px 12px)';
 
-            // The server's offset from UTC in minutes, once the report or the Dashboard has said. Times are then shown on the
-            // server's clock, the one the schedule and Medic's own messages use, rather than this browser's.
+            // The server's time zone and its offset from UTC in minutes now, once the report or the Dashboard has said. Times
+            // are then shown on the server's clock, the one the schedule and Medic's own messages use, rather than this
+            // browser's. The zone gives a past time its own day's offset across a daylight saving change; today's offset is
+            // only for a browser that doesn't know the zone.
+            let serverZone = null;
             let serverOffset = null;
+
+            // The zone's name as this browser spells it, or null when it doesn't know the zone.
+            function knownZone(id) {
+                if (!id) return null;
+                try { return new Intl.DateTimeFormat('en-GB', { timeZone: id }).resolvedOptions().timeZone; } catch (e) { return null; }
+            }
+
+            const browserZone = knownZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
 
             function onServerClock(value) {
                 const d = new Date(value);
-                if (serverOffset === null || isNaN(d.getTime())) return { date: d, zone: undefined };
-                return { date: new Date(d.getTime() + serverOffset * 60000), zone: 'UTC' };
+                if (isNaN(d.getTime())) return { date: d, zone: undefined };
+                if (serverZone) return { date: d, zone: serverZone };
+                if (serverOffset !== null) return { date: new Date(d.getTime() + serverOffset * 60000), zone: 'UTC' };
+                return { date: d, zone: undefined };
+            }
+
+            // A moment written out on the server's clock with toLocaleString's options.
+            function onClock(value, options) {
+                const t = onServerClock(value);
+                if (isNaN(t.date.getTime())) return '';
+                return t.date.toLocaleString('en-GB', Object.assign({ timeZone: t.zone }, options));
             }
 
             let clock = '24';
@@ -787,15 +807,14 @@
             // A moment's hour and minute, on the server's clock when known.
             function fmtTime(value) {
                 const t = onServerClock(value);
-                return t.zone ? hm(t.date.getUTCHours() * 60 + t.date.getUTCMinutes()) : hm(t.date.getHours() * 60 + t.date.getMinutes());
+                if (isNaN(t.date.getTime())) return '';
+                const parts = new Intl.DateTimeFormat('en-GB', { timeZone: t.zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(t.date);
+                const part = function (type) { return Number(parts.find(function (p) { return p.type === type; }).value); };
+                return hm(part('hour') * 60 + part('minute'));
             }
 
             function fmtDateTime(value) {
-                const t = onServerClock(value);
-                const d = t.date;
-                if (isNaN(d.getTime())) return '';
-                return d.toLocaleString('en-GB', {
-                    timeZone: t.zone,
+                return onClock(value, {
                     day: 'numeric', month: 'short', year: 'numeric',
                     hour: clock === '12' ? 'numeric' : '2-digit', minute: '2-digit',
                     hourCycle: clock === '12' ? 'h12' : 'h23'
@@ -803,15 +822,21 @@
             }
 
             function fmtShort(value) {
-                const t = onServerClock(value);
-                const d = t.date;
-                if (isNaN(d.getTime())) return '';
-                return d.toLocaleString('en-GB', {
-                    timeZone: t.zone,
+                return onClock(value, {
                     weekday: 'short', day: 'numeric', month: 'short',
                     hour: clock === '12' ? 'numeric' : '2-digit', minute: '2-digit',
                     hourCycle: clock === '12' ? 'h12' : 'h23'
                 });
+            }
+
+            // The server's date of a moment, as in "since 3 Oct 2026".
+            function fmtDate(value, withYear) {
+                return onClock(value, withYear ? { day: 'numeric', month: 'short', year: 'numeric' } : { day: 'numeric', month: 'short' });
+            }
+
+            function sameServerDay(a, b) {
+                const day = { year: 'numeric', month: '2-digit', day: '2-digit' };
+                return onClock(a, day) === onClock(b, day);
             }
 
             function fmtDuration(seconds) {
@@ -1591,7 +1616,7 @@
                     try {
                         dash = await getJson('/JellyfinMedic/Dashboard');
                         dashAt = Date.now();
-                        learnOffset(pick(dash, 'UtcOffsetMinutes'));
+                        learnZone(pick(dash, 'UtcOffsetMinutes'), undefined, 'dash');
                         dashFailedAt = 0;
                         showStale();
                         renderDash();
@@ -1869,16 +1894,27 @@
 
                 function zoneNote() {
                     const offset = serverOffset;
-                    if (offset === undefined || offset === null || offset === -new Date().getTimezoneOffset()) return '';
+                    if (offset === null) return '';
+                    if (serverZone ? serverZone === browserZone : offset === -new Date().getTimezoneOffset()) return '';
                     const abs = Math.abs(offset);
-                    return 'Times are the server\'s (UTC' + (offset < 0 ? '-' : '+') + Math.floor(abs / 60) + (abs % 60 ? ':' + String(abs % 60).padStart(2, '0') : '') + ').';
+                    return 'Times are the server\'s (' + (serverZone && serverZone !== 'UTC' ? serverZone + ', ' : '') + 'UTC' + (offset < 0 ? '-' : '+') + Math.floor(abs / 60) + (abs % 60 ? ':' + String(abs % 60).padStart(2, '0') : '') + ').';
                 }
 
-                // Notes on the Schedule and History tabs too, as their times are the server's.
-                function learnOffset(offset) {
+                // The clock times are read on: the server's zone, else its offset now, else this browser's zone.
+                function clockKey() {
+                    return serverZone || (serverOffset !== null ? 'UTC' + serverOffset : browserZone);
+                }
+
+                // The Dashboard sends only the offset, so it leaves the report's zone in place. Notes on the Schedule and
+                // History tabs too, as their times are the server's. Whatever was already shown on another clock, as a tab
+                // that loaded before the report did, is drawn again; the caller draws its own data next.
+                function learnZone(offset, zoneId, caller) {
                     if (typeof offset !== 'number') return;
+                    const before = clockKey();
                     serverOffset = offset;
+                    if (zoneId !== undefined) serverZone = knownZone(zoneId);
                     page.querySelectorAll('.md-zone').forEach(function (n) { n.textContent = zoneNote(); n.hidden = !n.textContent; });
+                    if (clockKey() !== before) redrawTimes(caller);
                 }
 
                 function moveNowLine() {
@@ -2123,7 +2159,7 @@
                     }
                     const samples = pick(tx, 'Samples') || 0;
                     const since = pick(tx, 'Since');
-                    const sinceText = since ? ' since ' + new Date(since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+                    const sinceText = since ? ' since ' + fmtDate(since, true) : '';
                     const reportAt = pick(tx, 'MediaReportUtc');
                     // Worded as on the Media report tab, which lists the same log.
                     summary.textContent = samples
@@ -3665,34 +3701,42 @@
                 }
                 $('md-activity-go').addEventListener('click', function () { selectTab('tracks'); window.scrollTo(0, 0); });
 
+                // Kept so the week can be drawn again on the server's clock without asking once more.
+                let weekly = null;
+
                 async function loadWeekly() {
                     try {
-                        const w = await getJson('/JellyfinMedic/Weekly');
-                        const big = $('md-week-big');
-                        const box = $('md-week');
-                        box.innerHTML = '';
-                        const fixedList = pick(w, 'FixedIssues') || [], newList = pick(w, 'NewIssues') || [];
-                        const ignoredList = pick(w, 'IgnoredIssues') || [];
-                        const freed = pick(w, 'FreedTotal') || 0;
-                        big.textContent = freed > 0 ? tracksSize(freed) + ' freed' : (fixedList.length ? fixedList.length + ' fixed' : 'Quiet week');
-                        const since = pick(w, 'Since') ? new Date(pick(w, 'Since')).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : null;
-                        const line = function (t) { box.appendChild(el('p', null, t)); };
-                        if (since) line('Since ' + since + ':');
-                        line(fixedList.length + ' issue' + (fixedList.length === 1 ? '' : 's') + ' fixed, ' + newList.length + ' new' + (ignoredList.length ? ', ' + ignoredList.length + ' ignored' : '') + '.');
-                        const by = pick(w, 'FreedBy') || {};
-                        Object.keys(by).forEach(function (k) { line(k + ': ' + tracksSize(by[k]) + ' freed.'); });
-                        if (pick(w, 'Restarts')) line('Medic restarted Jellyfin ' + pick(w, 'Restarts') + ' time' + (pick(w, 'Restarts') === 1 ? '' : 's') + '.');
-                        line('Now: ' + (pick(w, 'NeedChanging') || 0) + ' need changing, ' + (pick(w, 'CouldBeBetter') || 0) + ' could be better.');
-                        if (newList.length || fixedList.length || ignoredList.length) {
-                            const d = el('details');
-                            d.appendChild(el('summary', null, 'What changed'));
-                            newList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'New: ' + fmtTimes(t))); });
-                            fixedList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'Fixed: ' + fmtTimes(t))); });
-                            ignoredList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'Ignored: ' + fmtTimes(t))); });
-                            box.appendChild(d);
-                        }
+                        weekly = await getJson('/JellyfinMedic/Weekly');
+                        renderWeekly();
                     } catch (e) {
                         $('md-week-big').textContent = '–';
+                    }
+                }
+
+                function renderWeekly() {
+                    const w = weekly;
+                    const big = $('md-week-big');
+                    const box = $('md-week');
+                    box.innerHTML = '';
+                    const fixedList = pick(w, 'FixedIssues') || [], newList = pick(w, 'NewIssues') || [];
+                    const ignoredList = pick(w, 'IgnoredIssues') || [];
+                    const freed = pick(w, 'FreedTotal') || 0;
+                    big.textContent = freed > 0 ? tracksSize(freed) + ' freed' : (fixedList.length ? fixedList.length + ' fixed' : 'Quiet week');
+                    const since = pick(w, 'Since') ? fmtDate(pick(w, 'Since'), false) : null;
+                    const line = function (t) { box.appendChild(el('p', null, t)); };
+                    if (since) line('Since ' + since + ':');
+                    line(fixedList.length + ' issue' + (fixedList.length === 1 ? '' : 's') + ' fixed, ' + newList.length + ' new' + (ignoredList.length ? ', ' + ignoredList.length + ' ignored' : '') + '.');
+                    const by = pick(w, 'FreedBy') || {};
+                    Object.keys(by).forEach(function (k) { line(k + ': ' + tracksSize(by[k]) + ' freed.'); });
+                    if (pick(w, 'Restarts')) line('Medic restarted Jellyfin ' + pick(w, 'Restarts') + ' time' + (pick(w, 'Restarts') === 1 ? '' : 's') + '.');
+                    line('Now: ' + (pick(w, 'NeedChanging') || 0) + ' need changing, ' + (pick(w, 'CouldBeBetter') || 0) + ' could be better.');
+                    if (newList.length || fixedList.length || ignoredList.length) {
+                        const d = el('details');
+                        d.appendChild(el('summary', null, 'What changed'));
+                        newList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'New: ' + fmtTimes(t))); });
+                        fixedList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'Fixed: ' + fmtTimes(t))); });
+                        ignoredList.forEach(function (t) { d.appendChild(el('p', 'so-small', 'Ignored: ' + fmtTimes(t))); });
+                        box.appendChild(d);
                     }
                 }
 
@@ -4527,7 +4571,7 @@
                     const tx = pick(st, 'Transcodes') || {};
                     const since = pick(tx, 'SinceUtc');
                     const top = pick(tx, 'Top') || [];
-                    const sinceText = since ? new Date(since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : null;
+                    const sinceText = since ? fmtDate(since, true) : null;
                     if (top.length === 0) {
                         $('md-media-tx-note').textContent = sinceText
                             ? 'Nothing has been caught transcoding since ' + sinceText + '. Medic checks playback every 5 minutes, so this fills in as people watch.'
@@ -4591,10 +4635,10 @@
                     return h + ' h ' + (m < 10 ? '0' : '') + m + ' min';
                 }
 
+                // On the server's clock like the rest, with the day when it isn't the server's today.
                 function tracksFinishTime(seconds) {
-                    const at = new Date(Date.now() + seconds * 1000);
-                    const sameDay = at.toDateString() === new Date().toDateString();
-                    return at.toLocaleString('en-GB', sameDay ? { hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+                    const now = Date.now(), at = now + seconds * 1000;
+                    return sameServerDay(at, now) ? fmtTime(at) : onClock(at, { weekday: 'short' }) + ' ' + fmtTime(at);
                 }
 
                 function tracksProgressText(p, running, total, done) {
@@ -4779,7 +4823,6 @@
                     try {
                         try {
                             report = await fetchReport();
-                            learnOffset(pick(report, 'UtcOffsetMinutes'));
                         } catch (err) {
                             console.error('Jellyfin Medic: report failed', err);
                             showStatus('The checks couldn\'t run. Check the Jellyfin log for Jellyfin Medic errors.', 'error');
@@ -4789,6 +4832,7 @@
                         try {
                             await ensurePluginPages();
                             hideStatus(checking);
+                            learnZone(pick(report, 'UtcOffsetMinutes'), pick(report, 'TimeZoneId'), 'report');
                             renderDashboard();
                             renderRecs();
                             if (settings) renderSettings();
@@ -4939,21 +4983,37 @@
                     });
                 }
 
+                // Everything shown with a time, for the other clock or once the server's zone is known. Skips the data
+                // whose loader is about to draw it anyway. Each part on its own: data a part can't draw was already
+                // reported when it was first drawn, and its error must neither stop the rest nor read as a failed load of
+                // the report or the Dashboard that brought the zone.
+                function redrawTimes(except) {
+                    [
+                        function () { if (report && except !== 'report') { renderDashboard(); renderRecs(); } },
+                        function () { if (cal) renderTimeline(); },
+                        function () { if (dash && except !== 'dash') renderDash(); },
+                        function () { if (live) { drawPanel(renderNow, 'md-cpu'); drawPanel(renderLoad, 'md-load-ffmpeg'); } },
+                        function () { if (history) renderHistory(); },
+                        function () { if (usage) renderUsage(); },
+                        function () { if (plugins) renderPlugins(); },
+                        function () { if (speedResult) renderSpeed(); },
+                        function () { if (iptv) renderIptv(); },
+                        function () { if (directory) renderDirectory(); },
+                        function () { if (tracksScan) renderTracksScan(); },
+                        function () { if (mediaStatus) renderMedia(); },
+                        function () { if (weekly) renderWeekly(); },
+                        function () { if (activeTab === 'schedule') { loadAudit(); loadBackups(); } }
+                    ].forEach(function (part) {
+                        try { part(); } catch (err) { console.error('Jellyfin Medic: could not redraw a part of the page', err); }
+                    });
+                }
+
                 page.querySelectorAll('.so-seg').forEach(function (b) {
                     b.addEventListener('click', function () {
                         clock = b.getAttribute('data-clock') === '12' ? '12' : '24';
                         try { window.localStorage.setItem(CLOCK_KEY, clock); } catch (e) { /* ignore */ }
                         showClock();
-                        if (report) { renderDashboard(); renderRecs(); }
-                        if (cal) renderTimeline();
-                        if (dash) renderDash();
-                        if (live) { drawPanel(renderNow, 'md-cpu'); drawPanel(renderLoad, 'md-load-ffmpeg'); }
-                        if (history) renderHistory();
-                        if (usage) renderUsage();
-                        if (plugins) renderPlugins();
-                        if (speedResult) renderSpeed();
-                        if (iptv) renderIptv();
-                        if (activeTab === 'schedule') loadAudit();
+                        redrawTimes();
                     });
                 });
                 showClock();

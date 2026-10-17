@@ -2213,6 +2213,131 @@ await check('Medic dashboard: Today moves with the clock in server time, and fet
     }
 });
 
+await check('Medic times: on the server\'s zone across a daylight saving change, before the report loads, in the finish estimate and a since date', async () => {
+    // The container runs in UTC, which has no daylight saving, so the answers say New York instead. The browser is in
+    // Tokyo, and its clock is fixed at 02:00 UTC on 17 Oct 2026: 22:00 on Friday 16 Oct in New York (UTC-4).
+    const zone = 'America/New_York', offset = -240;
+    const ctx = await browser.newContext({ locale: 'en-GB', timezoneId: 'Asia/Tokyo' });
+    await ctx.clock.setFixedTime(new Date('2026-10-17T02:00:00Z'));
+    try {
+        const p = await adminPage(ctx);
+        let release;
+        const held = new Promise((r) => { release = r; });
+        await p.route(REPORT, async (route) => {
+            const res = await route.fetch();
+            const json = await res.json();
+            await held;
+            await route.fulfill({ response: res, json: { ...json, TimeZoneId: zone, UtcOffsetMinutes: offset } });
+        });
+        await p.route('**/JellyfinMedic/Dashboard', async (route) => {
+            const res = await route.fetch();
+            await route.fulfill({ response: res, json: { ...(await res.json()), UtcOffsetMinutes: offset } });
+        });
+        // 12:00 UTC on 15 Jan is 07:00 in New York's winter time, an hour off at today's offset.
+        await p.route('**/JellyfinMedic/Schedule/GetRunHistory**', async (route) => {
+            const res = await route.fetch();
+            const json = await res.json();
+            const run = { TaskName: 'E2E winter run', Status: 'Completed', EndUtc: '2026-01-15T12:00:00Z', DurationSeconds: 5 };
+            await route.fulfill({ response: res, json: { ...json, Runs: [run, ...(json.Runs || [])] } });
+        });
+        // 03:30 UTC on 8 Mar is still 7 Mar in New York.
+        await p.route('**/JellyfinMedic/Weekly', async (route) => {
+            const res = await route.fetch();
+            await route.fulfill({ response: res, json: { ...(await res.json()), Since: '2026-03-08T03:30:00Z' } });
+        });
+        // An hour left: 23:00 in New York, 12:00 in Tokyo.
+        await p.route('**/JellyfinMedic/Tracks/Progress', (route) => route.fulfill({
+            json: { Running: true, DryRun: false, Total: 10, Done: 4, BytesTotal: 1e9, BytesDone: 4e8, SecondsLeft: 3600, Changed: 0, Recent: [] }
+        }));
+
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+        const gotIt = p.locator('#md-whatsnew-close');
+        for (let attempt = 1; ; attempt++) {
+            if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+            try {
+                await p.click('#JellyfinMedicPage .so-tab[data-tab="history"]', { timeout: 5000 });
+                break;
+            } catch (e) {
+                if (attempt === 3) throw e;
+            }
+        }
+        const winterCell = '#JellyfinMedicPage #md-hist-runs tr:first-child td:first-child';
+        await p.waitForFunction((sel) => /15 Jan/.test(document.querySelector(sel)?.textContent || ''), winterCell, { timeout: 30000 });
+        const early = await p.textContent(winterCell);
+        release();
+        await p.waitForFunction((sel) => /07:00/.test(document.querySelector(sel)?.textContent || ''), winterCell, { timeout: 30000 })
+            .catch(async () => { throw new Error(`the winter run shows ${await p.textContent(winterCell)}, not 07:00 New York time (before the report: ${early})`); });
+        const note = await p.textContent('#JellyfinMedicPage .so-tabpanel[data-panel="history"] .md-zone');
+        expect(note.includes(zone), 'the History note does not name the server\'s zone: ' + note);
+
+        // The banner asks every 4 seconds, so give it two rounds after the report.
+        const activityText = () => p.textContent('#JellyfinMedicPage #md-activity-text');
+        await p.waitForFunction(() => /done around 23:00\b/.test(document.querySelector('#JellyfinMedicPage #md-activity-text')?.textContent || ''), null, { timeout: 10000 })
+            .catch(async () => { throw new Error('the finish estimate is not on the server\'s clock: ' + await activityText()); });
+        const activity = await activityText();
+
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+        await p.waitForFunction(() => /^Since /.test(document.querySelector('#JellyfinMedicPage #md-week p')?.textContent || ''), null, { timeout: 30000 });
+        const since = await p.textContent('#JellyfinMedicPage #md-week p');
+        expect(since === 'Since 7 Mar:', 'the week\'s since date is not the server\'s: ' + since);
+        const real = await ok('/JellyfinMedic/Report');
+        expect(typeof real.TimeZoneId === 'string' && real.TimeZoneId, 'the report does not say the server\'s zone: ' + real.TimeZoneId);
+        return `winter run ${early} before the report, then on New York time; ${activity.match(/done around [^·]*/)[0].trim()}; ${since}; the container says ${real.TimeZoneId}`;
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic times: a page error while redrawing for the server\'s clock is not reported as the Dashboard or the checks failing', async () => {
+    // History's data makes it throw whenever it's drawn. The Dashboard and then the report are let through once History
+    // is on screen, and each moves the page to the server's clock, which draws History again.
+    const ctx = await browser.newContext({ locale: 'en-GB', timezoneId: 'Asia/Tokyo' });
+    try {
+        const p = await adminPage(ctx);
+        const gate = () => { let open; const shut = new Promise((r) => { open = r; }); return { open, shut }; };
+        const dashGate = gate(), reportGate = gate();
+        await p.route('**/JellyfinMedic/Dashboard', async (route) => { const res = await route.fetch(); await dashGate.shut; await route.fulfill({ response: res }); });
+        await p.route(REPORT, async (route) => { const res = await route.fetch(); await reportGate.shut; await route.fulfill({ response: res }); });
+        await p.route('**/JellyfinMedic/Schedule/GetRunHistory**', (route) => route.fulfill({ json: { Summary: [], Runs: 'not a list' } }));
+        await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
+        await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+        await p.evaluate(() => {
+            const s = document.querySelector('#JellyfinMedicPage #so-status');
+            window.e2eStatuses = [];
+            new MutationObserver(() => { if (!s.hidden) window.e2eStatuses.push(s.textContent); }).observe(s, { childList: true, characterData: true, subtree: true, attributes: true });
+        });
+        const historyRead = p.waitForResponse(/\/JellyfinMedic\/Schedule\/GetRunHistory/, { timeout: 30000 });
+        const gotIt = p.locator('#md-whatsnew-close');
+        for (let attempt = 1; ; attempt++) {
+            if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+            try {
+                await p.click('#JellyfinMedicPage .so-tab[data-tab="history"]', { timeout: 5000 });
+                break;
+            } catch (e) {
+                if (attempt === 3) throw e;
+            }
+        }
+        await historyRead;
+        await p.waitForTimeout(300);
+        const zoneNote = () => p.textContent('#JellyfinMedicPage .so-tabpanel[data-panel="history"] .md-zone');
+        dashGate.open();
+        await p.waitForFunction(() => /server's/.test(document.querySelector('#JellyfinMedicPage .so-tabpanel[data-panel="history"] .md-zone')?.textContent || ''), null, { timeout: 30000 })
+            .catch(async () => { throw new Error('the Dashboard\'s offset never reached the page: ' + await zoneNote()); });
+        await p.waitForTimeout(500);
+        reportGate.open();
+        await p.waitForFunction(() => /^Last checked/.test(document.querySelector('#JellyfinMedicPage #md-checked')?.textContent || '') ||
+            window.e2eStatuses.some((t) => /checks couldn't run|couldn't show their results/.test(t)), null, { timeout: 60000 });
+        const checked = await p.textContent('#JellyfinMedicPage #md-checked');
+        const statuses = await p.evaluate(() => window.e2eStatuses);
+        expect(!statuses.some((t) => /Couldn't load the Dashboard|checks couldn't run|couldn't show their results/.test(t)), 'a redraw error was reported as a failed load: ' + statuses.join(' | '));
+        expect(/^Last checked/.test(checked), 'the report was not shown: ' + checked);
+        return `${statuses.length} messages, none a failed load; ${checked}`;
+    } finally {
+        await ctx.close();
+    }
+});
+
 await check('Medic dashboard: Details on a top issue opens Checks at that finding, whatever filter Checks was on', async () => {
     const folders = await ok('/Library/VirtualFolders');
     const movies = folders.find((f) => f.Name === 'Movies');
@@ -2290,6 +2415,9 @@ await check('Dashboard panels: a panel that fails to draw says so, and the panel
     try {
         await medicTab('dashboard', true);
         await page.waitForFunction(() => /Couldn't show this panel/.test(document.getElementById('md-today-summary')?.textContent || ''), null, { timeout: 30000 });
+        // The answered Dashboard is drawn long before the report, which runs the checks, comes back: its "Checking your
+        // setup" is no error, so the banner is read once the report has come back.
+        await reportOutcome(page);
         const seen = await page.evaluate(() => ({
             later: ['md-net-big', 'md-busy-summary', 'md-people-big'].map((id) => document.getElementById(id).textContent),
             banner: (() => { const b = document.querySelector('#JellyfinMedicPage #so-status'); return b && !b.hidden ? b.textContent : ''; })()
