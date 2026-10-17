@@ -2184,6 +2184,61 @@ await check('Dashboard panels: a task that runs all day gets one line under Toda
     }
 });
 
+await check('Dashboard panels: Today draws a cancelled run as cancelled, not as a normal run', async () => {
+    const data = await ok('/JellyfinMedic/Dashboard');
+    const run = { TaskId: 'e2e-cancelled', TaskName: 'Fixture cancelled', StartMinutes: 120, EndMinutes: 150, Status: 'Cancelled', ErrorMessage: null };
+    await page.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: { ...data, Today: { ...data.Today, Actual: [...data.Today.Actual, run] } } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForFunction(() => Array.from(document.querySelectorAll('#md-day .md-actual')).some((b) => /Fixture cancelled/.test(b.getAttribute('aria-label') || b.title || '')), null, { timeout: 30000 });
+        const block = await page.evaluate(() => {
+            const b = Array.from(document.querySelectorAll('#md-day .md-actual')).find((x) => /Fixture cancelled/.test(x.getAttribute('aria-label') || x.title || ''));
+            return { stopped: b.classList.contains('md-run-stopped'), text: b.textContent };
+        });
+        expect(block.stopped && block.text === 'cancelled', 'the cancelled run: ' + JSON.stringify(block));
+        return 'drawn as cancelled';
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard');
+    }
+});
+
+await check('Dashboard panels: when the live readings stop updating, the Dashboard says so, and the note goes when they come back', async () => {
+    await page.route('**/JellyfinMedic/Dashboard/Live', (route) => route.fulfill({ status: 500, body: '' }));
+    let routed = true;
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForSelector('#md-stale:not([hidden])', { timeout: 30000 });
+        const note = await page.textContent('#md-stale');
+        expect(/live readings .*stopped updating/.test(note), 'note: ' + note);
+        await page.unroute('**/JellyfinMedic/Dashboard/Live');
+        routed = false;
+        await page.waitForSelector('#md-stale[hidden]', { state: 'attached', timeout: 30000 });
+        return note;
+    } finally {
+        if (routed) await page.unroute('**/JellyfinMedic/Dashboard/Live');
+    }
+});
+
+await check('Medic settings: a blank FFmpeg threads box saves as automatic, and "Fixed it" answers with a body', async () => {
+    const before = await ok('/JellyfinMedic/MedicSettings');
+    try {
+        await medicTab('tracks', true);
+        await page.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 30000 });
+        await page.fill('#md-tracks-threads', '');
+        await page.click('#md-tracks-save');
+        await page.waitForFunction(() => /Saved/.test(document.getElementById('md-tracks-saved')?.textContent || ''), null, { timeout: 30000 });
+        const saved = await ok('/JellyfinMedic/MedicSettings');
+        expect(saved.TracksFfmpegThreads === 0, 'saved threads: ' + saved.TracksFfmpegThreads);
+        const shown = await page.inputValue('#md-tracks-threads');
+        expect(shown === '0', 'the box shows ' + JSON.stringify(shown));
+        const reset = await api('POST', '/JellyfinMedic/Logs/ResetCount');
+        expect(reset.status === 200 && reset.json?.Reset === true, `reset: ${reset.status} ${reset.text}`);
+        return 'saved as 0, shown back; reset answered ' + reset.text;
+    } finally {
+        await api('POST', '/JellyfinMedic/MedicSettings', before);
+    }
+});
+
 await check('Dashboard panels: the 15-second refresh leaves alone what has not changed, the keyboard\'s place on Today and the paused list', async () => {
     const live = await ok('/JellyfinMedic/Dashboard/Live');
     const paused = [{ TaskId: 'e2e-fixture-trickplay', TaskName: 'Fixture trickplay', StoppedUtc: new Date().toISOString() }];

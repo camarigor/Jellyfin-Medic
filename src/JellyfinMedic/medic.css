@@ -262,6 +262,8 @@
 #JellyfinMedicPage .md-tl-avoid { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, rgba(255,255,255,0.05) 0 6px, transparent 6px 12px); pointer-events: none; }
 #JellyfinMedicPage .md-tl-grid { position: absolute; top: 0; bottom: 0; width: 1px; background: #2a2d34; pointer-events: none; }
 #JellyfinMedicPage .md-tl-block { position: absolute; height: 26px; box-sizing: border-box; border: none; border-radius: 5px; padding: 0 6px; font-size: 0.72em; line-height: 26px; font-weight: 500; font-family: inherit; color: #111317; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+/* The chosen block: more than a ring, which is hard to see on light colours. */
+#JellyfinMedicPage .md-tl-block.is-selected { font-weight: 700; text-decoration: underline; text-underline-offset: 3px; filter: brightness(1.15); z-index: 2; }
 #JellyfinMedicPage .md-tl-note { font-size: 0.72em; color: #9aa1ac; }
 #JellyfinMedicPage .md-tl-now { position: absolute; top: 20px; bottom: 0; width: 2px; margin-left: -1px; background: #ff4040; pointer-events: none; }
 #JellyfinMedicPage .md-tl-now-label { position: absolute; top: 0; transform: translateX(-50%); background: #c62828; color: #fff; font: 600 0.72em/18px ui-monospace, monospace; padding: 0 6px; border-radius: 4px; white-space: nowrap; pointer-events: none; }

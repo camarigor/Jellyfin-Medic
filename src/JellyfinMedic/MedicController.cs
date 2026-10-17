@@ -346,17 +346,19 @@ public class MedicController : ControllerBase
 
     /// <summary>Pauses the run once the files already in progress finish.</summary>
     [HttpPost("Tracks/Pause")]
-    public ActionResult TracksPause()
+    public ActionResult<object> TracksPause()
     {
         TrackCleaner.Pause();
-        return NoContent();
+        // A body, as the page's requests expect JSON and take an empty answer as a failure.
+        return Ok(new { Paused = true });
     }
 
     [HttpPost("Tracks/Resume")]
-    public ActionResult TracksResume()
+    public ActionResult<object> TracksResume()
     {
         TrackCleaner.Resume();
-        return NoContent();
+        // A body, as the page's requests expect JSON and take an empty answer as a failure.
+        return Ok(new { Paused = false });
     }
 
     [HttpGet("Tracks/Progress")]
@@ -824,10 +826,11 @@ public class MedicController : ControllerBase
 
     /// <summary>"Fixed it": starts counting repeated log errors again from now.</summary>
     [HttpPost("Logs/ResetCount")]
-    public ActionResult LogsResetCount()
+    public ActionResult<object> LogsResetCount()
     {
         LogScanner.ResetCount(_paths.PluginConfigurationsPath);
-        return NoContent();
+        // A body, as the page's requests expect JSON and take an empty answer as a failure.
+        return Ok(new { Reset = true });
     }
 
     /// <summary>Disk space that can usually be freed safely.</summary>
