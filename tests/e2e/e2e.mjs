@@ -1240,6 +1240,58 @@ await check('Medic Posters previews a library cover, wide, without changing the 
     return `${preview.json.title}, ${w} × ${h}, ${Math.round(preview.json.bytes / 1024)} KB`;
 });
 
+await check('Medic Posters previews with the settings on screen, uses a preview, makes only covers when asked, and leaves out an unticked library', async () => {
+    const gifSize = (bytes) => [bytes.readUInt16LE(6), bytes.readUInt16LE(8)];
+    try {
+        // Unsaved settings: a small one-moment poster, and the saved width stays as it was.
+        const found = await api('GET', '/MedicPosters/Titles?q=sample');
+        expect(found.status === 200 && found.json.length >= 1, 'no titles found for "sample": ' + found.text.slice(0, 200));
+        const preview = await api('POST', '/MedicPosters/Preview', { itemId: found.json[0].id, settings: { width: 160, moments: 1 } });
+        expect(preview.json?.ok && preview.json.itemId === found.json[0].id, 'preview: ' + preview.text.slice(0, 300));
+        const img = Buffer.from(await (await api('GET', '/MedicPosters/Preview/Image', undefined, true)).arrayBuffer());
+        const [w, h] = gifSize(img);
+        expect(w === 160 && h === 240, `the preview ignored the settings on screen: ${w} × ${h}`);
+        let s = (await api('GET', '/MedicPosters/Status')).json;
+        expect(s.settings.width === 240 && s.settings.moments === 3, 'previewing saved the settings: ' + JSON.stringify(s.settings));
+        const before = s.estimate;
+        expect(before.postersToMake >= 12 && before.posterRate === 0.05, 'estimate before any were made: ' + JSON.stringify(before));
+
+        // "Use this one" puts that preview on that film, and the estimate learns from it.
+        const use = await api('POST', '/MedicPosters/Preview/Use', {});
+        expect(use.json?.ok && use.json.itemId === found.json[0].id, 'use: ' + use.text);
+        const served = await api('GET', `/Items/${found.json[0].id}/Images/Primary?fillHeight=300`, undefined, true);
+        const servedBytes = Buffer.from(await served.arrayBuffer());
+        expect(served.status === 200 && gifSize(servedBytes)[0] === 160, 'the film didn\'t get the previewed poster: ' + served.status);
+        s = (await api('GET', '/MedicPosters/Status')).json;
+        expect(s.made === 1 && s.estimate.postersToMake === before.postersToMake - 1 && s.estimate.bytesNow > 0 && s.estimate.posterRate !== 0.05,
+            'after using the preview: ' + JSON.stringify(s.estimate));
+
+        // Library covers on their own: no posters are made.
+        const started = s.lastRun?.startedUtc;
+        const run = await api('POST', '/MedicPosters/Run?kind=cover');
+        expect(run.status === 202, 'Run?kind=cover returned ' + run.status);
+        for (let i = 0; i < 90; i++) {
+            await sleep(2000);
+            s = (await api('GET', '/MedicPosters/Status')).json;
+            if (!s.running && s.lastRun?.startedUtc !== started && s.lastRun?.finishedUtc) break;
+        }
+        expect(s.coversMade >= 1 && s.made === 1, `a covers-only run made ${s.coversMade} covers and left ${s.made} posters`);
+
+        // Unticking the library leaves it, and everything in it, alone.
+        const movies = s.libraries[0];
+        const filmsBefore = s.films;
+        await api('POST', '/MedicPosters/RestoreAll');
+        await api('POST', '/MedicPosters/Settings', { libraryIds: [], excludedLibraryIds: [movies.id] });
+        s = (await api('GET', '/MedicPosters/Status')).json;
+        expect(!s.chosenLibraries.some((l) => l.id === movies.id) && s.films < filmsBefore && s.estimate.covers === s.chosenLibraries.length,
+            'the left-out library is still used: ' + JSON.stringify({ chosen: s.chosenLibraries, films: s.films }));
+        return `preview ${w} × ${h}, then ${s.libraries.length - s.chosenLibraries.length} library left out`;
+    } finally {
+        await api('POST', '/MedicPosters/RestoreAll');
+        await api('POST', '/MedicPosters/Settings', { excludedLibraryIds: [] });
+    }
+});
+
 await check('Medic Posters makes an animated poster for each film, Jellyfin serves it still animated, and the originals come back', async () => {
     const run = await api('POST', '/MedicPosters/Run');
     expect(run.status === 202, 'Run returned ' + run.status + ' ' + run.text);

@@ -787,12 +787,16 @@ Found under Plugins -> Medic Posters. Settings are for administrators only.
 
   - "Make animated posters" scheduled task, nightly at 4 am to begin with:
     makes posters for films that don't have one yet.
-  - Make posters now, Make them all again, and Stop on the settings page,
-    with progress while it runs.
+  - Make posters now and Make all posters again, Make library covers now
+    and Make all covers again (each only its own kind), and Stop, with
+    progress while it runs.
+  - How much space they use now, and for each kind how many are left to
+    make and roughly how much they'll take, from the settings on screen.
   - Posters changed by hand (or by a metadata refresh that replaces images)
-    are left alone, unless you press Make them all again.
-  - Preview: a poster for a random film or series, or a cover for a random
-    library, with the current settings, and its size, without changing it.
+    are left alone, unless you make them all again.
+  - Preview: a poster for a film or series you pick, or a cover for a
+    library you pick (or random ones), with the settings on screen, saved
+    or not, and its size, without changing it. Use this one puts it on.
   - Films without a poster are listed with the reason (a stream, a disc
     folder, a missing file, or one FFmpeg can't read).
 
@@ -801,9 +805,11 @@ Found under Plugins -> Medic Posters. Settings are for administrators only.
 4.3  SETTINGS
 -------------------------------------------------------------------------------
 
-  - Which libraries: films, TV, home videos, music videos and mixed (all of
-    them if none are ticked).
-  - Size: 160 x 240, 200 x 300, 240 x 360 or 300 x 450.
+  - Which libraries: films, TV, home videos, music videos and mixed. All
+    are ticked; untick one (such as IPTV) to leave it alone. New libraries
+    are included.
+  - Posters and library covers each have their own settings:
+  - Size: posters 160 x 240 to 300 x 450, covers 320 x 180 to 640 x 360.
   - How many moments (1 to 6) and how long each plays (0.5 to 3 seconds).
   - Frames per second (6 to 15) and colours (48 to 256).
   - Title and frame on or off.

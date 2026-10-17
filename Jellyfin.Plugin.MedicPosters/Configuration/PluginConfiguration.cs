@@ -9,6 +9,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Libraries to make posters (and covers) for. Empty: every film, TV, home video and music video library.</summary>
     public string[] LibraryIds { get; set; } = Array.Empty<string>();
 
+    /// <summary>Libraries left alone, such as IPTV ones; new libraries are included until they're added here.</summary>
+    public string[] ExcludedLibraryIds { get; set; } = Array.Empty<string>();
+
     /// <summary>Poster width in pixels; the height is 1.5 times this. Jellyfin sends GIF posters at full size, so smaller loads faster.</summary>
     public int Width { get; set; } = 240;
 
@@ -35,4 +38,22 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Library cover width in pixels; covers are 16:9, like Jellyfin's library cards.</summary>
     public int CoverWidth { get; set; } = 480;
+
+    /// <summary>How many moments each library cover cuts between; covers have their own settings from 1.2.0.</summary>
+    public int CoverMoments { get; set; } = 3;
+
+    /// <summary>How long each moment of a cover plays, in tenths of a second.</summary>
+    public int CoverMomentTenths { get; set; } = 10;
+
+    /// <summary>Frames per second for covers.</summary>
+    public int CoverFramesPerSecond { get; set; } = 8;
+
+    /// <summary>Colours in a cover's palette (16 to 256).</summary>
+    public int CoverColours { get; set; } = 96;
+
+    /// <summary>The library's name on its cover.</summary>
+    public bool CoverShowTitle { get; set; } = true;
+
+    /// <summary>The rounded white frame on covers.</summary>
+    public bool CoverShowFrame { get; set; } = true;
 }
