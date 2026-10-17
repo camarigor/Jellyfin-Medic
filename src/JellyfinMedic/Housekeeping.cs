@@ -6,7 +6,7 @@ namespace JellyfinMedic.Services;
 
 public class CleanupItem
 {
-    public string Kind { get; set; } = string.Empty; // "transcodes" or "orphan-metadata"
+    public string Kind { get; set; } = string.Empty; // "transcodes", "orphan-strm:<folder>" or "logs"
 
     public string Label { get; set; } = string.Empty;
 
@@ -31,9 +31,10 @@ public class CleanupReport
 }
 
 /// <summary>
-/// Finds disk space that can usually be freed safely: leftover transcode files, and metadata or
-/// image folders for items no longer in your library. Scanning is read-only; removing only happens
-/// when the admin confirms, and even then Jellyfin can rebuild anything it needs on the next scan.
+/// Finds disk space that can usually be freed safely: leftover transcode files, .strm files under
+/// Xtream Library's folders that Jellyfin has no item for, and old log files. Metadata and image
+/// folders, and Jellyfin's database, are never touched. Scanning is read-only; removing only happens
+/// when the admin confirms, and a re-sync in Xtream Library recreates any stream files still wanted.
 /// </summary>
 public static class Housekeeping
 {

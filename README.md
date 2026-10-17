@@ -118,7 +118,7 @@ Picks are rebuilt every night by the **Build personal picks** scheduled task. Pi
 1. Install **Medic Picks** from the catalogue and restart Jellyfin.
 2. Optional: for titles that aren't on your server yet, add a free TMDb API key in Medic Picks' settings, press **Save key**, and tick **Suggest titles that aren't on the server**.
 3. Optional: add your Seerr address (one your users can reach) and your Seerr API key, then press **Test Seerr**. Each person needs to have signed in to Seerr once with their Jellyfin login before their requests can go through.
-4. Untick children's accounts under **Who gets Discover picks**.
+4. Untick children's accounts under **Who gets Discover picks**. TMDb suggestions can't be filtered by parental controls, so accounts with any (a maximum rating, or blocked or allowed tags) start unticked and only get Discover once you tick them.
 5. Press **Build picks now**, or wait for the nightly run.
 6. Optional: the **My picks** menu link is on by default. You can rename it or turn it off in the same settings.
 
@@ -128,6 +128,7 @@ Each person needs a few watched titles before their picks appear.
 
 - Picks are built and stored on your server. Each user only sees their own, and their choices (genres, ignored titles and so on) are stored on the server with them.
 - Suggestions from outside your library are off by default. When an admin turns them on, the server sends TMDb the TMDb IDs of titles people have watched. No names or account details are sent.
+- Posters for suggestions from outside your library and for My requests are loaded by each person's browser straight from TMDb's image server (image.tmdb.org), so TMDb sees that person's IP address and which posters they load.
 - My requests is read from Seerr on the server, asking only for the signed-in person's own Seerr account, so nobody sees anyone else's requests. Only admins see everyone's requests waiting for approval, and who asked.
 - The TMDb and Seerr keys are stored separately from the plugin's other settings, only admins can read them, and they never reach anyone's browser. Requests are made on the server, as the person who pressed Request.
 
@@ -162,12 +163,13 @@ The keys are kept on the server in their own file, only admins can use them, and
 - **Server load is totals only.** On Linux, Medic notes how busy the whole machine is every 5 minutes (CPU, memory and disk, from the totals in /proc) and keeps them as averages by hour of the week. It never looks at which program, container or app is using them.
 - **No passwords are ever read, stored or sent.** Medic deliberately does not test password strength, because that can't be done without handling real passwords.
 - **What reaches the internet, and when:**
-  - Each time Medic's page builds its checks (when you open it, and after "Check again"), it checks that the addresses your server already uses still answer: each enabled plugin repository, the outside `.js` and `.css` files that JavaScript Injector scripts load, and the `@import`s in your theme's custom CSS. The results are kept for 10 minutes. It also asks Jellyfin which plugin updates are waiting, which Jellyfin looks up in those same repositories.
+  - Each time Medic's page builds its checks (when you open it, and after **Run checks**), it checks that the addresses your server already uses still answer: each enabled plugin repository, the outside `.js` and `.css` files that JavaScript Injector scripts load, and the `@import`s in your theme's custom CSS. The results are kept for 10 minutes.
+  - Your plugin repositories are also contacted through Jellyfin's own plugin catalogue: the checks and the Dashboard's Updates tile ask Jellyfin which plugin updates are waiting, and opening the Plugin directory tab (or its "Check again") asks which plugins your catalogue offers. Each answer is kept for an hour.
   - The speed test (Cloudflare) and the "Is your server open to the internet?" check run only when you press their buttons. That check connects to the address you give; for an IP address it may ask portchecker.io instead, which gets only that address and port.
   - "Use my IP + 8096" asks a public IP service for your address: ipify, or if it doesn't answer, icanhazip.com and then checkip.amazonaws.com. The answer is kept for an hour.
   - Opening the Plugin directory tab fetches the public awesome-jellyfin plugin list.
   - None of these send your settings, files or accounts.
-  - Medic Picks contacts TMDb and Seerr only when an admin has set them up (see its own privacy notes). Medic Profiles contacts only the Sonarr, Radarr and qBittorrent addresses you give it.
+  - Medic Picks contacts TMDb and Seerr only when an admin has set them up, and each person's browser loads its outside-library posters from image.tmdb.org (see its own privacy notes). Medic Profiles contacts only the Sonarr, Radarr and qBittorrent addresses you give it. Medic Posters contacts nothing outside your server: it reads your video files with Jellyfin's own FFmpeg, and its font is built in.
 - **The "help improve Medic" export** masks passwords, keys, tokens, usernames and credentials in links before you ever see the file, and asks you to read it before sending. Sending it is always your choice. If anything personal reaches the maintainer, it's deleted and not used.
 
 ---
