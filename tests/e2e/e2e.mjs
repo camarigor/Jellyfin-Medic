@@ -1166,6 +1166,58 @@ await check('Medic Picks shows only your own requests and keeps Discover-off acc
     }
 });
 
+await check('Medic Picks sends a person\'s request to Seerr as their own Seerr account', async () => {
+    // Without X-API-User, Seerr would make the request as its owner account, past that person's own limits.
+    const seerrServer = await fakeArr.startSeerr(P(18997));
+    const plugin = (await ok('/Plugins')).find((p) => p.Name === 'Medic Picks');
+    const cfg = await ok(`/Plugins/${plugin.Id}/Configuration`);
+    const name = 'e2e-seerr-requester';
+    const device = AUTH.replace('medic-e2e', name);
+    const made = await api('POST', '/Users/New', { Name: name, Password: 'e2e-pass' });
+    expect(made.status === 200, 'user not created: ' + made.text);
+    try {
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, {
+            ...cfg, JellyseerrUrl: `http://host.docker.internal:${P(18997)}`, ShowRequests: true, SeerrDirectRequests: true,
+            EnableDiscover: true, DiscoverDisabledUserIds: []
+        });
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: 'e2e-seerr-key' });
+        // This person is Seerr user 77; everyone else (the admin too) is 42.
+        fakeArr.seerr.accounts[made.json.Id.replace(/-/g, '').toLowerCase()] = 77;
+        const signIn = await fetch(JF + '/Users/AuthenticateByName', {
+            method: 'POST',
+            headers: { Authorization: device, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ Username: name, Pw: 'e2e-pass' })
+        });
+        expect(signIn.status === 200, 'sign-in: ' + signIn.status);
+        const userToken = (await signIn.json()).AccessToken;
+        const request = async (body) => {
+            const res = await fetch(JF + '/MedicPicks/Request', {
+                method: 'POST',
+                headers: { Authorization: `${device}, Token="${userToken}"`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const text = await res.text();
+            expect(res.status === 200, `request ${JSON.stringify(body)}: ${res.status} ${text.slice(0, 200)}`);
+            return JSON.parse(text);
+        };
+        const film = await request({ TmdbId: 603, MediaType: 'movie' });
+        const series = await request({ TmdbId: 1399, MediaType: 'tv' });
+        expect(film.status === 'requested' && series.status === 'requested', `answers: ${JSON.stringify(film)} ${JSON.stringify(series)}`);
+
+        const seen = fakeArr.seerr.created.map((c) => `${JSON.stringify(c.body)} as ${c.asUser}`).join(', ');
+        expect(seen === '{"mediaType":"movie","mediaId":603} as 77, {"mediaType":"tv","mediaId":1399,"seasons":"all"} as 77', 'Seerr saw: ' + seen);
+        expect(fakeArr.seerr.created.every((c) => (c.contentType || '').startsWith('application/json')), 'content types: ' + fakeArr.seerr.created.map((c) => c.contentType).join(', '));
+        return seen;
+    } finally {
+        fakeArr.seerr.created.length = 0;
+        fakeArr.seerr.accounts = {};
+        await api('DELETE', `/Users/${made.json.Id}`);
+        await api('POST', `/Plugins/${plugin.Id}/Configuration`, cfg);
+        await api('POST', '/MedicPicks/Admin/SeerrKey', { Key: '' });
+        seerrServer.close();
+    }
+});
+
 await check('Medic Profiles connects to Sonarr', async () => {
     const saved = await api('POST', '/MedicProfiles/Settings', { SonarrUrl: ARR, SonarrKey: 'test-key', RadarrUrl: '' });
     expect(saved.status === 200 || saved.status === 204, 'saving settings ' + saved.status);

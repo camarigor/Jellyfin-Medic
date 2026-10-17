@@ -112,10 +112,12 @@ export function startQbit(port) {
     return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
 }
 
-// A pretend Seerr: every Jellyfin account is Seerr user 42, and it remembers which Seerr user each
-// approve or decline was made as (X-API-User). Its request list ignores ?requestedBy= on purpose and
-// always holds one request by user 42 and one by user 7, plus any a check adds to extraRequests.
-export const seerr = { decisions: [], extraRequests: [] };
+// A pretend Seerr: a Jellyfin account is the Seerr user a check lists in accounts (by its Jellyfin id
+// without dashes), and Seerr user 42 otherwise. It remembers which Seerr user each approve or decline was
+// made as (X-API-User), and every new request: its body and the user it was made as. Its request list ignores
+// ?requestedBy= on purpose and always holds one request by user 42 and one by user 7, plus any a check adds
+// to extraRequests.
+export const seerr = { decisions: [], extraRequests: [], accounts: {}, created: [] };
 
 const requests = [
     { id: 11, status: 1, type: 'movie', createdAt: '2026-10-01T10:00:00.000Z', media: { tmdbId: 550, mediaType: 'movie', status: 2 }, requestedBy: { id: 42 } },
@@ -124,30 +126,45 @@ const requests = [
 
 export function startSeerr(port) {
     const server = http.createServer((req, res) => {
-        const path = req.url.split('?')[0];
-        if (req.headers['x-api-key'] !== 'e2e-seerr-key') { res.writeHead(401); res.end(); return; }
-        res.setHeader('Content-Type', 'application/json');
-        if (req.method === 'GET' && path.startsWith('/api/v1/user/jellyfin/')) {
-            res.end(JSON.stringify({ id: 42, displayName: 'admin' }));
-            return;
-        }
-        if (req.method === 'GET' && path === '/api/v1/request') {
-            const results = [...requests, ...seerr.extraRequests];
-            res.end(JSON.stringify({ pageInfo: { results: results.length }, results }));
-            return;
-        }
-        const title = path.match(/^\/api\/v1\/movie\/(\d+)$/);
-        if (req.method === 'GET' && title) {
-            res.end(JSON.stringify({ id: Number(title[1]), title: 'Film ' + title[1], releaseDate: '2000-01-01' }));
-            return;
-        }
-        const decision = path.match(/^\/api\/v1\/request\/(\d+)\/(approve|decline)$/);
-        if (req.method === 'POST' && decision) {
-            seerr.decisions.push({ id: Number(decision[1]), action: decision[2], asUser: req.headers['x-api-user'] ?? null });
-            res.end(JSON.stringify({ id: Number(decision[1]), status: decision[2] === 'approve' ? 2 : 3 }));
-            return;
-        }
-        res.writeHead(404); res.end('{}');
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => answerSeerr(req, res, body));
     });
     return new Promise((resolve) => server.listen(port, HOST, () => resolve(server)));
+}
+
+function answerSeerr(req, res, body) {
+    const path = req.url.split('?')[0];
+    if (req.headers['x-api-key'] !== 'e2e-seerr-key') { res.writeHead(401); res.end(); return; }
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'GET' && path.startsWith('/api/v1/user/jellyfin/')) {
+        const jellyfinId = path.slice('/api/v1/user/jellyfin/'.length).replace(/-/g, '').toLowerCase();
+        res.end(JSON.stringify({ id: seerr.accounts[jellyfinId] ?? 42, displayName: 'admin' }));
+        return;
+    }
+    if (req.method === 'POST' && path === '/api/v1/request') {
+        let json = null;
+        try { json = JSON.parse(body); } catch { /* recorded as null, so a check sees it wasn't JSON */ }
+        seerr.created.push({ body: json, asUser: req.headers['x-api-user'] ?? null, contentType: req.headers['content-type'] ?? null });
+        res.writeHead(201);
+        res.end(JSON.stringify({ id: 100 + seerr.created.length, status: 1, type: json?.mediaType }));
+        return;
+    }
+    if (req.method === 'GET' && path === '/api/v1/request') {
+        const results = [...requests, ...seerr.extraRequests];
+        res.end(JSON.stringify({ pageInfo: { results: results.length }, results }));
+        return;
+    }
+    const title = path.match(/^\/api\/v1\/movie\/(\d+)$/);
+    if (req.method === 'GET' && title) {
+        res.end(JSON.stringify({ id: Number(title[1]), title: 'Film ' + title[1], releaseDate: '2000-01-01' }));
+        return;
+    }
+    const decision = path.match(/^\/api\/v1\/request\/(\d+)\/(approve|decline)$/);
+    if (req.method === 'POST' && decision) {
+        seerr.decisions.push({ id: Number(decision[1]), action: decision[2], asUser: req.headers['x-api-user'] ?? null });
+        res.end(JSON.stringify({ id: Number(decision[1]), status: decision[2] === 'approve' ? 2 : 3 }));
+        return;
+    }
+    res.writeHead(404); res.end('{}');
 }
