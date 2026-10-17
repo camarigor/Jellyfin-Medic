@@ -805,20 +805,32 @@ await check('track cleanup keeps the original of a file replaced between runs', 
         // Paths as the server sees them, inside its container.
         expect(changes.some((c) => c.Path.endsWith('/Upgraded (2021)/Upgraded (2021).mkv') && c.KeptOriginal?.endsWith('/Upgraded (2021)/.medic-originals/Upgraded (2021).mkv')), 'the change was not recorded: ' + JSON.stringify(changes.slice(0, 3)));
 
+        const audioTracks = async () => {
+            const item = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Upgraded&Fields=MediaStreams')).Items[0];
+            return { id: item?.Id, audio: (item?.MediaStreams || []).filter((m) => m.Type === 'Audio').length };
+        };
+        // Medic has Jellyfin re-read a file it cleaned. Jellyfin reads the tracks first and the file's date only
+        // when it saves, so a file replaced while that refresh runs is recorded with the new date and the old
+        // tracks, and from then on no refresh in Default mode reads it again. Wait for that refresh to finish.
+        let now = await audioTracks();
+        for (let i = 0; i < 30 && now.audio !== 1; i++) {
+            await sleep(1000);
+            now = await audioTracks();
+        }
+        expect(now.audio === 1, `Jellyfin did not re-read the cleaned file: it lists ${now.audio} audio tracks`);
+
         const upgrade = `${process.env.WORK}/upgrade.mkv`;
         makeFilm(upgrade, ['eng', 'fre'], 6);
         fs.renameSync(upgrade, file);
         const size = fs.statSync(file).size;
-        // Jellyfin still lists the cleaned file's one track, so nothing would plan it: have Jellyfin read it, as a scan would.
-        const id = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Upgraded')).Items[0].Id;
-        await api('POST', `/Items/${id}/Refresh?metadataRefreshMode=Default&imageRefreshMode=None&replaceAllMetadata=false`);
-        let audio = 0;
-        for (let i = 0; i < 30 && audio < 2; i++) {
+        // Jellyfin still lists the cleaned file's one track, so nothing would plan it: have Jellyfin read it, as a
+        // scan would. A full refresh reads the tracks whatever date Jellyfin has, so the ordering above can't hide it.
+        await api('POST', `/Items/${now.id}/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=None&replaceAllMetadata=false`);
+        for (let i = 0; i < 30 && now.audio !== 2; i++) {
             await sleep(2000);
-            const item = (await ok('/Items?Recursive=true&IncludeItemTypes=Movie&SearchTerm=Upgraded&Fields=MediaStreams')).Items[0];
-            audio = (item?.MediaStreams || []).filter((m) => m.Type === 'Audio').length;
+            now = await audioTracks();
         }
-        expect(audio === 2, 'Jellyfin did not read the new release');
+        expect(now.audio === 2, `Jellyfin did not read the new release: it lists ${now.audio} audio tracks`);
         const second = await runTracks();
         expect(second.Changed === 1, 'second clean: ' + JSON.stringify(second.Recent));
         const aside = fs.readdirSync(`${dir}/.medic-originals`).filter((f) => /^Upgraded \(2021\)\.replaced-\d{8}-\d{6}\.mkv$/.test(f));
@@ -1630,9 +1642,7 @@ async function openPage(name, hash, selector, tabs) {
         await page.goto(JF + '/web/index.html#' + hash);
         await page.waitForSelector(selector, { timeout: 30000 });
         await sleep(2000);
-        // Close Medic's "What's new" box if it's showing.
-        const gotIt = page.locator('#md-whatsnew-close');
-        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+        if (selector.startsWith('#JellyfinMedicPage')) await settleWhatsNew(page);
         let count = 0;
         if (tabs) {
             const buttons = await page.locator(selector.split(' ')[0] + ' ' + tabs).all();
@@ -1817,8 +1827,7 @@ await check('schedule Preview: choosing per task updates the plan', async () => 
     errors.length = 0;
     await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
     await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-    const gotIt = page.locator('#md-whatsnew-close');
-    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+    await settleWhatsNew(page);
     await page.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
     await page.click('#md-preview');
     await page.locator('#md-preview-box select').first().waitFor({ timeout: 30000 });
@@ -1852,8 +1861,7 @@ await check('exposure check result says when it only tested from this server', a
     errors.length = 0;
     await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
     await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-    const gotIt = page.locator('#md-whatsnew-close');
-    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+    await settleWhatsNew(page);
     await page.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
     await sleep(2000); // the boxes fill in from Medic's suggestions first
     await page.fill('#md-expose-host', 'medic-e2e.invalid');
@@ -1936,23 +1944,36 @@ await check('Medic stops polling while its browser tab is hidden and after you l
     }
 });
 
+// Medic's page shows "What's new" once per person per version, a moment after it opens, and tells the server
+// once it's on screen. Call this on an open Medic page: while the server says this version isn't seen yet, it
+// waits for the box to open and closes it, so the box can't open later over what a check clicks. A box that
+// never opens for an unseen version fails here, as that is a regression of its own.
+async function settleWhatsNew(p) {
+    const info = await ok('/JellyfinMedic/Version');
+    if (info.SeenVersion !== info.Version) {
+        const opened = await p.waitForSelector('#md-whatsnew:not([hidden])', { timeout: 15000 }).then(() => true, () => false);
+        expect(opened, `"What's new" didn't open for ${info.Version}, which the server says this person hasn't seen (last seen: ${info.SeenVersion || 'none'})`);
+    }
+    const close = p.locator('#md-whatsnew-close:visible');
+    if (await close.count()) await close.click();
+}
+
 // Opens Medic's page on a tab, closing "What's new" if it's showing. Fresh reloads it, so nothing the
 // page kept from an earlier visit (the films it found, say) is reused.
 async function medicTab(name, fresh) {
     await page.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
-    if (fresh) await page.reload();
-    await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-    // On a first visit "What's new" opens a moment after the page and covers the tabs: close it whenever it shows.
-    const gotIt = page.locator('#md-whatsnew-close');
-    for (let attempt = 1; ; attempt++) {
-        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
-        try {
-            await page.click(`#JellyfinMedicPage .so-tab[data-tab="${name}"]`, { timeout: 5000 });
-            return;
-        } catch (e) {
-            if (attempt === 3) throw e;
-        }
+    if (fresh) {
+        // Coming from a page outside the web app (My picks, say), the goto is a full load, and the web app checks
+        // its saved sign-in with GET /System/Info as it starts. A reload that cuts that request off makes it
+        // fail, and the web app then drops the saved token for good (it clears it on any failure, not only on
+        // a 401), so this page and every later check land on the sign-in screen. The page showing means the
+        // check is done.
+        await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+        await page.reload();
     }
+    await page.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
+    await settleWhatsNew(page);
+    await page.click(`#JellyfinMedicPage .so-tab[data-tab="${name}"]`);
 }
 
 // Signs in as the test admin in a new browser context, for checks that need their own clock or time zone.
@@ -2138,8 +2159,7 @@ await check('Medic dashboard: Today moves with the clock in server time, and fet
         p.on('request', (r) => { if (/\/JellyfinMedic\/Dashboard(\?|$)/.test(r.url())) fetches++; });
         await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
         await p.waitForSelector('#JellyfinMedicPage #md-day .md-now-line', { timeout: 30000 });
-        const gotIt = p.locator('#md-whatsnew-close');
-        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+        await settleWhatsNew(p);
         const data = await ok('/JellyfinMedic/Dashboard');
         const left = () => p.evaluate(() => parseFloat(document.querySelector('#JellyfinMedicPage #md-day .md-now-line').style.left));
         const first = await left();
@@ -2499,8 +2519,7 @@ await check('Dashboard panels: the 5-minute refresh keeps the keyboard on the ru
         p.on('request', (r) => { if (/\/JellyfinMedic\/Dashboard(\?|$)/.test(r.url())) fetches++; });
         await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
         await p.waitForSelector('#JellyfinMedicPage #md-day .md-run-failed', { timeout: 30000 });
-        const gotIt = p.locator('#md-whatsnew-close');
-        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+        await settleWhatsNew(p);
         const refresh = async () => {
             const before = fetches;
             await p.clock.fastForward('05:30');
@@ -2538,8 +2557,7 @@ await check('Dashboard panels: at the server\'s midnight Today fetches the new d
         await p.route('**/JellyfinMedic/Dashboard', (route) => route.fulfill({ json: served++ === 0 ? late : next }));
         await p.goto(JF + '/web/index.html#/configurationpage?name=JellyfinMedic');
         await p.waitForSelector('#JellyfinMedicPage #md-day .md-now-line', { timeout: 30000 });
-        const gotIt = p.locator('#md-whatsnew-close');
-        if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+        await settleWhatsNew(p);
         expect(served === 1, `the data was fetched ${served} times on opening`);
         // Three minutes is under the 5-minute refresh: only the end of the server's day can make the page fetch again.
         await p.clock.fastForward('03:00');
