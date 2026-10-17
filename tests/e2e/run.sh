@@ -39,9 +39,12 @@ for i in $(seq 1 12); do
   ffmpeg -loglevel error -f lavfi -i "testsrc=size=320x180:rate=10:duration=4" -f lavfi -i "sine=frequency=$((200 + i * 20)):duration=4" \
     -c:v libx264 -preset ultrafast -c:a aac -metadata:s:a:0 language=eng "$dir/Sample $i ($year).mkv"
   g1=${GENRES[$((i % 8))]}; g2=${GENRES[$(((i + 3) % 8))]}
+  # One director shared by two films the Picks check watches and one it expects to rank higher for it.
+  director=""
+  case $i in 1 | 2 | 11) director="<director>Ada Example</director>" ;; esac
   cat > "$dir/Sample $i ($year).nfo" <<NFO
 <?xml version="1.0" encoding="utf-8"?>
-<movie><title>Sample $i</title><year>$year</year><genre>$g1</genre><genre>$g2</genre><lockdata>true</lockdata></movie>
+<movie><title>Sample $i</title><year>$year</year><genre>$g1</genre><genre>$g2</genre>$director<lockdata>true</lockdata></movie>
 NFO
 done
 # Two films with a French audio track that track cleanup would remove.
