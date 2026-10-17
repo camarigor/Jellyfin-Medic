@@ -3,7 +3,7 @@
 All notable changes to Medic Posters are recorded here. The newest version is at the top.
 Jellyfin Medic, Medic Picks, Medic Profiles and Animated Posters have their own changelogs.
 
-## [1.0.0] – 2026-10-16
+## [1.0.0] – 2026-10-17
 
 ### Added
 - **Animated posters for your films.** Each film gets a short animated poster cut from a few moments of the film (15% to 75% of the way through, past the opening titles and before the credits), with its title in capitals in Bodoni Moda and a rounded white frame, like the Library Cover Maker's library covers.
@@ -14,3 +14,5 @@ Jellyfin Medic, Medic Picks, Medic Profiles and Animated Posters have their own 
 - **Settings** for which film libraries, the size (160 × 240 up to 300 × 450), how many moments and how long each plays, frames per second and the number of colours (all of which change the file size), and whether to draw the title and the frame.
 - **HDR films** are converted to normal colour first, so their posters aren't washed out.
 - **Films it can't make a poster for** (streams, disc folders, missing files, or files FFmpeg can't read) are listed with the reason.
+
+Thanks @camarigor for the idea of animated posters as a Jellyfin plugin.
