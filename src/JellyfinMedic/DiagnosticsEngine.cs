@@ -1526,7 +1526,12 @@ public sealed class DiagnosticsEngine
         return null;
     }
 
-    private static string Shorten(string text) => text.Length <= 600 ? text : text[..600] + "…";
+    internal static string Shorten(string text)
+    {
+        // Masked before the cut, which can leave too little of a token for it to be recognised.
+        string masked = SettingsReader.MaskSecrets(text);
+        return masked.Length <= 600 ? masked : masked[..600] + "…";
+    }
 
     /// <summary>Heavy maintenance scheduled during the day, when people are likely to be watching.</summary>
     private void CheckDaytimeTasks(List<IScheduledTaskWorker> workers)
