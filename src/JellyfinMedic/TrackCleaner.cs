@@ -1098,7 +1098,7 @@ public static class TrackCleaner
 
         // The plan comes from the tracks Jellyfin read at its last scan. If the file has changed since
         // (cleaned before, or replaced by Sonarr or Radarr), mapping by those numbers keeps the wrong tracks.
-        ProbedFile? source = ffprobe is null ? null : await ProbeFile(ffprobe, plan.Path, ct).ConfigureAwait(false);
+        ProbedFile? source = ffprobe is null ? null : await ProbeFile(ffprobe, plan.Path, readEnd: false, ct).ConfigureAwait(false);
         if (source is null)
         {
             NotChanged(plan, Unchanged.Unreadable, "FFprobe couldn't read the file, so it was left alone");
@@ -1182,7 +1182,7 @@ public static class TrackCleaner
             // Verify the new file is real and sound before touching the original.
             string? problem = exit != 0 ? "FFmpeg failed" + (errors.Length > 0 ? ": " + errors : string.Empty)
                 : !File.Exists(temp) ? "FFmpeg wrote no file"
-                : CheckOutput(source, await ProbeFile(ffprobe!, temp, ct).ConfigureAwait(false), outAudio, outSub, before, Size(temp));
+                : CheckOutput(source, await ProbeFile(ffprobe!, temp, readEnd: true, ct).ConfigureAwait(false), outAudio, outSub, before, Size(temp));
             if (problem is not null)
             {
                 SafeDelete(temp);
@@ -1768,7 +1768,8 @@ public static class TrackCleaner
         long freed = 0;
         foreach (var dir in LibraryFolders(library, libraries))
         {
-            var (t, d, f, l) = await TidyFolder(dir, path => ProbeFile(ffprobe, path, CancellationToken.None), deleteOriginals, CancellationToken.None).ConfigureAwait(false);
+            // Only a copy's end is read: the original it's compared with is only read for its header.
+            var (t, d, f, l) = await TidyFolder(dir, path => ProbeFile(ffprobe, path, readEnd: Path.GetFileName(path).Contains(StrippedSuffix, StringComparison.OrdinalIgnoreCase), CancellationToken.None), deleteOriginals, CancellationToken.None).ConfigureAwait(false);
             titles += t;
             deletedCopies += d;
             freed += f;
@@ -2141,17 +2142,67 @@ public static class TrackCleaner
         return File.Exists(path) ? path : null;
     }
 
-    /// <summary>What FFprobe reports about a file: every stream in order (kind is video, audio, subtitle, attachment...) and the duration when known.</summary>
-    internal sealed record ProbedFile(List<(int Index, string Kind, string Language)> Streams, double? DurationSeconds)
+    /// <summary>
+    /// What FFprobe reports about a file: every stream in order (kind is video, audio, subtitle, attachment...) and the
+    /// duration when known. EndProblem is why its last packets don't reach that duration, when they were read.
+    /// </summary>
+    internal sealed record ProbedFile(List<(int Index, string Kind, string Language)> Streams, double? DurationSeconds, string? EndProblem = null)
     {
         public int Count(string kind) => Streams.Count(s => s.Kind == kind);
     }
 
-    /// <summary>The file's own streams and duration, or null if FFprobe couldn't read it.</summary>
-    private static async Task<ProbedFile?> ProbeFile(string ffprobe, string path, CancellationToken ct)
+    /// <summary>
+    /// The file's own streams and duration, or null if FFprobe couldn't read it. With readEnd, also where its last
+    /// packets stop, for a copy about to take a file's place.
+    /// </summary>
+    private static async Task<ProbedFile?> ProbeFile(string ffprobe, string path, bool readEnd, CancellationToken ct)
+    {
+        string? json = await RunFfprobe(ffprobe, ["-v", "error", "-show_entries", "format=start_time,duration:stream=index,codec_type:stream_tags=language", "-of", "json", path], ct).ConfigureAwait(false);
+        if (json is null)
+        {
+            return null;
+        }
+
+        List<(int, string, string)> streams;
+        double start;
+        double? duration;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            streams = new List<(int, string, string)>();
+            foreach (var s in doc.RootElement.GetProperty("streams").EnumerateArray())
+            {
+                string kind = s.TryGetProperty("codec_type", out var k) ? k.GetString() ?? string.Empty : string.Empty;
+                string language = s.TryGetProperty("tags", out var tags) && tags.TryGetProperty("language", out var l) ? l.GetString() ?? "und" : "und";
+                streams.Add((s.GetProperty("index").GetInt32(), kind, language.Trim().ToLowerInvariant()));
+            }
+
+            double? Seconds(string name) => doc.RootElement.TryGetProperty("format", out var format)
+                && format.TryGetProperty(name, out var d)
+                && double.TryParse(d.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
+                ? seconds
+                : null;
+            duration = Seconds("duration") is > 0 and var known ? known : null;
+            start = Seconds("start_time") ?? 0;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return null;
+        }
+
+        // A file cut part way keeps its header, so the duration above is still the film's whole length. Without a
+        // duration there's no end to look for, and LengthProblem falls back on the file's size.
+        string? endProblem = readEnd && duration is { } stated
+            ? EndProblem(await RunFfprobe(ffprobe, ["-v", "error", "-read_intervals", EndInterval(start, stated), "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", path], ct).ConfigureAwait(false), start, stated)
+            : null;
+        return new ProbedFile(streams, duration, endProblem);
+    }
+
+    /// <summary>What FFprobe printed, or null if it failed or took over 2 minutes.</summary>
+    private static async Task<string?> RunFfprobe(string ffprobe, string[] args, CancellationToken ct)
     {
         var psi = new ProcessStartInfo(ffprobe) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-v", "error", "-show_entries", "format=duration:stream=index,codec_type:stream_tags=language", "-of", "json", path })
+        foreach (var a in args)
         {
             psi.ArgumentList.Add(a);
         }
@@ -2173,33 +2224,49 @@ public static class TrackCleaner
             return null;
         }
 
-        if (p.ExitCode != 0)
-        {
-            return null;
-        }
+        return p.ExitCode == 0 ? await stdout.ConfigureAwait(false) : null;
+    }
 
-        try
+    // The last packets are read from this long before the stated end. A seek lands on the keyframe before that
+    // point, or on the last data a cut file has, and reading stops at its end of file, well before the window closes.
+    private const double EndWindowSeconds = 10;
+
+    /// <summary>FFprobe's -read_intervals for the last packets: from shortly before the stated end to a minute past it.</summary>
+    internal static string EndInterval(double start, double duration) =>
+        Math.Max(0, start + duration - EndWindowSeconds).ToString("0.###", CultureInfo.InvariantCulture)
+        + "%+" + (EndWindowSeconds + 60).ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>When the last packet ends, from FFprobe's "pts_time,duration_time" lines in any stream order; null when none has a timestamp.</summary>
+    internal static double? LastPacketEnd(string packets)
+    {
+        double? last = null;
+        foreach (var line in packets.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            using var doc = System.Text.Json.JsonDocument.Parse(await stdout.ConfigureAwait(false));
-            var streams = new List<(int, string, string)>();
-            foreach (var s in doc.RootElement.GetProperty("streams").EnumerateArray())
+            var fields = line.Split(',');
+            if (!double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var pts))
             {
-                string kind = s.TryGetProperty("codec_type", out var k) ? k.GetString() ?? string.Empty : string.Empty;
-                string language = s.TryGetProperty("tags", out var tags) && tags.TryGetProperty("language", out var l) ? l.GetString() ?? "und" : "und";
-                streams.Add((s.GetProperty("index").GetInt32(), kind, language.Trim().ToLowerInvariant()));
+                continue;
             }
 
-            double? duration = doc.RootElement.TryGetProperty("format", out var format)
-                && format.TryGetProperty("duration", out var d)
-                && double.TryParse(d.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) && seconds > 0
-                ? seconds
-                : null;
-            return new ProbedFile(streams, duration);
+            double length = fields.Length > 1 && double.TryParse(fields[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : 0;
+            last = Math.Max(last ?? double.MinValue, pts + length);
         }
-        catch (Exception ex) when (ex is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
+
+        return last;
+    }
+
+    /// <summary>
+    /// Why a copy's last packets don't reach its stated length, or null when they do. packets is null when FFprobe
+    /// couldn't read them; a copy whose end can't be read isn't trusted with a file's place.
+    /// </summary>
+    internal static string? EndProblem(string? packets, double start, double duration)
+    {
+        if (packets is null || LastPacketEnd(packets) is not { } last)
         {
-            return null;
+            return "FFprobe couldn't read its end";
         }
+
+        return start + duration - last > LengthTolerance(duration) ? $"it stops at {last - start:0} s though it says it lasts {duration:0} s" : null;
     }
 
     /// <summary>
@@ -2244,9 +2311,9 @@ public static class TrackCleaner
     /// <summary>
     /// Why the new file can't replace the original, or null when it's sound: FFprobe reads it, it has the same video
     /// and attachments, exactly the audio and subtitle tracks that were kept, and the same length. When either length
-    /// is unknown, a file much smaller than the original fails instead.
+    /// is unknown, a file much smaller than the original fails instead. Its last packets have to reach that length too.
     /// </summary>
-    private static string? CheckOutput(ProbedFile source, ProbedFile? output, int audio, int subtitles, long sourceBytes, long outputBytes)
+    internal static string? CheckOutput(ProbedFile source, ProbedFile? output, int audio, int subtitles, long sourceBytes, long outputBytes)
     {
         if (output is null)
         {
@@ -2261,13 +2328,14 @@ public static class TrackCleaner
             }
         }
 
-        return LengthProblem(source, output, sourceBytes, outputBytes);
+        return LengthProblem(source, output, sourceBytes, outputBytes) ?? output.EndProblem;
     }
 
     /// <summary>
     /// Why an earlier copy can't take the original's place, or null when it can. Lighter than CheckOutput, as the
     /// tracks those versions kept aren't known and they dropped attachments: FFprobe reads it, it has the original's
-    /// video, some audio, and the same length. Without an original to compare, video and audio are enough.
+    /// video, some audio, and the same length, which its last packets reach. Without an original to compare, video,
+    /// audio and an end that reaches its own stated length are enough.
     /// </summary>
     internal static string? CheckLeftover(ProbedFile? reference, ProbedFile? leftover, long referenceBytes, long leftoverBytes)
     {
@@ -2278,7 +2346,7 @@ public static class TrackCleaner
 
         if (reference is null)
         {
-            return leftover.Count("video") == 0 ? "it has no video" : leftover.Count("audio") == 0 ? "it has no audio" : null;
+            return leftover.Count("video") == 0 ? "it has no video" : leftover.Count("audio") == 0 ? "it has no audio" : leftover.EndProblem;
         }
 
         if (leftover.Count("video") != reference.Count("video"))
@@ -2286,7 +2354,7 @@ public static class TrackCleaner
             return $"it has {leftover.Count("video")} video streams instead of {reference.Count("video")}";
         }
 
-        return leftover.Count("audio") == 0 ? "it has no audio" : LengthProblem(reference, leftover, referenceBytes, leftoverBytes);
+        return leftover.Count("audio") == 0 ? "it has no audio" : LengthProblem(reference, leftover, referenceBytes, leftoverBytes) ?? leftover.EndProblem;
     }
 
     /// <summary>Why the copy isn't as long as the original, or null. When either length is unknown, a copy much smaller than the original fails instead.</summary>
@@ -2294,12 +2362,14 @@ public static class TrackCleaner
     {
         if (source.DurationSeconds is { } want && copy.DurationSeconds is { } got)
         {
-            double tolerance = Math.Max(2, want * 0.01);
-            return Math.Abs(want - got) > tolerance ? $"it lasts {got:0} s instead of {want:0} s" : null;
+            return Math.Abs(want - got) > LengthTolerance(want) ? $"it lasts {got:0} s instead of {want:0} s" : null;
         }
 
         return sourceBytes > 0 && copyBytes < sourceBytes / 3 ? "it's much smaller than the original and its length can't be read" : null;
     }
+
+    /// <summary>How far a copy's length may be off, by its header or by its last packets: 2 s, or 1% of a long film.</summary>
+    private static double LengthTolerance(double seconds) => Math.Max(2, seconds * 0.01);
 
     /// <summary>Makes sure the new file is on the disk before it takes the original's place, so a power cut can't leave an empty file.</summary>
     private static void FlushToDisk(string path)

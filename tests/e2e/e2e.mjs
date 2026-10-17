@@ -891,6 +891,30 @@ await check('tidying earlier copies leaves a copy that doesn\'t check out', asyn
     }
 });
 
+await check('tidying earlier copies leaves a copy cut short that still gives the full length', async () => {
+    // A copy cut part way keeps its header, so FFprobe reads the film's full length and every track from it.
+    // Only its last packets show where it really stops.
+    const file = await addFilm('Cut Copy (2023)', ['eng', 'fre'], 60);
+    const copy = file.replace(/\.mkv$/, '.medic-stripped.mkv');
+    const kept = `${movies}/Cut Copy (2023)/.medic-originals/Cut Copy (2023).mkv`;
+    const size = fs.statSync(file).size;
+    const duration = (f) => Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).toString());
+    try {
+        execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', file, '-map', '0:v', '-map', '0:a:0', '-c', 'copy', copy]);
+        fs.truncateSync(copy, Math.floor(fs.statSync(copy).size / 2));
+        expect(Math.abs(duration(copy) - duration(file)) < 1 && audioLanguages(copy) === 'eng', `the cut copy reads as ${duration(copy)} s with ${audioLanguages(copy)}`);
+        const refused = await api('POST', '/JellyfinMedic/Tracks/TidyCopies');
+        const left = refused.json?.LeftTitles || [];
+        expect(refused.status === 200 && refused.json?.Titles === 0 && left.length === 1 && left[0].Name === 'Cut Copy (2023).mkv'
+            && /^it stops at \d+ s though it says it lasts 60 s$/.test(left[0].Reason), 'tidy: ' + refused.status + ' ' + refused.text);
+        expect(fs.statSync(file).size === size && audioLanguages(file) === 'eng,fre', 'the film was changed');
+        expect(fs.existsSync(copy) && !fs.existsSync(kept), 'the copy was moved');
+        return left[0].Reason;
+    } finally {
+        fs.rmSync(copy, { force: true });
+    }
+});
+
 await check('track cleanup keeps the film\'s own audio when only a commentary is in your language', async () => {
     // Scan only: the runs above are done, so nothing changes this file.
     await addFilm('Track Extras (2021)', ['jpn', 'eng:Commentary', 'fre:Commentary'], 4);
