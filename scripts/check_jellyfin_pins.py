@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Checks that each release names the Jellyfin it is built against, and that its unit tests run on that Jellyfin.
 
-The manifest's targetAbi is TARGET_ABI, typed into each release workflow, while the build takes its Jellyfin from the
-plugin's csproj, and nothing tied the two together. For every workflow that runs scripts/update_manifest.py, this
-checks that:
+The manifest's targetAbi is the abi= typed into each release's case branch in scripts/publish_dist.sh, while the
+build takes its Jellyfin from the plugin's csproj, and nothing tied the two together. For every branch that sets
+project= and abi=, this checks that:
 
-- TARGET_ABI is the plugin's Jellyfin.Controller version plus ".0" (12.1.0 needs 12.1.0.0), reading
-  $(JellyfinPackageVersion) for the -p:JellyfinTarget the workflow builds with;
+- abi is the plugin's Jellyfin.Controller version plus ".0" (12.1.0 needs 12.1.0.0), reading
+  $(JellyfinPackageVersion) for the -p:JellyfinTarget the branch's target_args=(...) builds with, or the project's
+  default when target_args is empty;
 - Jellyfin.Model is at the same version as Jellyfin.Controller;
 - each tests/*/*.Tests.csproj that references the plugin pins that same version, so its unit tests run on the
   Jellyfin the release is built against;
@@ -14,11 +15,15 @@ checks that:
   does shared/Medic.Shared, which Medic Picks and Medic Profiles both ship) pins that same version too, and the
   plugins that compile in the same directory build against the same Jellyfin.
 
+It also checks that the script builds "$project" with "${target_args[@]}" and passes --abi "$abi" to
+scripts/update_manifest.py, so the values it reads are the ones a release uses.
+
   python3 scripts/check_jellyfin_pins.py [repository]
 
 The unit test job runs it through scripts/tests/test_check_jellyfin_pins.py. Prints a line for each release that
-matches and, to stderr, each thing that doesn't, then exits 1 if there is any. It reads only the plain MSBuild the
-projects use ($(Name), and conditions like '$(Name)' == 'value'), and reports anything else rather than guess.
+matches and, to stderr, each thing that doesn't, then exits 1 if there is any. It reads only plain single-word
+assignments in the script, and the plain MSBuild the projects use ($(Name), and conditions like
+'$(Name)' == 'value'), and reports anything else rather than guess.
 """
 import argparse
 import itertools
@@ -39,68 +44,82 @@ class Unreadable(Exception):
     """Something the check can't read, so it can't vouch for that release."""
 
 
-def scalar(raw: str) -> str:
-    """A one-line YAML value, without its quotes or a trailing # comment."""
-    raw = raw.strip()
-    if raw[:1] in ("'", '"') and raw.find(raw[0], 1) > 0:
-        return raw[1:raw.find(raw[0], 1)]
-    return re.split(r"\s+#", raw, maxsplit=1)[0]
+SCRIPT = "scripts/publish_dist.sh"
+# What the script has to do with each branch's values, so the ones read here are the ones a release uses.
+USES = (
+    (r'dotnet\s+publish\s+"?\$\{?project\b', 'doesn\'t run dotnet publish "$project"'),
+    (r'"\$\{target_args\[@\]\}"', 'doesn\'t pass "${target_args[@]}" to dotnet publish'),
+    (r'--abi\s+"?\$\{?abi\b', 'doesn\'t pass --abi "$abi" to scripts/update_manifest.py'),
+)
 
 
-def workflow_env(text: str) -> dict[str, str]:
-    """The values in a workflow's top-level env: block."""
-    env: dict[str, str] = {}
-    lines = iter(text.splitlines())
-    for line in lines:
-        if line.rstrip() == "env:":
-            break
-    for line in lines:
-        if line[:1] not in ("", " ", "\t", "#"):
-            break
-        m = re.match(r"\s+([A-Za-z_]\w*):(.*)", line)
-        if m:
-            env[m[1]] = scalar(m[2])
-    return env
+class Release(NamedTuple):
+    """One case branch of the release script."""
+    name: str
+    abi: str
+    project: str
+    properties: dict[str, str]  # the -p properties target_args gives dotnet publish, by lowercase name
 
 
-def publish_command(text: str) -> list[str]:
-    """The words of a workflow's one dotnet publish command."""
-    lines = text.splitlines()
-    starts = [i for i, line in enumerate(lines)
-              if not line.lstrip().startswith("#") and re.search(r"\bdotnet\s+publish\b", line)]
-    if len(starts) != 1:
-        raise Unreadable(f"has {len(starts)} dotnet publish commands instead of one")
-    first = starts[0]
-    run = next((line for line in reversed(lines[:first + 1]) if re.match(r"\s*(- )?run:", line)), "")
-    # In a "run: >" block YAML folds the lines below at the same indent into the command; in "run: |" the command
-    # only goes on after a backslash.
-    folded = re.match(r"\s*(- )?run:\s*>", run) is not None
-    indent = len(lines[first]) - len(lines[first].lstrip())
-    command = [lines[first].strip()]
-    for line in lines[first + 1:]:
-        if folded and (not line.strip() or len(line) - len(line.lstrip()) != indent):
-            break
-        if not folded and not command[-1].endswith("\\"):
-            break
-        command.append(line.strip())
+def words(raw: str) -> list[str]:
+    """The words of a shell value, which must not need the shell to expand anything."""
     try:
-        return shlex.split(" ".join(part.removesuffix("\\") for part in command))
-    except ValueError as e:
-        raise Unreadable(f"can't read its dotnet publish command: {e}") from None
+        split = shlex.split(raw, comments=True)
+    except ValueError:
+        raise Unreadable(f"can't read {raw}") from None
+    if any("$" in word or "`" in word for word in split):
+        raise Unreadable(f"can't read {raw}")
+    return split
 
 
-def build(words: list[str], env: dict[str, str]) -> tuple[str, dict[str, str]]:
-    """The project a dotnet publish builds and the -p properties it sets, with the workflow's env filled in."""
-    words = [re.sub(r"\$\{(\w+)\}|\$(\w+)", lambda m: env.get(m[1] or m[2], m[0]), word) for word in words]
-    projects = [word for word in words if word.endswith(".csproj")]
-    if len(projects) != 1:
-        raise Unreadable("can't tell which .csproj its dotnet publish builds")
+def branches(text: str) -> dict[str, dict[str, str]]:
+    """The assignments in each branch of the script's case statement, by branch name."""
+    found: dict[str, dict[str, str]] = {}
+    current: dict[str, str] | None = None
+    inside = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"case\s.*\sin$", stripped):
+            inside = True
+        elif stripped == "esac":
+            inside = False
+        elif inside:
+            m = re.fullmatch(r"([\w|-]+)\)", stripped)
+            if m:
+                current = found.setdefault(m[1], {})
+            elif stripped == ";;":
+                current = None
+            elif current is not None:
+                m = re.fullmatch(r"([A-Za-z_]\w*)=(.*)", stripped)
+                if m:
+                    current[m[1]] = m[2]
+    return {name: values for name, values in found.items() if "project" in values or "abi" in values}
+
+
+def release(name: str, values: dict[str, str]) -> Release:
+    """A case branch's abi, project and the -p properties its target_args set."""
+    single: dict[str, str] = {}
+    for key in ("project", "abi"):
+        if key not in values:
+            raise Unreadable(f"sets no {key}=")
+        value = words(values[key])
+        if len(value) != 1:
+            raise Unreadable(f"can't read {key}={values[key]}")
+        single[key] = value[0]
+    raw = values.get("target_args", "()")
+    m = re.fullmatch(r"\((.*)\)", raw)
+    if not m:
+        raise Unreadable(f"can't read target_args={raw}")
+    try:
+        args = words(m[1])
+    except Unreadable:
+        raise Unreadable(f"can't read target_args={raw}") from None
     properties: dict[str, str] = {}
-    for word in words:
-        m = re.fullmatch(r"(?:--?|/)p(?:roperty)?:([^=]+)=(.*)", word)
-        if m:
-            properties[m[1].lower()] = m[2]
-    return projects[0], properties
+    for word in args:
+        p = re.fullmatch(r"(?:--?|/)p(?:roperty)?:([^=]+)=(.*)", word)
+        if p:
+            properties[p[1].lower()] = p[2]
+    return Release(name, single["abi"], single["project"], properties)
 
 
 def local(element: ET.Element) -> str:
@@ -181,18 +200,6 @@ def evaluate(path: pathlib.Path, name: str, global_properties: dict[str, str]) -
     return Project(packages, references, compiles)
 
 
-def release(text: str, root: pathlib.Path) -> tuple[str, pathlib.Path, Project]:
-    """A release workflow's TARGET_ABI, the project it builds, and what that build references and compiles in."""
-    env = workflow_env(text)
-    if "TARGET_ABI" not in env:
-        raise Unreadable("has no TARGET_ABI in its env")
-    if not re.search(r'--abi\s+"?\$\{?TARGET_ABI\b', text):
-        raise Unreadable("doesn't pass TARGET_ABI to scripts/update_manifest.py --abi")
-    project, properties = build(publish_command(text), env)
-    plugin = (root / project).resolve()
-    return env["TARGET_ABI"], plugin, evaluate(plugin, project, properties)
-
-
 def check(root: pathlib.Path) -> tuple[list[str], list[str]]:
     """One line for each release that matches or test project left out, and one for each problem."""
     root = root.resolve()
@@ -209,23 +216,34 @@ def check(root: pathlib.Path) -> tuple[list[str], list[str]]:
         except Unreadable as e:
             problems.append(str(e))
 
-    paths = sorted([*root.glob(".github/workflows/*.yml"), *root.glob(".github/workflows/*.yaml")])
-    workflows = {path: path.read_text(encoding="utf-8") for path in paths}
-    workflows = {path: text for path, text in workflows.items() if "scripts/update_manifest.py" in text}
-    if not workflows:
-        problems.append("No workflow in .github/workflows runs scripts/update_manifest.py,"
-                        " so there is nothing to check")
+    releases: list[Release] = []
+    try:
+        text = (root / SCRIPT).read_text(encoding="utf-8")
+    except OSError as e:
+        problems.append(f"{SCRIPT}: {e.strerror}, so there is nothing to check")
+        text = ""
+    found = branches(text)
+    if text and not found:
+        problems.append(f"{SCRIPT} has no case branch that sets project= and abi=, so there is nothing to check")
+    if found:
+        problems.extend(f"{SCRIPT} {problem}" for pattern, problem in USES if not re.search(pattern, text))
+    for release_name, values in found.items():
+        try:
+            releases.append(release(release_name, values))
+        except Unreadable as e:
+            problems.append(f"{release_name}: {e}")
 
     compared: set[pathlib.Path] = set()
     # Each directory of source a released plugin compiles in, with the plugins and the Jellyfin they build against.
     compiled_by: dict[pathlib.Path, dict[pathlib.Path, str]] = {}
-    for workflow, text in workflows.items():
+    for each in releases:
+        plugin = (root / each.project).resolve()
         try:
-            abi, plugin, built = release(text, root)
+            built = evaluate(plugin, each.project, each.properties)
         except Unreadable as e:
-            problems.append(f"{workflow.name}: {e}")
+            problems.append(f"{each.name}: {e}")
             continue
-        packages = built.packages
+        abi, packages = each.abi, built.packages
         tested = [test for test, project in tests.items() if plugin in project.references]
         # Test projects that compile in code this plugin compiles in too, and the directory each shares with it.
         sharing = {test: min(project.compiles & built.compiles) for test, project in tests.items()
@@ -245,10 +263,10 @@ def check(root: pathlib.Path) -> tuple[list[str], list[str]]:
                 found.append(f"{name(plugin)} builds against Jellyfin.Controller {version}"
                              f" but Jellyfin.Model {model}")
             if abi != version + ".0":
-                found.append(f"TARGET_ABI is {abi}, but {name(plugin)} builds against Jellyfin.Controller {version},"
+                found.append(f"abi is {abi}, but {name(plugin)} builds against Jellyfin.Controller {version},"
                              f" so it should be {version}.0")
             for test in tested:
-                for package, pinned in tests[test][0].items():
+                for package, pinned in tests[test].packages.items():
                     if pinned != version:
                         found.append(f"{name(test)} has {package} {pinned}, but {name(plugin)}, which it tests,"
                                      f" builds against {version}")
@@ -261,11 +279,11 @@ def check(root: pathlib.Path) -> tuple[list[str], list[str]]:
                 compiled_by.setdefault(directory, {})[plugin] = version
 
         if found:
-            problems.extend(f"{workflow.name}: {problem}" for problem in found)
+            problems.extend(f"{each.name}: {problem}" for problem in found)
         else:
             files = [name(plugin), *sorted(name(path) for path in (*tested, *sharing))]
             listed = files[0] if len(files) == 1 else ", ".join(files[:-1]) + " and " + files[-1]
-            report.append(f"{workflow.name}: TARGET_ABI {abi} matches Jellyfin {version} in {listed}")
+            report.append(f"{each.name}: abi {abi} matches Jellyfin {version} in {listed}")
 
     for directory, plugins in sorted(compiled_by.items()):
         if len(set(plugins.values())) > 1:

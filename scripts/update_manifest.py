@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add (or replace) one plugin version in the Jellyfin repository manifest.
 
-Used by the three release workflows, but you can run it by hand too:
+Used by scripts/publish_dist.sh, but you can run it by hand too:
 
   python3 scripts/update_manifest.py --guid ... --name "Medic Picks" --version 0.0.1.0 \
       --abi 12.0.0.0 --url https://.../medic-picks_0.0.1.0.zip --checksum <md5> \

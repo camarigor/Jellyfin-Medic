@@ -15,7 +15,7 @@ namespace Jellyfin.Plugin.MedicProfiles;
 /// </summary>
 public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
-    /// <summary>Plugin GUID. Must match the guid in manifest.json and the release workflow.</summary>
+    /// <summary>Plugin GUID. Must match the guid in scripts/publish_dist.sh, which writes it to the manifest.</summary>
     public const string PluginGuid = "1eb65368-7b2e-4a55-8f2b-b56134f3fe68";
 
     public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer)

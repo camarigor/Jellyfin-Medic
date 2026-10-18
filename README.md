@@ -4,7 +4,7 @@
 
 Health checks, performance tests and usage-aware task scheduling for your Jellyfin server.
 
-[![Build and Release](https://github.com/camarigor/Jellyfin-Medic/actions/workflows/release.yml/badge.svg)](https://github.com/camarigor/Jellyfin-Medic/actions/workflows/release.yml) [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE) ![Jellyfin 12.1+](https://img.shields.io/badge/Jellyfin-12.1%2B-00a4dc.svg)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE) ![Jellyfin 12.1+](https://img.shields.io/badge/Jellyfin-12.1%2B-00a4dc.svg)
 
 This repository has three plugins: **Jellyfin Medic**, for the person who runs the server; **[Medic Picks](#medic-picks)**, personal viewing suggestions for everyone who uses it; and **[Medic Profiles](#medic-profiles)**, Sonarr and Radarr from your Jellyfin dashboard.
 
@@ -79,12 +79,12 @@ Change Medic's own options, browse every Jellyfin setting with a red, yellow or 
 1. In Jellyfin, go to **Dashboard → Plugins → Repositories** and click **+**.
 2. Enter:
    - **Name:** `Jellyfin Medic`
-   - **URL:** `https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/manifest.json`
+   - **URL:** `https://forgejo.tinfoilhat.work/camarigor/Jellyfin-Medic/raw/branch/dist/manifest.json`
 3. Save, open the **Catalog** tab, install **Jellyfin Medic**, **Medic Picks** and/or **Medic Profiles**, and restart Jellyfin.
 
 ### Manual install
 
-Download the latest zip from [Releases](https://github.com/camarigor/Jellyfin-Medic/releases), create a folder in your Jellyfin plugins directory, put the DLL inside it, and restart Jellyfin:
+Download the latest zip from the [dist branch](https://forgejo.tinfoilhat.work/camarigor/Jellyfin-Medic/src/branch/dist), create a folder in your Jellyfin plugins directory, put the DLL inside it, and restart Jellyfin:
 
 - Jellyfin Medic: a `JellyfinMedic` folder containing `JellyfinMedic.dll`
 - Medic Picks: a `MedicPicks` folder containing `Jellyfin.Plugin.MedicPicks.dll`
@@ -193,7 +193,15 @@ dotnet publish Jellyfin.Plugin.MedicProfiles/Jellyfin.Plugin.MedicProfiles.cspro
 
 The end-to-end tests start a real Jellyfin in Docker with the three plugins and click through their pages: `tests/e2e/run.sh` (needs Docker, ffmpeg, and Node with Playwright; see the top of the script).
 
-Releases are automatic: push a tag like `v1.0.6` for Jellyfin Medic, `picks-v1.0.1` for Medic Picks, or `profiles-v1.0.0` for Medic Profiles, and GitHub Actions builds the plugin, creates the release, and adds it to `manifest.json`.
+Releases are published to the `dist` branch on Forgejo, which holds the zips and the `manifest.json` Jellyfin reads. With the version and the CHANGELOG section dated on `main`, check out `dist` beside this checkout and run the script once per plugin, then push `dist`:
+
+```
+git worktree add ../medic-dist dist
+scripts/publish_dist.sh medic ../medic-dist
+git -C ../medic-dist push origin dist
+```
+
+Use `picks` or `profiles` in place of `medic` for the other two. The script builds from the checked-out commit, refuses uncommitted changes, and never overwrites a version already published.
 
 ---
 

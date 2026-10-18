@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prints one version's section of a changelog, without its heading, and fails if there is none.
 
-The release workflows use it for the release notes and the manifest's changelog:
+scripts/publish_dist.sh uses it for the manifest's changelog:
 
   python3 scripts/changelog_section.py CHANGELOG.md 1.0.17
 """

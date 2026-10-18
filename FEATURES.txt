@@ -23,7 +23,7 @@ Each plugin's current version and what changed are in its changelog (CHANGELOG.m
 Jellyfin.Plugin.MedicPicks/CHANGELOG.md, Jellyfin.Plugin.MedicProfiles/CHANGELOG.md).
 
 All three are installed from the same plugin repository:
-  https://raw.githubusercontent.com/camarigor/Jellyfin-Medic/main/manifest.json
+  https://forgejo.tinfoilhat.work/camarigor/Jellyfin-Medic/raw/branch/dist/manifest.json
 
 
 ===============================================================================

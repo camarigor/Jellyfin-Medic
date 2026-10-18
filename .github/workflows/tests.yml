@@ -1,12 +1,10 @@
 name: Tests
 
 # Unit tests, and the end-to-end tests that build the three plugins, run them in a real Jellyfin and
-# click through their pages. On pull requests, by hand, and before every release (the release
-# workflows call this one and only publish when it passes).
+# click through their pages. On pull requests and by hand.
 on:
   pull_request:
   workflow_dispatch:
-  workflow_call:
 
 # It only reads the code.
 permissions:
@@ -45,7 +43,7 @@ jobs:
             TZ=Pacific/Kiritimati dotnet test "$project" -c Release --no-build
           done
 
-      - name: Run release script tests
+      - name: Run script tests
         run: python3 -m unittest discover -s scripts/tests -v
 
   e2e:
