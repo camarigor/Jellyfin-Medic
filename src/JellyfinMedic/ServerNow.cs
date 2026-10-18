@@ -20,6 +20,16 @@ public class NowSnapshot
     // MemoryGb as a share of MemoryLimitGb, for the Dashboard's warning colours.
     public double MemoryPercent { get; set; }
 
+    // The whole server's memory, other programs included, as LoadGuard's server check counts it. Null off Linux.
+    public double? ServerMemoryPercent { get; set; }
+
+    public double ServerMemoryGb { get; set; }
+
+    public double ServerMemoryTotalGb { get; set; }
+
+    // The ceiling LoadGuard holds heavy tasks at, null while it is off, so the page can show what a pause is measured against.
+    public int? GuardCeilingPercent { get; set; }
+
     public int Watching { get; set; }
 
     public int Transcoding { get; set; }
@@ -148,6 +158,9 @@ public static class ServerNow
         }
     }
 
+    /// <summary>LoadGuard's ceiling as LoadGuard reads it, or null while the guard is off.</summary>
+    internal static int? GuardCeiling(bool enabled, int ceilingPercent) => enabled ? Math.Clamp(ceilingPercent, 60, 95) : null;
+
     public static NowSnapshot Snapshot(ISessionManager sessions, ITaskManager tasks, IApplicationPaths? paths = null)
     {
         var snap = new NowSnapshot { CpuPercent = CpuPercent(), Resources = ResourceMonitor.Latest };
@@ -157,10 +170,15 @@ public static class ServerNow
         }
 
         var process = Process.GetCurrentProcess();
-        long available = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        double available = ResourceMonitor.MemoryLimitBytes();
         snap.MemoryGb = Math.Round(process.WorkingSet64 / 1073741824d, 1);
         snap.MemoryLimitGb = Math.Round(available / 1073741824d, 1);
         snap.MemoryPercent = available > 0 ? Math.Round(Math.Clamp(process.WorkingSet64 * 100d / available, 0, 100), 1) : 0;
+        snap.ServerMemoryPercent = ServerMemory.UsedPercent(out double serverUsedGb, out double serverTotalGb);
+        snap.ServerMemoryGb = serverUsedGb;
+        snap.ServerMemoryTotalGb = serverTotalGb;
+        var settings = Plugin.Instance?.Configuration;
+        snap.GuardCeilingPercent = settings is null ? null : GuardCeiling(settings.LoadGuardEnabled, settings.MemoryCeilingPercent);
 
         try
         {

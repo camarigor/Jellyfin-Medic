@@ -47,7 +47,7 @@ public static class SystemProbe
         var info = new HardwareInfo
         {
             CpuThreads = Environment.ProcessorCount,
-            MemoryGb = Math.Round(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / GiB, 1),
+            MemoryGb = Math.Round(ResourceMonitor.MemoryLimitBytes() / GiB, 1),
             RandomHostname = HostPlatform.HostnameIsRandom // one detector, so the two can't disagree
         };
 

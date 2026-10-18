@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -14,11 +15,14 @@ namespace JellyfinMedic.Services;
 /// task is running, it stops the extra heavy tasks (keeping the one that started first), waits for
 /// memory to recover, then restarts the stopped ones one at a time so they don't pile up again.
 ///
-/// It also watches the whole server's memory, other programs included (Linux): a heavy task that starts while the
-/// server is past the ceiling waits until memory is back, or two hours at most. Work already under way is left alone.
+/// It also watches the whole server's memory, other programs included (Linux): a heavy task that its schedule starts
+/// while the server is past the ceiling and above its usual level, or while Jellyfin itself is past it, waits until
+/// memory settles, or two hours at most. A server whose usual level is above the ceiling isn't held up for that alone,
+/// as waiting would only move the work later. Runs started by hand or queued by Jellyfin always go ahead, a waiting task
+/// never starts in the avoided hours or while someone is watching, and work already under way is left alone.
 ///
-/// It only ever stops HEAVY tasks (scans, image/segment extraction, big syncs) — never light
-/// upkeep — and it records every action for the Dashboard. It can't pause a running task without
+/// It only ever stops HEAVY tasks (scans, image/segment extraction, big syncs), never light
+/// upkeep, and it records every action for the Dashboard. It can't pause a running task without
 /// stopping it, so it protects the server by stopping-and-restarting rather than freezing.
 /// </summary>
 public sealed class LoadGuard : IHostedService, IDisposable
@@ -34,6 +38,23 @@ public sealed class LoadGuard : IHostedService, IDisposable
 
     // A task counts as just started for three checks.
     private static readonly TimeSpan JustStarted = TimeSpan.FromSeconds(60);
+
+    // The server's usual memory level is the middle reading of this long, once there are UsualAfter of readings.
+    internal static readonly TimeSpan UsualWindow = TimeSpan.FromHours(2);
+    internal static readonly TimeSpan UsualAfter = TimeSpan.FromMinutes(20);
+
+    // How far above its usual level the server has to be for a rise to count, in percentage points.
+    internal const double RisePoints = 5;
+
+    // A run that starts this soon after one of its triggers' times was started by that trigger.
+    private static readonly TimeSpan TriggerSlack = TimeSpan.FromMinutes(2);
+
+    // Jellyfin fires startup triggers a few seconds after it starts; this leaves room for a slow start.
+    private static readonly TimeSpan StartupSlack = TimeSpan.FromMinutes(10);
+
+    // Which memory a record's figures are: the whole server's, or Jellyfin's own (its container's).
+    internal const string ServerMemoryBasis = "server";
+    internal const string JellyfinMemory = "jellyfin";
     // Jellyfin's own heavy tasks by key (their names are translated into the server's language),
     // and tasks from plugins by words in their names.
     private static readonly HashSet<string> HeavyKeys = new(StringComparer.Ordinal)
@@ -50,6 +71,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
     };
 
     private readonly ITaskManager _tasks;
+    private readonly ISessionManager _sessions;
     private readonly IApplicationPaths _paths;
     private readonly ILogger<LoadGuard> _logger;
     private Timer? _timer;
@@ -59,6 +81,8 @@ public sealed class LoadGuard : IHostedService, IDisposable
     // restart of Jellyfin (Medic's own restart tasks included) doesn't forget them.
     private readonly List<PausedTask> _deferred = new();
     private DateTime _lastActionUtc = DateTime.MinValue;
+    private DateTime _startedAtUtc = DateTime.UtcNow;
+    private readonly UsualMemory _usualServer = new();
 
     // Tasks the guard started again, which the server check lets through when they start (task id, until when).
     private readonly Dictionary<string, DateTime> _letThroughUntil = new();
@@ -71,20 +95,22 @@ public sealed class LoadGuard : IHostedService, IDisposable
     // really is. A running task's LastExecutionResult is its previous run, so it can't be used for this.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _startedUtc = new();
 
-    public LoadGuard(ITaskManager tasks, IApplicationPaths paths, ILogger<LoadGuard> logger)
+    public LoadGuard(ITaskManager tasks, ISessionManager sessions, IApplicationPaths paths, ILogger<LoadGuard> logger)
     {
         _tasks = tasks;
+        _sessions = sessions;
         _paths = paths;
         _logger = logger;
     }
 
-    /// <summary>Tasks LoadGuard stopped and will restart once memory recovers, oldest first.</summary>
+    /// <summary>Tasks LoadGuard stopped and will start again, oldest first.</summary>
     internal static IReadOnlyList<PausedTask> Paused => Volatile.Read(ref _paused);
 
     private string DeferredPath => Path.Combine(ScheduleStorage.DataDir(_paths), "loadguard_deferred.json");
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        _startedAtUtc = DateTime.UtcNow;
         try
         {
             List<PausedTask> saved;
@@ -158,6 +184,13 @@ public sealed class LoadGuard : IHostedService, IDisposable
 
             double usedPercent = MemoryUsedPercent(out double usedGb, out double limitGb);
             double? serverPercent = ServerMemory.UsedPercent(out double serverUsedGb, out double serverTotalGb);
+            var now = DateTime.UtcNow;
+            if (serverPercent is { } reading)
+            {
+                _usualServer.Add(now, reading);
+            }
+
+            double? usualServer = _usualServer.Level(now);
             int highMark = Math.Clamp(settings.MemoryCeilingPercent, 60, 95);
             int clearMark = highMark - 12; // recover to comfortably below the ceiling before restarting
 
@@ -176,7 +209,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
                         _tasks.Cancel(worker);
                         Defer(worker);
 
-                        Record("stopped", worker.Name, usedGb, limitGb);
+                        Record("stopped", worker.Name, usedGb, limitGb, JellyfinMemory);
                         _logger.LogWarning("Jellyfin Medic: memory at {Used:0}% of {Limit:0} GB with {Count} heavy tasks running; stopped '{Task}' to protect the server.", usedPercent, limitGb, heavyRunning.Count, worker.Name);
                     }
                     catch (Exception ex)
@@ -189,24 +222,34 @@ public sealed class LoadGuard : IHostedService, IDisposable
                 return;
             }
 
-            // The whole server is short of memory, other programs included: a heavy task that has just started waits.
-            var now = DateTime.UtcNow;
+            // The whole server is short of memory, other programs included: a heavy task its schedule has just started waits.
             foreach (var id in _letThroughUntil.Where(p => p.Value <= now).Select(p => p.Key).ToList())
             {
                 _letThroughUntil.Remove(id);
             }
 
-            var waiting = heavyRunning.Where(w => HoldBack(serverPercent, highMark, now - StartedAt(w), _letThroughUntil.ContainsKey(w.Id.ToString()))).ToList();
+            var waiting = heavyRunning.Where(w => HoldBack(serverPercent, usualServer, usedPercent, highMark, now - StartedAt(w), _letThroughUntil.ContainsKey(w.Id.ToString()))).ToList();
+            foreach (var worker in waiting.Where(w => !StartedBySchedule(w)).ToList())
+            {
+                // Whoever pressed Run, or added a library, wants it now: cancelling it would look like a failure in Jellyfin.
+                _letThroughUntil[worker.Id.ToString()] = now + JustStarted;
+                waiting.Remove(worker);
+                _logger.LogInformation("Jellyfin Medic: '{Task}' was started by hand or queued by Jellyfin, not by its schedule, so LoadGuard lets it run although the server's memory is at {Used:0}%.", worker.Name, serverPercent);
+            }
+
             if (waiting.Count > 0)
             {
+                string why = usualServer is not { } usual ? "Medic hasn't watched it long enough to know its usual level"
+                    : usedPercent >= highMark ? $"Jellyfin itself is at {usedPercent.ToString("0", CultureInfo.InvariantCulture)}% of what it may use"
+                    : $"above its usual {usual.ToString("0", CultureInfo.InvariantCulture)}%";
                 foreach (var worker in waiting)
                 {
                     try
                     {
                         _tasks.Cancel(worker);
                         Defer(worker);
-                        Record("postponed", worker.Name, serverUsedGb, serverTotalGb);
-                        _logger.LogWarning("Jellyfin Medic: the server's memory is at {Used:0}% of {Total:0} GB; postponed '{Task}' until it is below {Mark}%, or two hours at most.", serverPercent, serverTotalGb, worker.Name, clearMark);
+                        Record("postponed", worker.Name, serverUsedGb, serverTotalGb, ServerMemoryBasis);
+                        _logger.LogWarning("Jellyfin Medic: the server's memory is at {Used:0}% of {Total:0} GB, past the {Ceiling}% ceiling, and {Why}; postponed '{Task}' until memory settles, or two hours at most, and never into the avoided hours or while someone is watching.", serverPercent, serverTotalGb, highMark, why, worker.Name);
                     }
                     catch (Exception ex)
                     {
@@ -218,9 +261,10 @@ public sealed class LoadGuard : IHostedService, IDisposable
                 return;
             }
 
-            // Memory has recovered and nothing heavy is running: restart one deferred task.
+            // Memory allows it, nothing heavy is running, and it's a time a scheduled run could have: restart one deferred task.
             bool settled = now - _lastActionUtc > TimeSpan.FromMinutes(2);
-            if (_deferred.Count > 0 && settled && CanRestart(usedPercent, serverPercent, highMark, clearMark, heavyRunning.Count, now - _deferred[0].StoppedUtc))
+            if (_deferred.Count > 0 && settled
+                && CanRestart(usedPercent, serverPercent, usualServer, highMark, clearMark, heavyRunning.Count, now - _deferred[0].StoppedUtc, BusyProfile.InAvoidedHours(DateTime.Now.TimeOfDay, settings), Watching()))
             {
                 string id = _deferred[0].TaskId;
                 var worker = _tasks.ScheduledTasks.FirstOrDefault(t => t.Id.ToString() == id);
@@ -233,10 +277,20 @@ public sealed class LoadGuard : IHostedService, IDisposable
                     // Only off the list once it has really been started again; while it's still cancelling, it waits its turn.
                     try
                     {
-                        _tasks.Execute(worker, new TaskOptions());
+                        _tasks.Execute(worker, RestartOptions(worker.Triggers));
                         _letThroughUntil[id] = now + TimeSpan.FromMinutes(10);
                         DropFirst();
-                        Record("restarted", worker.Name, usedGb, limitGb);
+
+                        // Recorded on the memory it was held for, so a postponement and its restart compare like with like.
+                        if (HeldOn(LoadGuardLog.Load(_paths), worker.Name) == ServerMemoryBasis && serverPercent is not null)
+                        {
+                            Record("restarted", worker.Name, serverUsedGb, serverTotalGb, ServerMemoryBasis);
+                        }
+                        else
+                        {
+                            Record("restarted", worker.Name, usedGb, limitGb, JellyfinMemory);
+                        }
+
                         _logger.LogInformation("Jellyfin Medic: restarted deferred task '{Task}' with memory at {Used:0}% for Jellyfin and {Server} for the whole server.", worker.Name, usedPercent, serverPercent is { } server ? server.ToString("0", CultureInfo.InvariantCulture) + "%" : "an unknown share");
                         _lastActionUtc = DateTime.UtcNow;
                     }
@@ -260,20 +314,116 @@ public sealed class LoadGuard : IHostedService, IDisposable
 
     /// <summary>
     /// Whether a running heavy task should wait: it started under a minute ago, the whole server's memory (other
-    /// programs included) is past the ceiling, and it isn't a task the guard has just started again.
+    /// programs included) is past the ceiling, and it isn't a task the guard has just started again. A server past the
+    /// ceiling only holds a task back when it has risen above its usual level, when Jellyfin itself is past the ceiling,
+    /// or while its usual level isn't known yet: on a server that always sits there, waiting would protect nothing.
     /// </summary>
-    internal static bool HoldBack(double? serverPercent, int highMark, TimeSpan runningFor, bool letThrough) =>
-        serverPercent is { } server && server >= highMark && runningFor < JustStarted && !letThrough;
+    internal static bool HoldBack(double? serverPercent, double? usualServer, double jellyfinPercent, int highMark, TimeSpan runningFor, bool letThrough) =>
+        serverPercent is { } server && server >= highMark && runningFor < JustStarted && !letThrough
+        && (usualServer is not { } usual || server >= usual + RisePoints || jellyfinPercent >= highMark);
 
     /// <summary>
-    /// Whether the oldest waiting task can start again: nothing heavy runs, Jellyfin's own memory is below the restart
-    /// mark, and so is the whole server's. Once the task has waited MaxWait, the server's memory no longer counts and
-    /// Jellyfin's only has to be below the ceiling, so a Jellyfin that settles between the two marks can't hold it for ever.
+    /// Whether the oldest waiting task can start again: nothing heavy runs, it's outside the avoided hours, nobody is
+    /// watching, Jellyfin's own memory is below the restart mark, and the whole server's is too or is back to its usual
+    /// level. Once the task has waited MaxWait, the server's memory no longer counts and Jellyfin's only has to be below
+    /// the ceiling, so a Jellyfin that settles between the two marks can't hold it for ever.
     /// </summary>
-    internal static bool CanRestart(double jellyfinPercent, double? serverPercent, int highMark, int clearMark, int heavyRunning, TimeSpan waited) =>
-        heavyRunning == 0 && (waited >= MaxWait
+    internal static bool CanRestart(double jellyfinPercent, double? serverPercent, double? usualServer, int highMark, int clearMark, int heavyRunning, TimeSpan waited, bool avoidedHours, bool watching) =>
+        heavyRunning == 0 && !avoidedHours && !watching && (waited >= MaxWait
             ? jellyfinPercent < highMark
-            : jellyfinPercent <= clearMark && (serverPercent is not { } server || server <= clearMark));
+            : jellyfinPercent <= clearMark
+              && (serverPercent is not { } server || server <= clearMark || (usualServer is { } usual && server < usual + RisePoints)));
+
+    /// <summary>
+    /// Whether a run was started by the task's schedule: at one of its daily or weekly times, once its interval has
+    /// passed, as Jellyfin starts, or by Medic's monthly runner. Anything else was started by hand (the Run button) or
+    /// queued by Jellyfin (Scan All Libraries, a library added or changed).
+    /// </summary>
+    internal static bool StartedBySchedule(IReadOnlyList<TaskTriggerInfo> triggers, TaskResult? previous, DateTime startedUtc, TimeZoneInfo zone, DateTime guardStartedUtc, DateTime? managedStartedLocal)
+    {
+        // Jellyfin's triggers and Medic's monthly runner both go by the server's local clock.
+        var local = TimeZoneInfo.ConvertTimeFromUtc(startedUtc, zone);
+        if (managedStartedLocal is { } managed && (local - managed).Duration() <= TriggerSlack)
+        {
+            return true;
+        }
+
+        return triggers.Any(t => t.Type switch
+        {
+            TaskTriggerInfoType.DailyTrigger => t.TimeOfDayTicks is { } at && SinceTime(local, at, null) <= TriggerSlack,
+            TaskTriggerInfoType.WeeklyTrigger => t.TimeOfDayTicks is { } at && t.DayOfWeek is { } day && SinceTime(local, at, day) <= TriggerSlack,
+            // Jellyfin starts an interval no sooner than that long after the last run ended; a task that never ran has nothing to go by.
+            TaskTriggerInfoType.IntervalTrigger => t.IntervalTicks is { } every && (previous is null || startedUtc - previous.EndTimeUtc >= TimeSpan.FromTicks(every) - TriggerSlack),
+            TaskTriggerInfoType.StartupTrigger => startedUtc - guardStartedUtc <= StartupSlack,
+            _ => false
+        });
+    }
+
+    // How long ago the trigger's time of day last came round, on its weekday for a weekly one.
+    private static TimeSpan SinceTime(DateTime local, long timeOfDayTicks, DayOfWeek? day)
+    {
+        var at = local.Date + TimeSpan.FromTicks(timeOfDayTicks);
+        if (at > local)
+        {
+            at = at.AddDays(-1);
+        }
+
+        return day is { } weekday && at.DayOfWeek != weekday ? TimeSpan.MaxValue : local - at;
+    }
+
+    /// <summary>
+    /// The options a held task starts again with: the time limit set on its triggers in Jellyfin, the shortest if they
+    /// differ, as Jellyfin applies it only to runs its triggers start.
+    /// </summary>
+    internal static TaskOptions RestartOptions(IReadOnlyList<TaskTriggerInfo> triggers) =>
+        new() { MaxRuntimeTicks = triggers.Select(t => t.MaxRuntimeTicks).Where(t => t > 0).Min() };
+
+    /// <summary>Which memory the task was last held for: the server's when it was postponed, Jellyfin's when it was stopped.</summary>
+    internal static string HeldOn(IEnumerable<LoadGuardEvent> log, string taskName) =>
+        log.FirstOrDefault(e => e.TaskName == taskName && e.Action is "postponed" or "stopped")?.Action == "postponed" ? ServerMemoryBasis : JellyfinMemory;
+
+    private bool StartedBySchedule(IScheduledTaskWorker worker)
+    {
+        DateTime? managed;
+        lock (ScheduleStorage.SyncRoot)
+        {
+            managed = ScheduleStorage.ReadList<ManagedRun>(ScheduleStorage.ManagedPath(_paths))
+                .FirstOrDefault(r => ScheduleStorage.SameId(r.TaskId, worker.Id.ToString()))?.LastStartedLocal;
+        }
+
+        return StartedBySchedule(worker.Triggers, worker.LastExecutionResult, StartedAt(worker), TimeZoneInfo.Local, _startedAtUtc, managed);
+    }
+
+    private bool Watching() => _sessions.Sessions.Cast<object>().Any(s => SettingsReader.Get(s, "NowPlayingItem") is not null);
+
+    /// <summary>
+    /// The server's usual memory level: the middle reading of the last two hours, so a level it keeps for hours counts
+    /// and a short rise doesn't. Unknown until there are twenty minutes of readings.
+    /// </summary>
+    internal sealed class UsualMemory
+    {
+        private readonly Queue<(DateTime At, double Percent)> _readings = new();
+
+        public void Add(DateTime utc, double percent)
+        {
+            _readings.Enqueue((utc, percent));
+            while (_readings.Peek().At < utc - UsualWindow)
+            {
+                _readings.Dequeue();
+            }
+        }
+
+        public double? Level(DateTime utc)
+        {
+            if (_readings.Count == 0 || utc - _readings.Peek().At < UsualAfter)
+            {
+                return null;
+            }
+
+            var sorted = _readings.Select(r => r.Percent).Order().ToArray();
+            return sorted[sorted.Length / 2];
+        }
+    }
 
     private static bool IsHeavy(IScheduledTaskWorker task) =>
         HeavyKeys.Contains(task.ScheduledTask.Key) || HeavyWords.Any(w => task.Name.Contains(w, StringComparison.OrdinalIgnoreCase));
@@ -362,7 +512,7 @@ public sealed class LoadGuard : IHostedService, IDisposable
         MemoryUsedPercent(out double usedGb, out double limitGb);
         foreach (var task in released)
         {
-            Record("released", task.TaskName, usedGb, limitGb);
+            Record("released", task.TaskName, usedGb, limitGb, JellyfinMemory);
         }
     }
 
@@ -532,14 +682,15 @@ public sealed class LoadGuard : IHostedService, IDisposable
         return null;
     }
 
-    private void Record(string action, string task, double usedGb, double limitGb) =>
+    private void Record(string action, string task, double usedGb, double limitGb, string memory) =>
         LoadGuardLog.Add(_paths, new LoadGuardEvent
         {
             TimestampUtc = DateTime.UtcNow,
             Action = action,
             TaskName = task,
             MemoryUsedGb = usedGb,
-            MemoryLimitGb = limitGb
+            MemoryLimitGb = limitGb,
+            Memory = memory
         });
 }
 
@@ -554,6 +705,9 @@ public class LoadGuardEvent
     public double MemoryUsedGb { get; set; }
 
     public double MemoryLimitGb { get; set; }
+
+    // Which memory the two figures are: "server" (the whole server's) or "jellyfin" (Jellyfin's own); empty in older records.
+    public string Memory { get; set; } = string.Empty;
 }
 
 public static class LoadGuardLog

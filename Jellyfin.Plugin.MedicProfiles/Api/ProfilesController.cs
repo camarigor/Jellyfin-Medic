@@ -387,7 +387,7 @@ public class ProfilesController : ControllerBase
     internal static string Authority(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var u) ? $"{u.Scheme}://{u.Host}:{u.Port}" : url;
 
-    private static string CleanUrl(string? url)
+    internal static string CleanUrl(string? url)
     {
         string u = (url ?? string.Empty).Trim().TrimEnd('/');
         if (u.Length > 0 && !u.Contains("://", StringComparison.Ordinal))

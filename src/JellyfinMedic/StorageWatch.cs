@@ -17,6 +17,9 @@ public sealed class DriveStatus
 
     public string ExamplePath { get; set; } = string.Empty;
 
+    // Other mount points of the same filesystem, such as a second library folder bind-mounted from the same disk.
+    internal List<string> OtherMountPoints { get; } = new();
+
     /// <summary>
     /// What its warnings are remembered by when ignored: the mount point, which tells apart two drives that hold the
     /// same libraries, or what it holds when the mount point couldn't be read (Key then changes with free space).
@@ -80,33 +83,60 @@ public static class StorageWatch
 
     internal static List<DriveStatus> Drives(IEnumerable<(string Holds, string Path)> folders, Func<string, bool> libraryPresent)
     {
-        var byKey = new Dictionary<string, DriveStatus>(StringComparer.Ordinal);
         var roots = new Lazy<List<string>>(DriveRoots);
+        var mountInfo = new Lazy<string[]>(() => HostPlatform.Lines("/proc/self/mountinfo"));
+        return Drives(folders, libraryPresent, SystemProbe.Space, path => DriveOf(path, roots) is { } mount ? (mount, DeviceOf(mount, mountInfo.Value)) : (null, null));
+    }
+
+    internal static List<DriveStatus> Drives(
+        IEnumerable<(string Holds, string Path)> folders,
+        Func<string, bool> libraryPresent,
+        Func<string, (double FreeGb, double TotalGb)?> spaceOf,
+        Func<string, (string? MountPoint, string? Device)> driveOf)
+    {
+        // A drive is its device: in a container each bind-mounted folder is a mount point of its own, so two library
+        // folders from one disk would otherwise show as two drives with the same warnings twice.
+        var byDrive = new Dictionary<string, List<(string Holds, string Path, string? Mount, (double FreeGb, double TotalGb) Space)>>(StringComparer.Ordinal);
         foreach (var (holds, path) in folders)
         {
             if (string.IsNullOrWhiteSpace(path) || (!SystemFolder(holds) && !libraryPresent(path))
-                || SystemProbe.Space(path) is not { } space || space.TotalGb <= 0)
+                || spaceOf(path) is not { } space || space.TotalGb <= 0)
             {
                 continue;
             }
 
             // Only when the drive can't be named are drives with the same size and free space one.
-            string? mount = DriveOf(path, roots);
-            string key = mount ?? string.Create(CultureInfo.InvariantCulture, $"{space.TotalGb:0.0}/{space.FreeGb:0.0}");
-            if (byKey.TryGetValue(key, out var existing))
+            var (mount, device) = driveOf(path);
+            string identity = device is not null ? "dev:" + device : mount ?? string.Create(CultureInfo.InvariantCulture, $"{space.TotalGb:0.0}/{space.FreeGb:0.0}");
+            if (!byDrive.TryGetValue(identity, out var seen))
             {
-                if (!existing.Holds.Split(", ").Contains(holds, StringComparer.OrdinalIgnoreCase))
-                {
-                    existing.Holds += ", " + holds;
-                }
-
-                continue;
+                byDrive[identity] = seen = new();
             }
 
-            byKey[key] = new DriveStatus { Key = key, MountPoint = mount, Holds = holds, ExamplePath = path, FreeGb = space.FreeGb, TotalGb = space.TotalGb };
+            seen.Add((holds, path, mount, space));
         }
 
-        return byKey.Values.ToList();
+        var drives = new List<DriveStatus>();
+        foreach (var seen in byDrive.Values)
+        {
+            // Saved readings and ignored warnings go by mount point, so the drive keeps one that doesn't depend on the
+            // order of the folders: the first in ordinal order.
+            var mounts = seen.Select(f => f.Mount).OfType<string>().Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+            var named = mounts.Count > 0 ? seen.First(f => f.Mount == mounts[0]) : seen[0];
+            var drive = new DriveStatus
+            {
+                Key = named.Mount ?? string.Create(CultureInfo.InvariantCulture, $"{named.Space.TotalGb:0.0}/{named.Space.FreeGb:0.0}"),
+                MountPoint = named.Mount,
+                Holds = string.Join(", ", seen.Select(f => f.Holds).Distinct(StringComparer.OrdinalIgnoreCase)),
+                ExamplePath = named.Path,
+                FreeGb = named.Space.FreeGb,
+                TotalGb = named.Space.TotalGb
+            };
+            drive.OtherMountPoints.AddRange(mounts.Skip(1));
+            drives.Add(drive);
+        }
+
+        return drives;
     }
 
     /// <summary>Saves today's free space for each drive (once a day) and fills in how fast each is filling.</summary>
@@ -133,6 +163,10 @@ public static class StorageWatch
                     changed = true;
                 }
             }
+
+            // Readings kept under another mount point of the same drive repeat this drive's, and would show it twice.
+            var others = drives.SelectMany(d => d.OtherMountPoints).ToHashSet(StringComparer.Ordinal);
+            changed |= history.RemoveAll(h => others.Contains(h.Key)) > 0;
 
             string oldest = DateTime.Now.AddDays(-KeepDays).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             changed |= history.RemoveAll(h => string.CompareOrdinal(h.Day, oldest) < 0) > 0;
@@ -203,6 +237,16 @@ public static class StorageWatch
             return false;
         }
     }
+
+    /// <summary>
+    /// The device ("major:minor") behind a mount point, from /proc/self/mountinfo lines; a bind mount shows the device of
+    /// the filesystem it comes from. The last mount on a point is the one in use. Null when it isn't listed.
+    /// </summary>
+    internal static string? DeviceOf(string mountPoint, IEnumerable<string> mountInfo) =>
+        mountInfo.Select(l => l.Split(' '))
+            .Where(p => p.Length >= 5 && p[4].Replace("\\040", " ", StringComparison.Ordinal) == mountPoint)
+            .Select(p => p[2])
+            .LastOrDefault();
 
     /// <summary>The drive that holds <paramref name="path"/>, or null when it can't be named.</summary>
     public static string? DriveOf(string path) => DriveOf(path, new Lazy<List<string>>(DriveRoots));

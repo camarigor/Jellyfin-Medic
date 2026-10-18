@@ -198,17 +198,9 @@ public sealed class DiagnosticsEngine
 
         Guard(AreaTasks, () =>
         {
-            var events = LoadGuardLog.Load(_paths);
-            var recent = events.Where(e => e.TimestampUtc > DateTime.UtcNow.AddDays(-7) && e.Action == "stopped").ToList();
-            if (recent.Count > 0)
-            {
-                var last = recent[0];
-                Add(AreaTasks, Sev.Improve, "Tasks have been overloading memory",
-                    $"Medic stopped {recent.Count} heavy task run(s) in the last 7 days to keep the server up (last: {last.TaskName}, memory {last.MemoryUsedGb:0.#} GB)",
-                    HostPlatform.IsContainer ? "Space these tasks out, or give the container more memory" : "Space these tasks out, or add memory",
-                    "When several heavy scans run at once they can use all the memory and crash the server. Medic's load guard stopped the extras and restarted them later, but it's better to stop them colliding: Apply the recommended schedule so they don't overlap, and check whether another plugin or a manual scan is starting them at the same time.",
-                    "Medic → Schedule");
-            }
+            var settings = Plugin.Instance?.Configuration;
+            int? ceiling = settings is { LoadGuardEnabled: true } ? Math.Clamp(settings.MemoryCeilingPercent, 60, 95) : null;
+            _report.Findings.AddRange(LoadGuardFindings(LoadGuardLog.Load(_paths), DateTime.UtcNow, ceiling, HostPlatform.IsContainer));
         });
 
         _report.Findings.AddRange(pluginReports.SelectMany(p => p.Findings));
@@ -238,6 +230,42 @@ public sealed class DiagnosticsEngine
             .ToList();
 
         return _report;
+    }
+
+    /// <summary>What LoadGuard's log says about the last week, on plain inputs so tests can give it any log.</summary>
+    internal static List<Finding> LoadGuardFindings(IReadOnlyList<LoadGuardEvent> events, DateTime nowUtc, int? ceilingPercent, bool isContainer)
+    {
+        var findings = new List<Finding>();
+        var recent = events.Where(e => e.TimestampUtc > nowUtc.AddDays(-7) && e.Action == "stopped").ToList();
+        if (recent.Count > 0)
+        {
+            var last = recent[0];
+            findings.Add(NewFinding(AreaTasks, Sev.Improve, "Tasks have been overloading memory",
+                $"Medic stopped {recent.Count} heavy task run(s) in the last 7 days to keep the server up (last: {last.TaskName}, memory {last.MemoryUsedGb:0.#} GB)",
+                isContainer ? "Space these tasks out, or give the container more memory" : "Space these tasks out, or add memory",
+                "When several heavy scans run at once they can use all the memory and crash the server. Medic's load guard stopped the extras and restarted them later, but it's better to stop them colliding: Apply the recommended schedule so they don't overlap, and check whether another plugin or a manual scan is starting them at the same time.",
+                "Medic → Schedule"));
+        }
+
+        // LoadGuard only holds a task back on a rise above the usual level, so postponements on most days mean memory climbs
+        // past the ceiling that often: tasks keep running late, and the ceiling may sit below what the machine needs.
+        var postponed = events.Where(e => e.Action == "postponed" && e.TimestampUtc > nowUtc.AddDays(-7) && e.TimestampUtc <= nowUtc).ToList();
+        int days = postponed.Select(e => (int)(nowUtc - e.TimestampUtc).TotalDays).Distinct().Count();
+        if (ceilingPercent is { } ceiling && days >= 3)
+        {
+            var last = postponed[0];
+            double highest = postponed.Where(e => e.MemoryLimitGb > 0).Select(e => e.MemoryUsedGb / e.MemoryLimitGb * 100).DefaultIfEmpty(ceiling).Max();
+            int above = (int)Math.Ceiling(highest) + 2;
+            findings.Add(NewFinding(AreaTasks, Sev.Improve, "The server's memory often climbs past Medic's memory ceiling",
+                $"Medic postponed {postponed.Count} heavy task run(s) on {days} of the last 7 days: the whole server's memory was up to {highest:0}% and the ceiling is {ceiling}% (last: {last.TaskName}, {last.MemoryUsedGb:0.#} of {last.MemoryLimitGb:0.#} GB)",
+                above <= 95
+                    ? $"Raise the memory ceiling to {above}% if this is the server's normal use, or free memory other programs use"
+                    : "Free memory other programs use: the ceiling can't go above 95%",
+                "Medic holds back a heavy task its schedule starts (library scans, metadata refreshes, trickplay and the like) while the whole server's memory, other programs included, is past the ceiling and has risen above its usual level, or while Jellyfin itself is past the ceiling. Tasks started by hand always run. A held task starts again once memory settles, or after two hours at most, but not in your avoided hours or while someone is watching. Postponements on most days mean memory climbs past the ceiling that often, so tasks keep running late and can leave the quiet hours. If these levels are normal for the machine, raise the ceiling just above them so Medic only acts on real spikes; if not, find which program fills the memory.",
+                "Medic → Settings → Memory ceiling"));
+        }
+
+        return findings;
     }
 
     /// <summary>Task Advisor and Setup Optimiser are replaced by Medic and shouldn't run alongside it.</summary>
@@ -475,11 +503,15 @@ public sealed class DiagnosticsEngine
 
             // Trickplay images are made with the same FFmpeg, and can use the GPU too.
             // (Trickplay on the CPU altogether is checked under Server.)
-            if (SettingsReader.Bool(server, "TrickplayOptions.EnableHwAcceleration") != false
+            // Jellyfin only has a GPU JPEG encoder for QSV, VideoToolbox, Rockchip and VAAPI on Intel's iHD driver:
+            // on AMD and NVIDIA the switch changes nothing.
+            bool gpuJpegEncoder = hwType is "qsv" or "videotoolbox" or "rkmpp" || (hwType == "vaapi" && hw.GpuVendor == "intel");
+            if (gpuJpegEncoder
+                && SettingsReader.Bool(server, "TrickplayOptions.EnableHwAcceleration") != false
                 && SettingsReader.Bool(server, "TrickplayOptions.EnableHwEncoding") == false)
             {
                 findings.Add(NewFinding(AreaHardware, Sev.Tip, "Trickplay images are encoded on the CPU", "Hardware encoding for trickplay: off", "On (if your GPU supports MJPEG encoding)",
-                    "Intel and recent AMD GPUs can also encode the thumbnails, which takes the last part of the work off the CPU.", WhereTrickplay));
+                    "Your GPU can also encode the thumbnails, which takes the last part of the work off the CPU.", WhereTrickplay));
             }
         }
 
@@ -595,15 +627,31 @@ public sealed class DiagnosticsEngine
                     "A 4K transcode can use several GB of temporary space; when it runs out, playback stops.", WhereTranscoding);
             }
 
-            if (hw.MemoryGb >= 16 && HostPlatform.RamTranscodeHow is { } how)
+            if (HostPlatform.RamTranscodeHow is { } how
+                && RamTranscodeTip(transcodePath, how, HostPlatform.Kind, hw.MemoryGb, FreeMemoryGb()) is { } tip)
             {
-                Add(AreaHardware, Sev.Tip, "You could transcode to RAM", transcodePath, how,
-                    $"Jellyfin can use {SystemProbe.Gb(hw.MemoryGb)} of memory. Transcoding to RAM saves SSD wear and is slightly faster. This is optional: "
-                        + (HostPlatform.Kind == HostKind.Unraid ? "an SSD cache pool is perfectly fine." : "an SSD is perfectly fine too."),
-                    WhereDocker + ", then Dashboard → Playback → Transcoding");
+                _report.Findings.Add(tip);
             }
         }
     }
+
+    // The largest RAM folder the tip suggests, and what the server should still have free beside it.
+    private const double RamFolderGb = 8;
+    private const double RamFolderMarginGb = 4;
+
+    /// <summary>The "transcode to RAM" tip, on plain inputs so tests can give it any memory.</summary>
+    /// <remarks>
+    /// Goes by the memory free on the server, not what .NET may address: in a container without a limit that is the whole
+    /// machine, and a RAM folder filled by a 4K transcode can't be reclaimed, so it pushes a busy server into swap.
+    /// </remarks>
+    internal static Finding? RamTranscodeTip(string transcodePath, string how, HostKind kind, double memoryGb, double? freeGb) =>
+        memoryGb < 16 || freeGb is not { } free || free < RamFolderGb + RamFolderMarginGb ? null : NewFinding(AreaHardware, Sev.Tip, "You could transcode to RAM", transcodePath, how,
+            $"The server has {SystemProbe.Gb(free)} of memory free now. Transcoding to RAM saves SSD wear and is slightly faster. This is optional: "
+                + (kind == HostKind.Unraid ? "an SSD cache pool is perfectly fine." : "an SSD is perfectly fine too."),
+            WhereDocker + ", then Dashboard → Playback → Transcoding");
+
+    private static double? FreeMemoryGb() =>
+        ServerMemory.UsedPercent(out double usedGb, out double totalGb) is null ? null : totalGb - usedGb;
 
     // ---------- Storage ----------
 
@@ -811,7 +859,7 @@ public sealed class DiagnosticsEngine
                 WhereDocker);
         }
 
-        if (!SameDrive(StorageWatch.DriveOf(_paths.CachePath), StorageWatch.DriveOf(_paths.DataPath)) && SystemProbe.Space(_paths.CachePath) is { } cache && cache.FreeGb < 10)
+        if (!SameDrive(StorageWatch.DriveOf(_paths.CachePath), StorageWatch.DriveOf(_paths.DataPath), mount => StorageWatch.DeviceOf(mount, HostPlatform.Lines("/proc/self/mountinfo"))) && SystemProbe.Space(_paths.CachePath) is { } cache && cache.FreeGb < 10)
         {
             Add(AreaStorage, Sev.Improve, "Low space on the cache drive", $"{SystemProbe.Gb(cache.FreeGb)} free", "At least 10 GB free",
                 "Images and metadata are cached here; when it's full, artwork stops loading.", WhereDocker);
@@ -1753,6 +1801,11 @@ public sealed class DiagnosticsEngine
 
     // A drive that can't be named counts as another drive: one warning too many beats none.
     internal static bool SameDrive(string? driveA, string? driveB) => driveA is not null && driveA == driveB;
+
+    // Two mount points bound from one disk are one drive too.
+    internal static bool SameDrive(string? driveA, string? driveB, Func<string, string?> deviceOf) =>
+        SameDrive(driveA, driveB)
+        || (driveA is not null && driveB is not null && deviceOf(driveA) is { } device && device == deviceOf(driveB));
 
     private static string? Nice(string? hwType) => hwType?.ToLowerInvariant() switch
     {

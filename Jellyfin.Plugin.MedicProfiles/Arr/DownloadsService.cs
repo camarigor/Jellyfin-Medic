@@ -192,8 +192,9 @@ public class DownloadsService
     private readonly ArrClient _arr;
     private readonly ArrStore _store;
 
-    // Movie and series lists change slowly and can be large, so they're kept briefly.
-    private readonly Dictionary<ArrApp, (List<MediaChoice> List, DateTime At)> _library = new();
+    // Movie and series lists change slowly and can be large, so they're kept briefly, with the address and key they
+    // were read with: the ids mean nothing to another server, so a list from before a change is never offered.
+    private readonly Dictionary<ArrApp, (List<MediaChoice> List, DateTime At, (string? Url, string? Key) From)> _library = new();
 
     public DownloadsService(ArrClient arr, ArrStore store)
     {
@@ -608,9 +609,10 @@ public class DownloadsService
         }
 
         List<MediaChoice>? all = null;
+        var from = (ArrClient.BaseUrl(app), _store.GetKey(app));
         lock (_library)
         {
-            if (_library.TryGetValue(app, out var cached) && DateTime.UtcNow - cached.At < TimeSpan.FromMinutes(10))
+            if (_library.TryGetValue(app, out var cached) && cached.From == from && DateTime.UtcNow - cached.At < TimeSpan.FromMinutes(10))
             {
                 all = cached.List;
             }
@@ -630,7 +632,7 @@ public class DownloadsService
                 .ToList();
             lock (_library)
             {
-                _library[app] = (all, DateTime.UtcNow);
+                _library[app] = (all, DateTime.UtcNow, from);
             }
         }
 

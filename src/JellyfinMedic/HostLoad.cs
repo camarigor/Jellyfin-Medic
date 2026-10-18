@@ -466,15 +466,27 @@ public static class HostLoadAnalyzer
 
     /// <summary>
     /// How busy the server usually is in each hour of the week, 0 (idle) to 1 (flat out): the CPU,
-    /// the busiest drive, or memory past 70% full, whichever is highest. Null where nothing is known.
+    /// the busiest drive, or memory past 70% full and above its usual level, whichever is highest.
+    /// Null where nothing is known.
     /// </summary>
     public static double?[] Busyness(HostLoadSummary summary)
     {
+        // Memory that other services keep high all week is no reason to prefer one hour over another,
+        // and as a level it would outweigh the CPU and drives in every hour. Only the part above the
+        // server's usual level (the median hour) counts.
+        var memoryHours = summary.AverageMemory.Take(168).Where(m => m is not null).Select(m => m!.Value).Order().ToList();
+        double usual = memoryHours.Count == 0 ? 0 : memoryHours.Count % 2 == 1
+            ? memoryHours[memoryHours.Count / 2]
+            : (memoryHours[(memoryHours.Count / 2) - 1] + memoryHours[memoryHours.Count / 2]) / 2;
+
+        // Capped below 100 so a server that is always full still divides by something.
+        double from = Math.Clamp(usual, MemoryPressureFrom, 99);
+
         var result = new double?[168];
         for (int i = 0; i < 168; i++)
         {
             double? memory = summary.AverageMemory.ElementAtOrDefault(i) is { } m
-                ? Math.Max(0, (m - MemoryPressureFrom) / (100 - MemoryPressureFrom) * 100)
+                ? Math.Max(0, (m - from) / (100 - from) * 100)
                 : null;
             var known = new[] { summary.AverageCpu.ElementAtOrDefault(i), summary.AverageDisk.ElementAtOrDefault(i), memory }
                 .Where(v => v is not null).Select(v => v!.Value).ToList();

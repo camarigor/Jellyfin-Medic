@@ -330,6 +330,15 @@ public static class ScheduleStorage
         }
     }
 
+    // For the tests: whether this history's last write failed, so they can wait for a delayed write to have happened.
+    internal static bool RunWriteFailing(IApplicationPaths paths)
+    {
+        lock (SyncRoot)
+        {
+            return FailingRunWrites.Contains(RunHistoryPath(paths));
+        }
+    }
+
     /// <summary>
     /// Keeps of each task its newest KeptRunsPerTask runs and every run of the last week, up to MaxRunsPerTask,
     /// then the newest MaxRunHistory in all. Oldest first.

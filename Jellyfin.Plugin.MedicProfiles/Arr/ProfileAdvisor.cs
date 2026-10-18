@@ -10,6 +10,8 @@ using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
 using Medic.Shared;
@@ -71,6 +73,27 @@ public class PlaybackEvidence
     public int TranscodedFiles { get; set; }
 
     public int SampledFiles { get; set; }
+
+    /// <summary>What films did, for Radarr's advice.</summary>
+    public KindEvidence Films { get; set; } = new();
+
+    /// <summary>What episodes did, for Sonarr's advice.</summary>
+    public KindEvidence Episodes { get; set; } = new();
+
+    // Radarr only fetches films and Sonarr only episodes, so each is judged on its own files.
+    internal KindEvidence For(ArrApp app) => app == ArrApp.Radarr ? Films : Episodes;
+
+    internal KindEvidence? For(BaseItem? item) => item switch
+    {
+        Episode => Episodes,
+        Movie => Films,
+        _ => null
+    };
+}
+
+public class KindEvidence
+{
+    public int TranscodedFiles { get; set; }
 
     public Dictionary<string, int> Signals { get; set; } = new(StringComparer.Ordinal);
 }
@@ -203,7 +226,7 @@ public class ProfileAdvisor
     // ---------- What this server plays ----------
 
     /// <summary>
-    /// Signals, counted in files:
+    /// Signals, counted in files, apart for films and episodes:
     /// dts       transcoded for audio, and its only audio is DTS or TrueHD
     /// hevc      transcoded because the device can't play HEVC
     /// av1       transcoded because the device can't play AV1
@@ -217,7 +240,6 @@ public class ProfileAdvisor
     internal PlaybackEvidence GatherEvidence()
     {
         var evidence = new PlaybackEvidence();
-        var signals = evidence.Signals;
         string logPath = Path.Combine(_paths.PluginConfigurationsPath, "JellyfinMedic", "transcode_log.json");
         try
         {
@@ -239,8 +261,13 @@ public class ProfileAdvisor
 
                         evidence.TranscodedFiles++;
                         string? id = Json.Text(entry, "ItemId") ?? Json.Text(entry, "itemId");
-                        var file = Guid.TryParse(id, out var itemId) ? Describe(_libraryManager.GetItemById(itemId)) : null;
-                        Count(signals, reasons, file);
+                        var item = Guid.TryParse(id, out var itemId) ? _libraryManager.GetItemById(itemId) : null;
+                        // A file gone from the library, or neither a film nor an episode, is no evidence for either app.
+                        if (evidence.For(item) is { } kind)
+                        {
+                            kind.TranscodedFiles++;
+                            Count(kind.Signals, reasons, Describe(item));
+                        }
                     }
                 }
             }
@@ -335,14 +362,15 @@ public class ProfileAdvisor
 
             foreach (var id in sample)
             {
-                var file = Describe(_libraryManager.GetItemById(id));
-                if (file is null || file.VideoCodec is null)
+                var item = _libraryManager.GetItemById(id);
+                var file = Describe(item);
+                if (file is null || file.VideoCodec is null || evidence.For(item) is not { } kind)
                 {
                     continue;
                 }
 
                 evidence.SampledFiles++;
-                var s = evidence.Signals;
+                var s = kind.Signals;
                 s["libFiles"] = s.GetValueOrDefault("libFiles") + 1;
                 if (file.VideoCodec == "hevc")
                 {
@@ -557,7 +585,8 @@ public class ProfileAdvisor
         var list = new List<Suggestion>();
         string appKey = DownloadsService.Key(app);
         string appName = ArrClient.Name(app);
-        var s = evidence.Signals;
+        var kind = evidence.For(app);
+        var s = kind.Signals;
         int Sig(string k) => s.GetValueOrDefault(k);
         var active = data.Profiles.Where(p => p.InUse is null or > 0).ToList();
 
@@ -628,7 +657,7 @@ public class ProfileAdvisor
         }
         else if (Sig("libFiles") >= 100 && Sig("libHevc") * 5 >= Sig("libFiles") && evidence.FromMedic && Sig("hevc") == 0
             // An empty log only means nothing has transcoded yet, not that HEVC plays everywhere.
-            && evidence.TranscodedFiles >= MinTranscodesForTip)
+            && kind.TranscodedFiles >= MinTranscodesForTip)
         {
             // Only profiles that actually hold x265 back. Scored 0 or above (or with no such format), x265 already gets through.
             var hevcFormats = data.CustomFormats.Where(f => hevcPattern.IsMatch(f)).ToList();

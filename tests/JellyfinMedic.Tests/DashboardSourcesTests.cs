@@ -55,7 +55,7 @@ public sealed class LoadGuardPausedTests : IDisposable
     [Fact]
     public void A_stopped_task_is_listed_once_with_its_name_until_it_is_taken_off()
     {
-        using var guard = new LoadGuard(new FakeTaskManager(), _paths, NullLogger<LoadGuard>.Instance);
+        using var guard = new LoadGuard(new FakeTaskManager(), NobodyWatching.Create(), _paths, NullLogger<LoadGuard>.Instance);
         var scan = new FakeTaskWorker("Scan media library", "RefreshLibrary", 30);
 
         guard.Defer(scan);
@@ -72,12 +72,12 @@ public sealed class LoadGuardPausedTests : IDisposable
     public async Task The_list_survives_a_restart_of_Jellyfin()
     {
         var scan = new FakeTaskWorker("Scan media library", "RefreshLibrary", 30);
-        using (var before = new LoadGuard(new FakeTaskManager(), _paths, NullLogger<LoadGuard>.Instance))
+        using (var before = new LoadGuard(new FakeTaskManager(), NobodyWatching.Create(), _paths, NullLogger<LoadGuard>.Instance))
         {
             before.Defer(scan);
         }
 
-        using var after = new LoadGuard(new FakeTaskManager(), _paths, NullLogger<LoadGuard>.Instance);
+        using var after = new LoadGuard(new FakeTaskManager(), NobodyWatching.Create(), _paths, NullLogger<LoadGuard>.Instance);
         await after.StartAsync(CancellationToken.None);
         await after.StopAsync(CancellationToken.None);
 

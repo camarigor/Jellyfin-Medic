@@ -84,7 +84,7 @@ public static class SafeRestart
 
         if (LoadGuard.HeldNames(LoadGuard.Paused) is { } held)
         {
-            logger.LogInformation("Jellyfin Medic: LoadGuard is holding back {Tasks} until memory recovers; they're saved, and while LoadGuard is on it starts them again after the restart.", held);
+            logger.LogInformation("Jellyfin Medic: LoadGuard is holding back {Tasks}; they're saved, and while LoadGuard is on it starts them again after the restart, when memory allows, outside the avoided hours and while nobody is watching.", held);
         }
 
         if (!RestartNow(host, services, logger))

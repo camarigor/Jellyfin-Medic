@@ -5,6 +5,7 @@ using Jellyfin.Plugin.MedicProfiles;
 using Jellyfin.Plugin.MedicProfiles.Arr;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -26,12 +27,14 @@ public sealed class ProfileAdvisorTests : IDisposable
     private static ProfileSummary Profile(int id, string name, params string[] allowed) =>
         new() { Id = id, Name = name, Allowed = allowed.ToList(), InUse = 1 };
 
+    /// <summary>Film evidence, which is what Radarr's advice reads.</summary>
     private static PlaybackEvidence Evidence(int transcoded, params (string Key, int Count)[] signals)
     {
         var e = new PlaybackEvidence { FromMedic = true, TranscodedFiles = transcoded };
+        e.Films.TranscodedFiles = transcoded;
         foreach (var (key, count) in signals)
         {
-            e.Signals[key] = count;
+            e.Films.Signals[key] = count;
         }
 
         return e;
@@ -111,8 +114,56 @@ public sealed class ProfileAdvisorTests : IDisposable
 
         var evidence = Advisor(FakeLibrary.With(film)).GatherEvidence();
 
-        Assert.Equal(1, evidence.Signals["bitrate"]);
-        Assert.Equal(1, evidence.Signals.GetValueOrDefault("remux"));
+        Assert.Equal(1, evidence.Films.Signals["bitrate"]);
+        Assert.Equal(1, evidence.Films.Signals.GetValueOrDefault("remux"));
+    }
+
+    [Fact]
+    public void Four_k_films_shrunk_for_a_device_dont_tell_sonarr_to_untick_2160p()
+    {
+        var films = Enumerable.Range(0, 3).Select(_ => (BaseItem)new Film { Id = Guid.NewGuid() }).ToArray();
+        WriteLog(films, "VideoResolutionNotSupported");
+        var data = Data(Profile(1, "Ultra-HD", "Bluray-2160p"));
+
+        var evidence = Advisor(FakeLibrary.With(films)).GatherEvidence();
+
+        Assert.DoesNotContain(ProfileAdvisor.Advise(ArrApp.Sonarr, data, evidence), s => s.Title.StartsWith("4K", StringComparison.Ordinal));
+        Assert.Contains(ProfileAdvisor.Advise(ArrApp.Radarr, data, evidence), s => s.Title.StartsWith("4K", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Episodes_with_only_lossless_audio_dont_tell_radarr_to_avoid_dts()
+    {
+        var episodes = Enumerable.Range(0, 3).Select(_ => (BaseItem)new Show { Id = Guid.NewGuid() }).ToArray();
+        WriteLog(episodes, "AudioCodecNotSupported");
+        var data = Data(Profile(1, "HD", "Bluray-1080p"));
+
+        var evidence = Advisor(FakeLibrary.With(episodes)).GatherEvidence();
+
+        Assert.DoesNotContain(ProfileAdvisor.Advise(ArrApp.Radarr, data, evidence), s => s.Title.Contains("DTS", StringComparison.Ordinal));
+        var dts = Assert.Single(ProfileAdvisor.Advise(ArrApp.Sonarr, data, evidence), s => s.Title.Contains("DTS", StringComparison.Ordinal));
+        Assert.StartsWith("3 files were", dts.Evidence, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_hevc_heavy_series_library_doesnt_tell_radarr_hevc_plays_fine()
+    {
+        // Films are transcoded often enough for the tip, none for HEVC, but no sampled film is HEVC: only the episodes are.
+        var films = Enumerable.Range(0, ProfileAdvisor.MinTranscodesForTip).Select(_ => (BaseItem)new Film { Id = Guid.NewGuid() }).ToArray();
+        WriteLog(films, "ContainerBitrateExceedsLimit");
+        var episodes = Enumerable.Range(0, 120).Select(_ => (BaseItem)new Show { Id = Guid.NewGuid(), Codec = "hevc" }).ToArray();
+
+        var evidence = Advisor(FakeLibrary.Sampling(films.Concat(episodes).ToArray())).GatherEvidence();
+
+        Assert.DoesNotContain(ProfileAdvisor.Advise(ArrApp.Radarr, WithHevcPenalised(), evidence), s => s.Title.StartsWith("HEVC plays fine", StringComparison.Ordinal));
+    }
+
+    private void WriteLog(IEnumerable<BaseItem> items, string reason)
+    {
+        var log = Path.Combine(_root, "plugins", "configurations", "JellyfinMedic", "transcode_log.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(log)!);
+        string entries = string.Join(",", items.Select(i => $$$"""{"ItemId":"{{{i.Id}}}","Reasons":{"{{{reason}}}":1}}"""));
+        File.WriteAllText(log, "{\"Items\":[" + entries + "]}");
     }
 
     [Fact]
@@ -157,6 +208,18 @@ public sealed class ProfileAdvisorTests : IDisposable
         {
             new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "hevc", Height = 2160 },
             new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "truehd" }
+        };
+    }
+
+    /// <summary>A 1080p episode whose only audio is DTS.</summary>
+    private sealed class Show : Episode
+    {
+        public string Codec { get; init; } = "h264";
+
+        public override IReadOnlyList<MediaStream> GetMediaStreams() => new[]
+        {
+            new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = Codec, Height = 1080 },
+            new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "dts" }
         };
     }
 }
@@ -249,11 +312,12 @@ public sealed class UnexpectedAnswerTests : IDisposable
     }
 }
 
-/// <summary>A library manager that finds the given items and samples nothing, which is all the advisor asks of it.</summary>
+/// <summary>A library manager that finds the given items and samples nothing (or all of them), which is all the advisor asks of it.</summary>
 internal class FakeLibrary : DispatchProxy
 {
     private Dictionary<Guid, BaseItem> _items = new();
     private Action _sampling = () => { };
+    private bool _sampleAll;
 
     public static ILibraryManager With(params BaseItem[] items) => With(() => { }, items);
 
@@ -266,6 +330,14 @@ internal class FakeLibrary : DispatchProxy
         return library;
     }
 
+    /// <summary>Finds the given items and hands every one of them to the library sample.</summary>
+    public static ILibraryManager Sampling(params BaseItem[] items)
+    {
+        var library = With(items);
+        ((FakeLibrary)(object)library)._sampleAll = true;
+        return library;
+    }
+
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
     {
         switch (targetMethod?.Name)
@@ -274,7 +346,7 @@ internal class FakeLibrary : DispatchProxy
                 return _items.GetValueOrDefault((Guid)args![0]!);
             case nameof(ILibraryManager.GetItemIds):
                 _sampling();
-                return new List<Guid>();
+                return _sampleAll ? _items.Keys.ToList() : new List<Guid>();
             default:
                 throw new NotSupportedException(targetMethod?.Name);
         }

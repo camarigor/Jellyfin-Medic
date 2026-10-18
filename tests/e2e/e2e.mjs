@@ -356,6 +356,12 @@ await check('Dashboard data: both routes answer an admin with every section, and
     expect(live.Resources.length > 0 && 'CpuPercent' in live.Resources[0], 'no resource readings');
     expect(JSON.stringify(live.Limits) === JSON.stringify({ CpuPercent: 90, MemoryPercent: 90, DiskMBps: 150, GpuPercent: 95 }), 'limits: ' + JSON.stringify(live.Limits));
     expect(Array.isArray(live.Paused), 'paused: ' + JSON.stringify(live.Paused));
+    // The whole server's memory, which LoadGuard's server check acts on, beside the ceiling it acts at (85 by default).
+    const server = live.Now.ServerMemoryPercent;
+    expect(typeof server === 'number' && server > 0 && live.Now.ServerMemoryTotalGb > 0
+        && Math.abs(server - live.Now.ServerMemoryGb / live.Now.ServerMemoryTotalGb * 100) <= 1, 'server memory: ' + JSON.stringify(live.Now));
+    expect(live.Now.GuardCeilingPercent === 85, 'guard ceiling: ' + live.Now.GuardCeilingPercent);
+    expect(typeof live.Resources.at(-1).ServerMemoryPercent === 'number', 'server memory reading: ' + JSON.stringify(live.Resources.at(-1)));
 
     // An account that isn't an administrator, on its own device so the admin's session stays signed in.
     const name = 'e2e-not-admin';
@@ -576,19 +582,50 @@ await check('schedule apply changes nothing when Medic can\'t save its schedule,
     const before = await triggers();
     // A folder where Medic first writes its schedule file makes that write fail, as a full disk would.
     execFileSync('docker', ['exec', CONTAINER, 'mkdir', '-p', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
+    // Apply takes only the plan a preview showed.
+    const apply = async () => api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule?planHash='
+        + encodeURIComponent((await ok('/JellyfinMedic/Schedule/PreviewScheduleDiff')).PlanHash));
     try {
-        const blocked = await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
+        const blocked = await apply();
         expect(blocked.json?.Success === false && /nothing was changed/.test(blocked.json.Message), `blocked apply: ${blocked.status} ${blocked.text.slice(0, 200)}`);
         expect(await triggers() === before, 'triggers changed although the apply failed');
     } finally {
         execFileSync('docker', ['exec', CONTAINER, 'rmdir', `${MEDIC_DATA}/managed_schedule.json.tmp`]);
     }
 
-    const applied = (await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule')).json;
+    const applied = (await apply()).json;
     expect(applied?.Success && applied.AppliedTasks > 0 && await triggers() !== before, 'apply: ' + JSON.stringify(applied));
     const restored = (await api('POST', `/JellyfinMedic/Schedule/RestorePreviousSchedule?backupFileName=${encodeURIComponent(applied.BackupFile)}`)).json;
     expect(restored?.Success && await triggers() === before, 'restore: ' + JSON.stringify(restored));
     return `${applied.AppliedTasks} tasks applied, then put back`;
+});
+
+await check('schedule Apply without a previewed plan changes nothing', async () => {
+    const triggers = async () => JSON.stringify((await ok('/ScheduledTasks')).map((t) => [t.Id, t.Triggers]).sort((a, b) => a[0].localeCompare(b[0])));
+    const before = await triggers();
+    const backups = (await ok('/JellyfinMedic/Schedule/ListBackups')).length;
+    const r = await api('POST', '/JellyfinMedic/Schedule/ApplyRecommendedSchedule');
+    expect(r.status === 400 && /Preview/.test(r.text), `apply with no plan: ${r.status} ${r.text.slice(0, 200)}`);
+    expect(await triggers() === before, 'triggers changed');
+    expect((await ok('/JellyfinMedic/Schedule/ListBackups')).length === backups, 'a backup was written');
+    return 'refused with 400';
+});
+
+await check('a settings save that changes no track setting keeps the finished track scan', async () => {
+    const s = await ok('/JellyfinMedic/MedicSettings');
+    const status = () => ok('/JellyfinMedic/Tracks/Scan/Status');
+    expect((await api('POST', '/JellyfinMedic/Tracks/Scan/Start')).status === 200, 'the scan didn\'t start');
+    for (let i = 0; i < 120 && (await status()).Running; i++) await sleep(1000);
+    expect((await status()).Result, 'the scan left no result');
+    try {
+        await api('POST', '/JellyfinMedic/MedicSettings', { ...s, InactiveUserDays: s.InactiveUserDays === 45 ? 46 : 45, MemoryCeilingPercent: s.MemoryCeilingPercent === 80 ? 81 : 80, TracksWindowEnabled: !s.TracksWindowEnabled, TracksConcurrentFiles: s.TracksConcurrentFiles === 2 ? 1 : 2 });
+        expect((await status()).Result, 'a save that changed no scan setting threw the scan away');
+        await api('POST', '/JellyfinMedic/MedicSettings', { ...s, TracksExclude: 'E2E scan setting' });
+        expect(!(await status()).Result, 'a changed exclusion kept the old scan');
+    } finally {
+        await api('POST', '/JellyfinMedic/MedicSettings', s);
+    }
+    return 'kept after a settings save, cleared after a track change';
 });
 
 await check('schedule backups each get their own name, and the newest 50 are kept', async () => {
@@ -777,11 +814,30 @@ await check('track cleanup leaves hardlinked files alone', async () => {
     fs.linkSync(file, seed);
     try {
         return await withTrackSettings({ TracksExclude: 'Cut Short' }, async () => {
+            // The scan and the dry run must say what the real run does, not promise space it never frees.
+            expect((await api('POST', '/JellyfinMedic/Tracks/Scan/Start')).status === 200, 'the scan didn\'t start');
+            let scan = null;
+            for (let i = 0; i < 60 && (!scan || scan.Running); i++) {
+                await sleep(1000);
+                scan = await ok('/JellyfinMedic/Tracks/Scan/Status');
+            }
+            const listed = await ok('/JellyfinMedic/Tracks/Scan/Changes?search=Seeded');
+            expect(scan.Result?.FilesLinked >= 1 && listed.Total === 0, `the scan listed the hardlinked film: ${scan.Result?.FilesLinked} linked, ${listed.Total} listed`);
+            expect((await api('POST', '/JellyfinMedic/Tracks/Run?dryRun=true')).status === 200, 'the dry run didn\'t start');
+            let dry = null;
+            for (let i = 0; i < 60 && (!dry || dry.Running); i++) {
+                await sleep(1000);
+                dry = await ok('/JellyfinMedic/Tracks/Progress');
+            }
+            const dryNotes = JSON.stringify(dry.Recent);
+            // Run on its own, this check finds other films not cleaned yet, so only Seeded is looked at.
+            expect(/Skipped Seeded.*2 hard links/.test(dryNotes) && !/Would change Seeded/.test(dryNotes), 'the dry run counted the hardlinked film as changed: ' + dryNotes);
+
             const p = await runTracks();
             const notes = JSON.stringify(p.Recent);
             expect(p.Changed === 0 && p.Skipped === 1 && p.Failed === 0 && /Seeded.*2 hard links/.test(notes), 'the hardlinked film was cleaned: ' + notes);
             expect(audioLanguages(file) === 'eng,fre' && fs.statSync(file).nlink === 2, 'the film was changed');
-            return 'skipped, still shared with the seeding copy';
+            return 'scan, dry run and run all leave it alone, still shared with the seeding copy';
         });
     } finally {
         fs.unlinkSync(seed);
@@ -1799,6 +1855,92 @@ await check('Medic Profiles import list: Change film on a rejected file imports 
     }
 });
 
+// With a few downloads in the pretend Sonarr's queue; the check puts it back to 0.
+async function openProfilesQueue() {
+    fakeArr.queue.total = 3;
+    await page.goto(JF + '/web/index.html#/configurationpage?name=MedicProfiles');
+    await page.reload();
+    await page.waitForSelector('#MedicProfilesPage .mp-tab', { timeout: 30000 });
+    await page.locator('#mp-queue > li').first().waitFor({ timeout: 15000 });
+}
+
+await check('Medic Profiles keeps a Remove panel opened while the queue was on its way', async () => {
+    const queueRoute = /\/MedicProfiles\/Queue(\?|$)/;
+    let release = () => {};
+    const held = new Promise((r) => { release = r; });
+    let asked = false;
+    try {
+        await openProfilesQueue();
+        await page.route(queueRoute, async (route) => { asked = true; await held; await route.continue(); });
+        await page.click('#mp-refresh');
+        for (let i = 0; i < 50 && !asked; i++) await sleep(100);
+        expect(asked, 'Refresh never asked for the queue');
+        const card = page.locator('#mp-queue > li').first();
+        await card.getByRole('button', { name: 'Remove', exact: true }).click();
+        await card.locator('.mp-confirm').waitFor({ timeout: 5000 });
+        const answered = page.waitForResponse(queueRoute, { timeout: 15000 });
+        release();
+        await answered;
+        await sleep(500);
+        expect(await card.locator('.mp-confirm').count() === 1, 'the queue answer wiped the Remove panel opened while it was on its way');
+        return 'panel kept';
+    } finally {
+        release();
+        await page.unroute(queueRoute);
+        fakeArr.queue.total = 0;
+    }
+});
+
+await check('Medic Profiles stops refreshing the Downloads tab while the browser tab is hidden, and refreshes on return', async () => {
+    const queueRoute = /\/MedicProfiles\/Queue(\?|$)/;
+    const timers = () => page.evaluate(() => ({ set: window.__mpTimers.slice(), cleared: window.__mpCleared.slice() }));
+    try {
+        await openProfilesQueue();
+        // The 30 second refresh is seen through setTimeout, so the check doesn't have to wait for it.
+        await page.evaluate(() => {
+            const w = window, set = w.setTimeout, clear = w.clearTimeout;
+            w.__mpTimers = [];
+            w.__mpCleared = [];
+            w.setTimeout = function (fn, ms, ...rest) { const id = set.call(w, fn, ms, ...rest); if (ms === 30000) w.__mpTimers.push(id); return id; };
+            w.clearTimeout = function (id) { w.__mpCleared.push(id); return clear.call(w, id); };
+            w.__mpHide = (hidden) => {
+                Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+                Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
+                document.dispatchEvent(new Event('visibilitychange'));
+            };
+        });
+        let answered = page.waitForResponse(queueRoute, { timeout: 15000 });
+        await page.click('#mp-refresh');
+        await answered;
+        await sleep(300);
+        const pending = (await timers()).set.at(-1);
+        expect(pending !== undefined, 'no 30 second refresh was scheduled while the tab was shown');
+
+        await page.evaluate(() => window.__mpHide(true));
+        expect((await timers()).cleared.includes(pending), 'the 30 second refresh stayed scheduled after the browser tab was hidden');
+        // An answer that lands while the tab is hidden doesn't schedule another one.
+        const before = (await timers()).set.length;
+        answered = page.waitForResponse(queueRoute, { timeout: 15000 });
+        await page.click('#mp-refresh');
+        await answered;
+        await sleep(300);
+        expect((await timers()).set.length === before, 'a refresh was scheduled while the browser tab was hidden');
+
+        answered = page.waitForResponse(queueRoute, { timeout: 5000 });
+        await page.evaluate(() => window.__mpHide(false));
+        await answered.catch(() => { throw new Error('showing the tab again didn\'t refresh the queue'); });
+        await sleep(300);
+        expect((await timers()).set.length === before + 1, 'the 30 second refresh didn\'t start again once the tab was shown');
+        return 'stopped while hidden, refreshed on return';
+    } finally {
+        fakeArr.queue.total = 0;
+        await page.evaluate(() => {
+            delete document.hidden;
+            delete document.visibilityState;
+        }).catch(() => {});
+    }
+});
+
 await check('My picks page opens signed in', async () => {
     errors.length = 0;
     await page.goto(JF + '/MedicPicks/Page');
@@ -1983,7 +2125,9 @@ async function medicTab(name, fresh, p = page) {
         // a 401), so this page and every later check land on the sign-in screen. The page showing means the
         // check is done.
         await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
-        await p.reload();
+        // Only the page's own markup is needed, which the wait below checks: waiting for "load" also waits for every
+        // image and plugin script, and one slow request on a busy machine held a reload past 30 s.
+        await p.reload({ waitUntil: 'domcontentloaded' });
     }
     await p.waitForSelector('#JellyfinMedicPage .so-tab', { timeout: 30000 });
     await settleWhatsNew(p);
@@ -2462,12 +2606,16 @@ await check('Dashboard panels: fixture data written, and the Dashboard built aga
 
 await check('Dashboard panels: Right now, Disks and Load show the live readings, the drive with least room and the alert lines', async () => {
     await medicTab('dashboard', true);
-    await page.waitForFunction(() => document.querySelectorAll('#md-load .md-meter').length === 4, null, { timeout: 30000 });
+    await page.waitForFunction(() => document.querySelectorAll('#md-load .md-meter').length === 5, null, { timeout: 30000 });
     const data = await ok('/JellyfinMedic/Dashboard');
     const disks = await page.textContent('#md-disks-big');
     expect(/\d+% free|GB free|TB free/.test(disks), 'Disks: ' + disks);
+    const names = await page.$$eval('#md-load .md-meter-head span', (spans) => spans.map((s) => s.textContent));
+    expect(JSON.stringify(names) === JSON.stringify(['CPU with FFmpeg', 'Memory with FFmpeg', 'Disk', 'GPU', 'Server memory']), 'meters: ' + JSON.stringify(names));
     const charts = await page.evaluate(() => Array.from(document.querySelectorAll('#md-load .md-meter svg[role="img"]')).map((s) => s.getAttribute('aria-label')));
-    expect(charts.length >= 2 && charts.every((l) => /alert at/.test(l)), 'Load charts: ' + JSON.stringify(charts));
+    expect(charts.length >= 3 && charts.every((l) => /alert at|LoadGuard's ceiling at/.test(l)), 'Load charts: ' + JSON.stringify(charts));
+    // The server's memory is drawn against the ceiling LoadGuard pauses heavy tasks at, not the 90% alert for Jellyfin's own.
+    expect(charts.some((l) => /^Server memory: now [\d.]+%.*; LoadGuard's ceiling at 85%\.$/.test(l)), 'no server memory chart: ' + JSON.stringify(charts));
     const ffmpeg = await page.textContent('#md-load-ffmpeg');
     expect(/FFmpeg/.test(ffmpeg), 'FFmpeg line: ' + ffmpeg);
     return `${charts.length} charts; ${disks.trim()} on ${data.Disks.Drives.length} drives`;
@@ -2475,13 +2623,15 @@ await check('Dashboard panels: Right now, Disks and Load show the live readings,
 
 await check('Dashboard panels: Right now shows CPU, memory and who is watching, and leaves the rest to the Load panel', async () => {
     await medicTab('dashboard', true);
-    await page.waitForFunction(() => /Memory/.test(document.getElementById('md-now')?.textContent || ''), null, { timeout: 30000 });
+    await page.waitForFunction(() => /Memory/i.test(document.getElementById('md-now')?.textContent || ''), null, { timeout: 30000 });
     const seen = await page.evaluate(() => ({
         rows: Array.from(document.querySelectorAll('#md-now dt')).map((d) => d.textContent),
+        values: Array.from(document.querySelectorAll('#md-now dd')).map((d) => d.textContent),
         chart: !!document.getElementById('md-spark'),
         cpu: document.getElementById('md-cpu').textContent
     }));
-    expect(JSON.stringify(seen.rows) === JSON.stringify(['Memory', 'Watching']) && !seen.chart && /^\d+%$/.test(seen.cpu), 'Right now: ' + JSON.stringify(seen));
+    expect(JSON.stringify(seen.rows) === JSON.stringify(['Jellyfin memory', 'Server memory', 'Watching']) && !seen.chart && /^\d+%$/.test(seen.cpu), 'Right now: ' + JSON.stringify(seen));
+    expect(/^[\d.]+ GB of [\d.]+ GB \([\d.]+%\); LoadGuard's ceiling is 85%$/.test(seen.values[1]), 'server memory: ' + seen.values[1]);
     return `CPU ${seen.cpu}; ${seen.rows.join(', ')}`;
 });
 
@@ -2505,6 +2655,39 @@ await check('Dashboard panels: Load draws a line from the first reading after a 
     } finally {
         await page.unroute('**/JellyfinMedic/Dashboard/Live');
     }
+});
+
+await check('Dashboard panels: Load names a whole-card GPU figure as such, with no alert line, and Jellyfin\'s own with one', async () => {
+    let live = await ok('/JellyfinMedic/Dashboard/Live');
+    for (let i = 0; i < 12 && live.Resources.length === 0; i++) {
+        await sleep(5000);
+        live = await ok('/JellyfinMedic/Dashboard/Live');
+    }
+    expect(live.Resources.length > 0, 'the resource monitor has no readings after a minute');
+    const last = live.Resources[live.Resources.length - 1];
+    const gpuMeter = async (whole) => {
+        await page.route('**/JellyfinMedic/Dashboard/Live', (route) => route.fulfill({ json: { ...live, Resources: [
+            { ...last, GpuPercent: 40, GpuWholeDevice: whole }, { ...last, GpuPercent: 60, GpuWholeDevice: whole }] } }));
+        try {
+            await medicTab('dashboard', true);
+            // Found by its name, so a meter added beside it doesn't move it.
+            await page.waitForFunction(() => Array.from(document.querySelectorAll('#md-load .md-meter'))
+                .some((m) => /^GPU/.test(m.querySelector('.md-meter-head span')?.textContent || '') && m.querySelector('svg')), null, { timeout: 30000 });
+            return await page.evaluate(() => {
+                const meter = Array.from(document.querySelectorAll('#md-load .md-meter'))
+                    .find((m) => /^GPU/.test(m.querySelector('.md-meter-head span')?.textContent || ''));
+                return { name: meter.querySelector('.md-meter-head span').textContent, alert: !!meter.querySelector('.md-line-alert'),
+                    label: meter.querySelector('svg').getAttribute('aria-label') };
+            });
+        } finally {
+            await page.unroute('**/JellyfinMedic/Dashboard/Live');
+        }
+    };
+    const whole = await gpuMeter(true);
+    expect(whole.name === 'GPU, whole card' && !whole.alert && /every program using the card, so no alert\.$/.test(whole.label), 'whole card: ' + JSON.stringify(whole));
+    const own = await gpuMeter(false);
+    expect(own.name === 'GPU' && own.alert && /alert at 95%\.$/.test(own.label), 'Jellyfin\'s own: ' + JSON.stringify(own));
+    return whole.name + ' | ' + own.name;
 });
 
 await check('Dashboard panels: Today shows the planned and actual runs, the failed one with the word, spikes and LoadGuard', async () => {
@@ -2669,6 +2852,26 @@ await check('Dashboard panels: the 15-second refresh leaves alone what has not c
         page.off('request', count);
         await page.unroute('**/JellyfinMedic/Dashboard/Live');
     }
+});
+
+await check('LoadGuard words: the paused list and the help say when held tasks really start again', async () => {
+    const live = await ok('/JellyfinMedic/Dashboard/Live');
+    const paused = [{ TaskId: 'e2e-fixture-trickplay', TaskName: 'Fixture trickplay', StoppedUtc: new Date().toISOString() }];
+    await page.route('**/JellyfinMedic/Dashboard/Live', (route) => route.fulfill({ json: { ...live, Paused: paused } }));
+    try {
+        await medicTab('dashboard', true);
+        await page.waitForSelector('#md-paused strong', { timeout: 30000 });
+        const heading = await page.$eval('#md-paused strong', (s) => s.textContent);
+        // LoadGuard starts a held task after two hours whether or not memory recovered, and never while people watch.
+        expect(!/until memory recovers/i.test(heading) && /two hours/.test(heading) && /avoided hours/.test(heading) && /watching/.test(heading), 'paused heading: ' + heading);
+    } finally {
+        await page.unroute('**/JellyfinMedic/Dashboard/Live');
+    }
+    await medicTab('settings');
+    await page.click('#JellyfinMedicPage .md-help[data-help="guard"]');
+    const help = await page.$eval('#JellyfinMedicPage .md-help-text[data-help-for="guard"]', (p) => p.textContent);
+    expect(/Run button/.test(help) && /always run/.test(help) && /usual level/.test(help) && /avoided hours/.test(help), 'guard help: ' + help);
+    return 'heading and help name the real rules';
 });
 
 await check('Dashboard panels: the 5-minute refresh keeps the keyboard on the run or the hour it was on', async () => {
@@ -3274,6 +3477,33 @@ await check('Tracks: unsaved track settings are saved before a scan or a run sta
     }
 });
 
+await check('Tracks page: the scan counts label-only and linked files apart, and says a label costs a full copy', async () => {
+    const scan = {
+        Running: false, Done: 0, Total: 0,
+        Result: { GeneratedUtc: new Date().toISOString(), FilesScanned: 40, FilesWouldChange: 3, AudioToRemove: 2, SubtitlesToRemove: 0,
+            FilesLinked: 5, FilesLabelOnly: 2, LabelOnlyBytes: 64424509440, UntaggedCount: 0, Undetermined: [], Sample: [] }
+    };
+    const labelled = { Title: 'Labelled', Path: '/media/Labelled.mkv', RemovingAudio: 0, RemovingSubtitles: 0, TagsToWrite: 1, SavingBytes: 0, SizeBytes: 32212254720, LabelOnly: true, Tracks: [] };
+    await page.route('**/JellyfinMedic/Tracks/Scan/Status', (route) => route.fulfill({ json: scan }));
+    await page.route('**/JellyfinMedic/Tracks/Scan/Changes?*', (route) => route.fulfill({ json: { Total: 1, Page: 1, Pages: 1, Items: [labelled] } }));
+    try {
+        await medicTab('tracks', true);
+        await page.waitForSelector('#md-tracks-preview details summary', { timeout: 15000 });
+        const summary = await page.locator('#md-tracks-summary').textContent();
+        for (const part of ['Of these, freeing space1', 'only getting a language label2 (60.0 GB)', 'Left alone (linked)5', 'free no space', '60.0 GB in all', 'more than one hard link']) {
+            expect(summary.includes(part), `the summary doesn't say "${part}": ${summary}`);
+        }
+        const row = await page.locator('#md-tracks-preview details summary').first().textContent();
+        expect(/labels only: the whole file is copied and nothing is freed/.test(row), 'the label-only film doesn\'t say what it costs: ' + row);
+        const bulk = await page.locator('#md-bulk-cost').textContent();
+        expect(/copying the whole film/.test(bulk) && /full size/.test(bulk), 'the bulk panel doesn\'t say what a label costs: ' + bulk);
+        return 'label-only and linked files counted apart';
+    } finally {
+        await page.unroute('**/JellyfinMedic/Tracks/Scan/Status');
+        await page.unroute('**/JellyfinMedic/Tracks/Scan/Changes?*');
+    }
+});
+
 // ---------- Medic page actions ----------
 
 // The page signed in on its own, with the report's findings replaced by these and Ignore answered without saving.
@@ -3307,6 +3537,150 @@ async function settledStatus(p) {
         return { text: s.hidden ? '' : s.textContent, error: s.classList.contains('error') };
     });
 }
+
+// ---------- Medic page reads: what the page shows when a read is late, fails or is long ----------
+
+const problemJson = (status, detail) => ({ status, contentType: 'application/problem+json', body: JSON.stringify({ title: 'Error', status, detail }) });
+
+await check('Medic page reads: "This week" counts what the latest checks found, as the Health tile does, and follows Ignore', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await pageWithFindings(ctx, [
+            fixtureFinding('e2e-w1', 'Fixture Week'), fixtureFinding('e2e-w2', 'Fixture Week', { Severity: 'Improve' }),
+            fixtureFinding('e2e-w3', 'Fixture Week', { Severity: 'Tip' }), fixtureFinding('e2e-w4', 'Fixture Week', { Severity: 'Tip' })]);
+        // The ledger's snapshot from the last time checks ran, days ago: its counts must not be shown as "Now".
+        const weeklyAsked = [];
+        let reportDone = 0;
+        p.on('requestfinished', (req) => { if (REPORT.test(req.url())) reportDone = Date.now(); });
+        await p.route('**/JellyfinMedic/Weekly', async (route) => {
+            weeklyAsked.push(Date.now());
+            const res = await route.fetch();
+            await route.fulfill({ response: res, json: { ...(await res.json()), NeedChanging: 5, CouldBeBetter: 9 } });
+        });
+        await medicTab('dashboard', false, p);
+        await p.waitForFunction(() => /^Last checked/.test(document.querySelector('#JellyfinMedicPage #md-checked')?.textContent || ''), null, { timeout: 60000 });
+        await p.waitForFunction(() => /Now:/.test(document.getElementById('md-week')?.textContent || ''), null, { timeout: 30000 });
+        await p.waitForTimeout(1000);
+        const health = await p.textContent('#md-health-big');
+        const now = (await p.textContent('#md-week')).match(/Now:[^.]*\./)?.[0];
+        expect(health === '2 things to fix', 'Health shows ' + health);
+        expect(now === 'Now: 2 things to fix, 2 tips.', 'This week shows ' + now);
+        expect(reportDone > 0 && weeklyAsked.some((t) => t >= reportDone), 'the week wasn\'t read again after the checks finished, which is when its snapshot is taken');
+        await p.click('#md-issues li[data-key="e2e-w1"] .md-ignore-toggle', { timeout: 30000 });
+        await p.waitForFunction(() => /Now: 1 thing to fix, 2 tips\./.test(document.getElementById('md-week')?.textContent || ''), null, { timeout: 15000 })
+            .catch(async () => { throw new Error('after Ignore, This week shows ' + (await p.textContent('#md-week')).match(/Now:[^.]*\./)?.[0]); });
+        return 'matches Health, before and after Ignore';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page reads: the plugin directory is asked again after a failed fetch, when the tab is opened again', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(ctx);
+        let asked = 0;
+        const base = { GeneratedUtc: new Date().toISOString(), Source: 'awesome-jellyfin', SourceUrl: 'https://github.com/awesome-jellyfin/awesome-jellyfin' };
+        await p.route(/\/JellyfinMedic\/Directory(\?|$)/, (route) => route.fulfill({
+            json: asked++ === 0
+                ? { ...base, Categories: [], Error: 'Couldn\'t reach the awesome-jellyfin list (e2e). Try again later.' }
+                : { ...base, Categories: [{ Name: 'E2E Category', Plugins: [{ Name: 'E2E Plugin', Url: 'https://example.invalid/', Description: 'A fixture.', Tags: [] }] }] }
+        }));
+        await medicTab('directory', false, p);
+        await p.waitForFunction(() => /Couldn't reach the awesome-jellyfin list \(e2e\)/.test(document.getElementById('md-directory')?.textContent || ''), null, { timeout: 30000 });
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="directory"]');
+        await p.waitForFunction(() => /E2E Plugin/.test(document.getElementById('md-directory')?.textContent || ''), null, { timeout: 15000 })
+            .catch(async () => { throw new Error(`asked ${asked} time(s); the tab shows: ` + (await p.textContent('#md-directory')).slice(0, 200)); });
+        return `asked ${asked} times, list shown`;
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page reads: a failed History read and a failed backup list say so, and Restore says why it can\'t', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(ctx);
+        await p.route('**/JellyfinMedic/Schedule/GetRunHistory**', (route) => route.fulfill(problemJson(500, 'The run history file is damaged (e2e).')));
+        await p.route('**/JellyfinMedic/Schedule/ListBackups**', (route) => route.fulfill(problemJson(500, 'The backup folder can\'t be read (e2e).')));
+        await medicTab('history', false, p);
+        const history = await settledStatus(p);
+        expect(history.error && /run history file is damaged \(e2e\)/.test(history.text), 'History shows: ' + JSON.stringify(history));
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="schedule"]');
+        await p.waitForFunction(() => /backup folder can't be read \(e2e\)/.test(document.querySelector('#JellyfinMedicPage #so-status')?.textContent || ''), null, { timeout: 30000 })
+            .catch(async () => { throw new Error('Schedule shows: ' + JSON.stringify(await settledStatus(p))); });
+        await p.evaluate(() => { document.querySelector('#JellyfinMedicPage #so-status').hidden = true; });
+        await p.click('#md-restore');
+        await p.waitForTimeout(500);
+        const restore = await p.evaluate(() => {
+            const s = document.querySelector('#JellyfinMedicPage #so-status');
+            return s.hidden ? '' : s.textContent;
+        });
+        expect(/backups couldn't be loaded/i.test(restore), 'Restore with no list shows: ' + JSON.stringify(restore));
+        return 'all three explained';
+    } finally {
+        await ctx.close();
+    }
+});
+
+await check('Medic page reads: the Tests tab and the exposure check show the server\'s reason when they fail', async () => {
+    const bc = await browser.newContext({ locale: 'en-GB' });
+    try {
+        const p = await adminPage(bc);
+        const film = (await ok(`/Items?Recursive=true&IncludeItemTypes=Movie&searchTerm=Long&Fields=MediaSources,Path&UserId=${ctx.userId}`)).Items[0];
+        expect(film, 'Long Film not scanned');
+        await p.route(/\/Items\?.*MinWidth=1800/, (route) => route.fulfill({ json: { Items: [film], TotalRecordCount: 1 } }));
+        await p.route(/\/JellyfinMedic\/DecodeTest(\?|$)/, (route) => route.fulfill(problemJson(404, 'That film\'s file couldn\'t be found on the server.')));
+        await p.route(/\/JellyfinMedic\/SpeedTest(\?|$)/, (route) => (route.request().method() === 'POST' ? route.fulfill(problemJson(502, 'The speed test server didn\'t answer (e2e).')) : route.continue()));
+        await p.route(/\/JellyfinMedic\/Iptv(\?|$)/, (route) => (route.request().method() === 'POST' ? route.fulfill(problemJson(500, 'The IPTV library couldn\'t be read (e2e).')) : route.continue()));
+        await p.route(/\/JellyfinMedic\/ExposureCheck(\?|$)/, (route) => route.fulfill(problemJson(400, 'That isn\'t a valid port (e2e).')));
+        const failures = [];
+        const shows = async (selector, reason, label) => {
+            const seen = await p.waitForFunction(([s, r]) => new RegExp(r).test(document.querySelector(s)?.textContent || ''), [selector, reason], { timeout: 30000 }).then(() => true, () => false);
+            if (!seen) failures.push(label + ': ' + ((await p.textContent(selector)) || '').trim().slice(0, 160));
+        };
+        await medicTab('tests', false, p);
+        await p.click('#so-run-decode');
+        await shows('#so-decode-results', 'file couldn\'t be found on the server', 'image extraction');
+        await p.click('#so-run-speed');
+        await shows('#so-speed-results', 'speed test server didn\'t answer \\(e2e\\)', 'speed test');
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="iptv"]');
+        await p.click('#md-run-iptv');
+        await shows('#md-iptv', 'IPTV library couldn\'t be read \\(e2e\\)', 'IPTV analysis');
+        await p.click('#JellyfinMedicPage .so-tab[data-tab="dashboard"]');
+        await p.fill('#md-expose-host', 'e2e.invalid');
+        await p.click('#md-expose');
+        await shows('#md-expose-result', 'isn\'t a valid port \\(e2e\\)', 'exposure check');
+        expect(failures.length === 0, 'no reason shown in ' + failures.join(' | '));
+        return 'reason shown in all four';
+    } finally {
+        await bc.close();
+    }
+});
+
+await check('Medic page reads: the Schedule tab fits a phone screen with long backup names', async () => {
+    const ctx = await browser.newContext({ locale: 'en-GB', viewport: { width: 375, height: 812 } });
+    try {
+        const p = await adminPage(ctx);
+        const names = ['schedule_backup_20261017_093000_123.json', 'schedule_backup_20261016_031500_007.json'];
+        await p.route('**/JellyfinMedic/Schedule/ListBackups**', (route) => route.fulfill({
+            json: names.map((n, i) => ({ FileName: n, CreatedUtc: new Date(Date.UTC(2026, 9, 17 - i, 9, 30)).toISOString() }))
+        }));
+        await medicTab('schedule', false, p);
+        await p.waitForFunction(() => document.querySelectorAll('#md-backups option').length === 2, null, { timeout: 30000 });
+        await p.waitForTimeout(1000);
+        const sizes = await p.evaluate(() => {
+            const r = document.getElementById('md-backups').getBoundingClientRect();
+            return { page: document.documentElement.scrollWidth, view: document.documentElement.clientWidth, right: Math.round(r.right) };
+        });
+        expect(sizes.right <= sizes.view, 'the backup list ends at ' + sizes.right + ' px on a ' + sizes.view + ' px screen');
+        expect(sizes.page <= sizes.view, 'the page is ' + sizes.page + ' px wide on a ' + sizes.view + ' px screen');
+        return JSON.stringify(sizes);
+    } finally {
+        await ctx.close();
+    }
+});
 
 await check('Medic page actions: Ignore on the last finding of an area moves the keyboard to the next finding, and on the last one to the one before', async () => {
     const ctx = await browser.newContext({ locale: 'en-GB' });
@@ -3493,6 +3867,115 @@ await check('Medic page actions: a track setting changed while a save is on its 
         return 'kept, and saved before the scan';
     } finally {
         await ctx.close();
+        await api('POST', '/JellyfinMedic/MedicSettings', before);
+    }
+});
+
+await check('Schedule: Apply recommended shows the plan first and applies nothing on its own', async () => {
+    const posts = [];
+    const dialogs = [];
+    const accept = (dialog) => { dialogs.push(dialog.message()); dialog.accept(); };
+    const applyRoute = '**/JellyfinMedic/Schedule/ApplyRecommendedSchedule*';
+    // Answered here, so nothing is applied even when the page sends it.
+    await page.route(applyRoute, (route) => { posts.push(route.request().url()); route.fulfill({ json: { Success: true, AppliedTasks: 0, Message: 'E2E' } }); });
+    page.on('dialog', accept);
+    try {
+        await medicTab('schedule');
+        await page.click('#md-apply');
+        const applyHere = page.locator('#md-preview-box button:has-text("Apply these changes")');
+        await applyHere.waitFor({ timeout: 30000 });
+        await sleep(1000);
+        expect(posts.length === 0, 'the toolbar button applied without a preview: ' + posts.join(', '));
+        if (await applyHere.isEnabled()) {
+            await applyHere.click();
+            for (let i = 0; i < 50 && posts.length === 0; i++) await sleep(100);
+            expect(posts.length === 1 && /planHash=/.test(posts[0]), 'the preview\'s Apply didn\'t send its plan: ' + posts.join(', '));
+        }
+        return posts.length ? 'preview shown, then applied with its plan' : 'preview shown; nothing to change';
+    } finally {
+        page.off('dialog', accept);
+        await page.unroute(applyRoute);
+    }
+});
+
+await check('Settings: a failed settings read keeps both time windows, and saving waits for a read that works', async () => {
+    const before = await ok('/JellyfinMedic/MedicSettings');
+    const posts = [];
+    const watch = (req) => { if (req.method() === 'POST' && /\/JellyfinMedic\/(MedicSettings|Tracks\/Scan\/Start)\b/.test(req.url())) posts.push(req.url()); };
+    const settingsRoute = /\/JellyfinMedic\/MedicSettings(\?|$)/;
+    try {
+        await api('POST', '/JellyfinMedic/MedicSettings', { ...before, AvoidEnabled: true, AvoidStartMinute: 1200, AvoidEndMinute: 120, TracksWindowStartHour: 2, TracksWindowEndHour: 6 });
+        await medicTab('settings', true);
+        await page.waitForFunction(() => document.getElementById('md-avoid-from')?.value === '1200', null, { timeout: 30000 });
+        await page.route(settingsRoute, (route) => (route.request().method() === 'GET' ? route.fulfill({ status: 500, body: '' }) : route.continue()));
+        page.on('request', watch);
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await sleep(1000);
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="settings"]');
+        await sleep(1000);
+        const shown = await page.evaluate(() => ['md-avoid-from', 'md-avoid-to', 'md-tracks-window-from', 'md-tracks-window-to'].map((id) => document.getElementById(id).value).join(' '));
+        expect(shown === '1200 120 2 6', 'after a failed read the windows show ' + shown);
+        await page.click('#md-save-settings');
+        await sleep(1000);
+        expect(posts.length === 0, 'a save went out without a settings read: ' + posts.join(', '));
+        expect(/couldn't read/i.test(await page.textContent('#md-settings-saved')), 'no note that the settings couldn\'t be read: ' + await page.textContent('#md-settings-saved'));
+        expect(await page.isDisabled('#md-tracks-save'), 'Save track settings stayed on');
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await sleep(1000);
+        await page.click('#md-tracks-scan');
+        await sleep(1000);
+        expect(posts.length === 0, 'Scan and preview went ahead without a settings read: ' + posts.join(', '));
+        await page.unroute(settingsRoute);
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await page.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 15000 });
+        const saved = await ok('/JellyfinMedic/MedicSettings');
+        expect(saved.AvoidStartMinute === 1200 && saved.AvoidEndMinute === 120 && saved.TracksWindowStartHour === 2, 'saved: ' + JSON.stringify(saved));
+        return 'windows kept, nothing saved, saving back on after a good read';
+    } finally {
+        page.off('request', watch);
+        await page.unroute(settingsRoute);
+        await api('POST', '/JellyfinMedic/MedicSettings', before);
+    }
+});
+
+await check('Settings: unsaved edits survive a trip to the Tracks tab and back', async () => {
+    const before = await ok('/JellyfinMedic/MedicSettings');
+    const edited = String(before.InactiveUserDays === 123 ? 124 : 123);
+    const reads = () => page.waitForResponse((r) => r.request().method() === 'GET' && /\/JellyfinMedic\/MedicSettings(\?|$)/.test(r.url()), { timeout: 30000 });
+    try {
+        await medicTab('settings', true);
+        await page.waitForFunction((v) => document.getElementById('md-inactive')?.value === v, String(before.InactiveUserDays), { timeout: 30000 });
+        await page.fill('#md-inactive', edited);
+        let read = reads();
+        await page.click('#md-goto-tracks');
+        await read;
+        await page.waitForSelector('#md-tracks-save:not([disabled])', { timeout: 15000 });
+        await page.fill('#md-tracks-exclude-in', 'E2E unsaved');
+        read = reads();
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="settings"]');
+        await read;
+        await sleep(300);
+        expect(await page.inputValue('#md-inactive') === edited, 'the edit in Settings was lost: ' + await page.inputValue('#md-inactive'));
+        read = reads();
+        await page.click('#JellyfinMedicPage .so-tab[data-tab="tracks"]');
+        await read;
+        await sleep(300);
+        expect(await page.inputValue('#md-tracks-exclude-in') === 'E2E unsaved', 'the edit in Tracks was lost: ' + await page.inputValue('#md-tracks-exclude-in'));
+        // Still counted as unsaved: a scan saves it first.
+        const posts = [];
+        await page.route(/\/JellyfinMedic\/Tracks\/Scan\/Start(\?|$)/, (route) => route.fulfill({ json: {} }));
+        const watch = (req) => { if (req.method() === 'POST' && /\/JellyfinMedic\/MedicSettings\b/.test(req.url())) posts.push(req.postDataJSON()); };
+        page.on('request', watch);
+        try {
+            await page.click('#md-tracks-scan');
+            for (let i = 0; i < 50 && posts.length === 0; i++) await sleep(100);
+        } finally {
+            page.off('request', watch);
+            await page.unroute(/\/JellyfinMedic\/Tracks\/Scan\/Start(\?|$)/);
+        }
+        expect(posts[0]?.TracksExclude === 'E2E unsaved' && String(posts[0]?.InactiveUserDays) === edited, 'the scan didn\'t save the edits first: ' + JSON.stringify(posts[0] || null));
+        return 'both edits kept and saved before the scan';
+    } finally {
         await api('POST', '/JellyfinMedic/MedicSettings', before);
     }
 });

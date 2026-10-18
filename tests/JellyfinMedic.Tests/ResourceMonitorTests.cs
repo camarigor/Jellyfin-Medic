@@ -4,6 +4,8 @@ namespace JellyfinMedic.Tests;
 
 public sealed class ResourceMonitorTests
 {
+    private const double GiB = 1024d * 1024 * 1024;
+
     private static readonly DateTime Noon = new(2026, 10, 16, 12, 0, 0, DateTimeKind.Utc);
 
     [Fact]
@@ -42,6 +44,60 @@ public sealed class ResourceMonitorTests
     {
         Assert.False(ResourceMonitor.ShouldRecord(2, null, Noon));
         Assert.True(ResourceMonitor.ShouldRecord(3, null, Noon));
+    }
+
+    // Jellyfin 12.2's trickplay arguments ("-loglevel error {0} -an -sn {1} -threads {2} -c:v {3} {4}{5}{6}-f {7} \"{8}\""),
+    // with numbered images in a temporary folder; the word "trickplay" is in none of them.
+    [Theory]
+    [InlineData("/usr/lib/jellyfin-ffmpeg/ffmpeg -loglevel error -threads 0 -i file:/media/Movies/Film (2020)/Film.mkv -an -sn -vf fps=1/10,scale=w=320:h=-2 -threads 1 -c:v mjpeg -qscale:v 4 -f image2 /cache/temp/5f0c1d2e9b8a4c7d8e6f1a2b3c4d5e6f/%08d.jpg")]
+    [InlineData("/usr/lib/jellyfin-ffmpeg/ffmpeg -loglevel error -skip_frame nokey -threads 0 -i file:/media/TV/Show/S01E01.mkv -an -sn -vf fps=1/10,setpts=N/1/TB,scale=w=320:h=-2 -threads 1 -c:v mjpeg -qscale:v 4 -f image2 /cache/temp/0a1b2c3d4e5f60718293a4b5c6d7e8f9/%08d.jpg")]
+    public void Trickplay_is_told_by_its_numbered_images(string commandLine)
+    {
+        Assert.Equal("trickplay images", ResourceMonitor.FfmpegRole("ffmpeg", () => commandLine));
+    }
+
+    [Fact]
+    public void A_chapter_image_is_one_frame_not_trickplay()
+    {
+        const string ChapterImage = "/usr/lib/jellyfin-ffmpeg/ffmpeg -ss 00:05:00 -i file:/media/Movies/Film.mkv -threads 0 -v quiet -vframes 1 -vf scale=trunc(iw*sar):ih -f image2 /config/data/chapters/0a1b/300000000.jpg";
+
+        Assert.Equal("chapter or thumbnail images", ResourceMonitor.FfmpegRole("ffmpeg", () => ChapterImage));
+    }
+
+    [Fact]
+    public void Ffprobe_is_counted_as_media_probing()
+    {
+        const string Probe = "/usr/lib/jellyfin-ffmpeg/ffprobe -analyzeduration 200M -probesize 1G -i file:/media/Movies/Film.mkv -threads 0 -v warning -print_format json -show_streams -show_format";
+
+        Assert.Equal("media probing", ResourceMonitor.FfmpegRole("ffprobe", () => Probe));
+    }
+
+    [Fact]
+    public void Other_processes_have_no_ffmpeg_role()
+    {
+        Assert.Null(ResourceMonitor.FfmpegRole("jellyfin", () => "/jellyfin/jellyfin --datadir /config"));
+    }
+
+    [Fact]
+    public void Jellyfins_memory_is_measured_against_the_container_limit_not_the_heap_limit_dotnet_derives_from_it()
+    {
+        // In a 4 GB container .NET reports 3 GB (75% of the limit) as available, which nothing holds FFmpeg to.
+        Assert.Equal(4 * GiB, ResourceMonitor.MemoryBase(cgroupLimit: 4 * GiB, hostTotal: 27 * GiB, dotnetAvailable: 3 * GiB));
+    }
+
+    [Fact]
+    public void Without_a_container_limit_jellyfins_memory_is_measured_against_all_the_servers_memory()
+    {
+        Assert.Equal(27 * GiB, ResourceMonitor.MemoryBase(cgroupLimit: null, hostTotal: 27 * GiB, dotnetAvailable: 20 * GiB));
+        Assert.Equal(16 * GiB, ResourceMonitor.MemoryBase(cgroupLimit: null, hostTotal: null, dotnetAvailable: 16 * GiB));
+    }
+
+    [Fact]
+    public void The_dashboard_shows_the_ceiling_LoadGuard_holds_heavy_tasks_at_only_while_the_guard_is_on()
+    {
+        Assert.Equal(85, ServerNow.GuardCeiling(enabled: true, ceilingPercent: 85));
+        Assert.Equal(95, ServerNow.GuardCeiling(enabled: true, ceilingPercent: 99));
+        Assert.Null(ServerNow.GuardCeiling(enabled: false, ceilingPercent: 85));
     }
 
     // A /proc/<pid>/stat line as Linux writes it, up to rsslim. Times are in ticks, 100 a second.

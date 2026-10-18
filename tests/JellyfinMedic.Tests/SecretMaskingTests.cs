@@ -112,4 +112,102 @@ public sealed class SecretMaskingTests
         Assert.DoesNotContain("eyJhbGci", shown);
         Assert.EndsWith(" token ••••", shown);
     }
+
+    [Theory]
+    [InlineData("QbitUser", "admin")]
+    [InlineData("SmtpUser", "mailer")]
+    [InlineData("PluginConfiguration.ProxyUser", "jelly")]
+    public void The_support_export_hides_an_account_name_kept_under_a_name_ending_in_user(string name, string value)
+    {
+        Assert.Equal("****", SettingsExporter.Mask(name, value));
+    }
+
+    [Theory]
+    [InlineData("MaxStreamsPerUser", "3")]
+    [InlineData("QbitUser", "")]
+    public void The_support_export_keeps_a_count_kept_under_a_name_ending_in_user(string name, string value)
+    {
+        Assert.Equal(value, SettingsExporter.Mask(name, value));
+    }
+
+    [Fact]
+    public void The_plugins_view_hides_an_account_name_kept_under_a_name_ending_in_user()
+    {
+        Assert.Equal("•••• (hidden)", PluginAuditor.ShownSetting("PluginConfiguration.QbitUser", new XElement("QbitUser", "admin")));
+    }
+
+    [Theory]
+    [InlineData("NotifyTo", "someone@example.com", "••••")]
+    [InlineData("Footer", "Mail bob.smith+jf@mail.example.org for access", "Mail •••• for access")]
+    public void The_support_export_hides_an_email_address_whatever_the_setting_is_called(string name, string value, string exported)
+    {
+        Assert.Equal(exported, SettingsExporter.Mask(name, value));
+    }
+
+    [Theory]
+    [InlineData(".logo { background: url('/web/assets/img/banner-light@2x.png'); }")]
+    [InlineData("Uses Jellyfin.Plugin.Template@10.11.0")]
+    public void The_support_export_keeps_an_image_name_or_version_that_only_holds_an_at_sign(string css)
+    {
+        Assert.Equal(css, SettingsExporter.Mask("CustomCss", css));
+    }
+
+    [Theory]
+    [InlineData("Error opening input file http://prov.example:8080/live/myuser/S3cretPw/123.ts", "Error opening input file http://prov.example:8080/live/••••/••••/123.ts")]
+    [InlineData("GET https://prov.example/movie/myuser/S3cretPw/4567.mkv failed", "GET https://prov.example/movie/••••/••••/4567.mkv failed")]
+    [InlineData("http://prov.example/series/myuser/S3cretPw/89.mp4", "http://prov.example/series/••••/••••/89.mp4")]
+    [InlineData("http://prov.example/timeshift/myuser/S3cretPw/120/2026-10-17:20-00/5.ts", "http://prov.example/timeshift/••••/••••/120/2026-10-17:20-00/5.ts")]
+    public void A_stream_address_hides_the_account_in_its_path(string text, string shown)
+    {
+        Assert.Equal(shown, SettingsReader.MaskSecrets(text));
+    }
+
+    [Theory]
+    [InlineData("Could not read /data/series/Andor/S01/Andor.S01E01.mkv")]
+    [InlineData("Could not read /media/live/concerts/2019/show.mkv")]
+    public void A_library_path_that_only_looks_like_a_stream_address_is_left_alone(string text)
+    {
+        Assert.Equal(text, SettingsReader.MaskSecrets(text));
+    }
+
+    [Fact]
+    public void A_repeated_stream_error_hides_the_account_in_its_address()
+    {
+        string shown = LogScanner.Normalise("Error opening http://prov.example:8080/live/myuser/S3cretPw/123.ts");
+
+        Assert.DoesNotContain("myuser", shown);
+        Assert.DoesNotContain("S3cretPw", shown);
+    }
+
+    [Fact]
+    public void The_banner_and_a_failed_task_hide_the_account_in_a_stream_address()
+    {
+        const string Line = "[2026-10-17 03:12:45.123 +00:00] [ERR] [1] MediaBrowser.MediaEncoding: Error opening http://prov.example:8080/live/myuser/S3cretPw/123.ts";
+
+        Assert.DoesNotContain("S3cretPw", AdminAlerts.Shorten(Line));
+        Assert.DoesNotContain("S3cretPw", DiagnosticsEngine.Shorten(Line));
+    }
+
+    [Fact]
+    public void The_playback_log_reader_hides_the_account_in_an_ffmpeg_error_line()
+    {
+        string dir = Directory.CreateTempSubdirectory("medic-ffmpeg-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(dir, "FFmpeg.Remux-2026-10-17_20-00-00_abc.log"),
+                "ffmpeg -i \"http://prov.example:8080/live/myuser/S3cretPw/123.ts\" -codec:v:0 copy\n"
+                + "[http @ 0x55] HTTP error 403 Forbidden\n"
+                + "[in#0 @ 0x56] Error opening input: http://prov.example:8080/live/myuser/S3cretPw/123.ts\n");
+
+            var result = TranscodeLogReader.Read(dir, DateTime.UtcNow.AddMinutes(-5), null, "vaapi");
+
+            Assert.Contains(result.Errors, e => e.Contains("live/••••/••••/123.ts", StringComparison.Ordinal));
+            Assert.DoesNotContain(result.Errors, e => e.Contains("S3cretPw", StringComparison.Ordinal) || e.Contains("myuser", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
 }

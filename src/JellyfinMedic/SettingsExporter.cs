@@ -8,7 +8,7 @@ namespace JellyfinMedic.Services;
 
 /// <summary>
 /// Builds a text copy of every plugin's settings for asking for help, with passwords, keys,
-/// tokens, usernames and credentials inside links replaced by ****. Nothing is sent anywhere:
+/// tokens, usernames, e-mail addresses and credentials inside links replaced by ****. Nothing is sent anywhere:
 /// the page shows it first and the admin chooses whether to download it.
 /// </summary>
 public static class SettingsExporter
@@ -40,11 +40,11 @@ public static class SettingsExporter
         text.AppendLine();
         text.AppendLine("What's in this file: a list of your installed plugins, each plugin's settings, and");
         text.AppendLine("(only if you ticked the box) a short summary of your hardware and libraries.");
-        text.AppendLine("Passwords, API keys, tokens, usernames and credentials inside web addresses are");
-        text.AppendLine("replaced with ****. No serial numbers are included. This masking covers the common");
-        text.AppendLine("cases but can't be guaranteed to catch everything, so it is your responsibility to");
-        text.AppendLine("read this file before you send it. If any personal data does reach the maintainer, it");
-        text.AppendLine("is not wanted, is removed, and is not used, as a matter of integrity.");
+        text.AppendLine("Passwords, API keys, tokens, usernames, e-mail addresses and credentials inside web");
+        text.AppendLine("addresses are replaced with ****. No serial numbers are included. This masking covers");
+        text.AppendLine("the common cases but can't be guaranteed to catch everything, so it is your");
+        text.AppendLine("responsibility to read this file before you send it. If any personal data does reach the");
+        text.AppendLine("maintainer, it is not wanted, is removed, and is not used, as a matter of integrity.");
         text.AppendLine("Nothing is sent automatically; emailing this file is your choice.");
         text.AppendLine();
 
@@ -116,7 +116,7 @@ public static class SettingsExporter
             return value;
         }
 
-        return SettingsReader.IsSecretName(name) ? mask : MaskValue(value, mask);
+        return SettingsReader.IsSecretSetting(name, value) ? mask : MaskValue(value, mask);
     }
 
     /// <summary>Masks what looks like a credential inside a value, whatever the setting is called.</summary>

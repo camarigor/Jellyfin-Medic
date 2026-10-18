@@ -262,7 +262,7 @@
                     <h3>Restore a backup</h3>
                     <p class="so-muted so-small">A backup is made before every Apply and every Restore, so any change can be undone.</p>
                     <div class="md-row md-wrap">
-                        <select id="md-backups" class="so-input" aria-label="Backup to restore"></select>
+                        <select id="md-backups" class="so-input" style="max-width:100%" aria-label="Backup to restore"></select>
                         <button type="button" id="md-restore" class="so-btn so-btn-plain">Restore</button>
                     </div>
                 </div>
@@ -430,6 +430,7 @@
                         <label class="md-check"><input type="checkbox" id="md-bulk-only" checked> Audio: only where it's the film's only audio track</label>
                         <label class="md-check"><input type="checkbox" id="md-bulk-anime" checked> Skip anime (its untagged audio is often Japanese)</label>
                         <p class="so-muted so-small" style="margin:6px 0 0">Separate subtitle files aren't included: rename those one at a time. Nothing changes in your files until you press Strip tracks for real.</p>
+                        <p id="md-bulk-cost" class="so-muted so-small" style="margin:6px 0 0">A language label costs as much as a removal: Medic writes it by copying the whole film, so a film that only gets labels frees no space, and while originals are kept, its original stays in .medic-originals at full size until you delete it.</p>
                         <p id="md-bulk-result" class="so-small" aria-live="polite"></p>
                     </details>
                     <div class="so-scroll"><table class="so-table"><thead><tr><th>Film</th><th>Type</th><th>Format</th><th>File size</th><th>Track size</th><th>Language</th></tr></thead><tbody id="md-untag-body"></tbody></table></div>
@@ -1175,6 +1176,7 @@
                             }
                         });
                         if (report) { renderDashboard(); renderRecs(); }
+                        if (weekly) renderWeekly();
                         if (plugins) renderPlugins();
                         if (settings) renderSettings();
                         refocus();
@@ -1485,16 +1487,25 @@
                     b.addEventListener('click', function () { goto(b.getAttribute('data-goto')); });
                 });
 
+                // The report's open findings by severity. Health and This week both count from here, so they agree.
+                function findingCounts() {
+                    const counts = { Problem: 0, Improve: 0, Tip: 0 };
+                    (pick(report, 'Findings') || []).forEach(function (f) {
+                        if (!isIgnored(f) && counts[pick(f, 'Severity')] !== undefined) counts[pick(f, 'Severity')]++;
+                    });
+                    counts.toFix = counts.Problem + counts.Improve;
+                    return counts;
+                }
+
                 function renderDashboard() {
                     if (!report) return;
                     const all = pick(report, 'Findings') || [];
                     const active = all.filter(function (f) { return !isIgnored(f); });
-                    const counts = { Problem: 0, Improve: 0, Tip: 0 };
-                    active.forEach(function (f) { if (counts[pick(f, 'Severity')] !== undefined) counts[pick(f, 'Severity')]++; });
+                    const counts = findingCounts();
                     const ignoredCount = all.filter(isIgnored).length;
 
                     $('md-checked').textContent = 'Last checked ' + fmtDateTime(pick(report, 'GeneratedUtc'));
-                    const toFix = counts.Problem + counts.Improve;
+                    const toFix = counts.toFix;
                     $('md-health-big').textContent = toFix === 0 ? 'Nothing important to fix' : (toFix === 1 ? '1 thing to fix' : toFix + ' things to fix');
 
                     const box = $('so-counts');
@@ -1585,9 +1596,19 @@
                     const dl = $('md-now');
                     dl.innerHTML = '';
                     const memPct = pick(nowData, 'MemoryPercent') || 0;
-                    dl.appendChild(el('dt', null, 'Memory'));
+                    dl.appendChild(el('dt', null, 'Jellyfin memory'));
                     dl.appendChild(el('dd', memPct >= 85 ? 'md-bad-text' : (memPct >= 70 ? 'md-warn-text' : null),
                         (pick(nowData, 'MemoryGb') || 0) + ' GB of ' + (pick(nowData, 'MemoryLimitGb') || '?') + ' GB (' + memPct + '%)'));
+                    // Other programs included: the figure LoadGuard holds heavy tasks back on, coloured against its ceiling.
+                    const serverPct = pick(nowData, 'ServerMemoryPercent');
+                    if (serverPct !== null && serverPct !== undefined) {
+                        const ceiling = pick(nowData, 'GuardCeilingPercent');
+                        const high = ceiling || 85;
+                        dl.appendChild(el('dt', null, 'Server memory'));
+                        dl.appendChild(el('dd', serverPct >= high ? 'md-bad-text' : (serverPct >= high - 12 ? 'md-warn-text' : null),
+                            pick(nowData, 'ServerMemoryGb') + ' GB of ' + pick(nowData, 'ServerMemoryTotalGb') + ' GB (' + serverPct + '%)'
+                            + (ceiling ? '; LoadGuard\'s ceiling is ' + ceiling + '%' : '')));
+                    }
                     const watching = pick(nowData, 'Watching') || 0;
                     const transcoding = pick(nowData, 'Transcoding') || 0;
                     dl.appendChild(el('dt', null, 'Watching'));
@@ -1746,9 +1767,11 @@
 
                 const METERS = [
                     { name: 'CPU with FFmpeg', field: 'CpuPercent', unit: '%', top: 100 },
-                    { name: 'Memory', field: 'MemoryPercent', unit: '%', top: 100 },
+                    { name: 'Memory with FFmpeg', field: 'MemoryPercent', unit: '%', top: 100 },
                     { name: 'Disk', field: 'DiskMBps', unit: ' MB/s', top: null },
-                    { name: 'GPU', field: 'GpuPercent', unit: '%', top: 100 }
+                    { name: 'GPU', field: 'GpuPercent', unit: '%', top: 100 },
+                    // Last, beside the tasks LoadGuard has paused, with its ceiling as the line they are measured against.
+                    { name: 'Server memory', field: 'ServerMemoryPercent', unit: '%', top: 100, guard: true }
                 ];
 
                 function renderLoad() {
@@ -1758,10 +1781,14 @@
                     const limits = pick(live, 'Limits') || {};
                     METERS.forEach(function (m) {
                         const values = readings.map(function (r) { return pick(r, m.field); }).filter(function (v) { return v !== null && v !== undefined; });
-                        const alert = pick(limits, m.field);
+                        // Where Jellyfin's own GPU use can't be read (NVIDIA, older kernels), the figure is the whole card's,
+                        // other programs included, so it's named as such and has no alert line: it raises no alert.
+                        const whole = m.field === 'GpuPercent' && readings.length > 0 && !!pick(readings[readings.length - 1], 'GpuWholeDevice');
+                        const name = whole ? 'GPU, whole card' : m.name;
+                        const alert = m.guard ? pick(nowData, 'GuardCeilingPercent') : whole ? null : pick(limits, m.field);
                         const meter = el('div', 'md-meter');
                         const head = el('div', 'md-meter-head');
-                        head.appendChild(el('span', null, m.name));
+                        head.appendChild(el('span', null, name));
                         head.appendChild(el('strong', null, values.length ? fmtNum(values[values.length - 1]) + m.unit : 'n/a'));
                         meter.appendChild(head);
                         if (!values.length) {
@@ -1770,8 +1797,10 @@
                             const highest = Math.max.apply(null, values);
                             const top = m.top || Math.max((alert || 0) * 1.2, highest * 1.1, 1);
                             const minutes = Math.max(1, Math.round(values.length / 4));
-                            meter.appendChild(spark(160, 36, values, top, alert, m.name + ': now ' + fmtNum(values[values.length - 1]) + m.unit +
-                                ', highest ' + fmtNum(highest) + m.unit + ' in the last ' + minutes + (minutes === 1 ? ' minute' : ' minutes') + '; alert at ' + fmtNum(alert || 0) + m.unit + '.'));
+                            meter.appendChild(spark(160, 36, values, top, alert, name + ': now ' + fmtNum(values[values.length - 1]) + m.unit +
+                                ', highest ' + fmtNum(highest) + m.unit + ' in the last ' + minutes + (minutes === 1 ? ' minute' : ' minutes') +
+                                (m.guard ? (alert ? '; LoadGuard\'s ceiling at ' + fmtNum(alert) + m.unit + '.' : '; LoadGuard is off.')
+                                    : whole ? '; every program using the card, so no alert.' : '; alert at ' + fmtNum(alert || 0) + m.unit + '.')));
                         }
                         box.appendChild(meter);
                     });
@@ -1789,7 +1818,7 @@
                     p.dataset.key = key;
                     p.innerHTML = '';
                     if (!paused.length) return;
-                    p.appendChild(el('strong', 'md-warn-text', 'Paused by LoadGuard until memory recovers'));
+                    p.appendChild(el('strong', 'md-warn-text', 'Held back by LoadGuard: each starts again once memory settles or it has waited two hours, but not in your avoided hours or while someone is watching'));
                     const list = el('ul', 'md-list');
                     paused.forEach(function (t) { list.appendChild(el('li', null, pick(t, 'TaskName') + ', stopped ' + fmtShort(pick(t, 'StoppedUtc')))); });
                     p.appendChild(list);
@@ -2563,9 +2592,13 @@
                 $('md-prev').addEventListener('click', function () { if (calWeek > 0) { calWeek--; selKey = null; loadCalendar(); } });
                 $('md-next').addEventListener('click', function () { calWeek++; selKey = null; loadCalendar(); });
 
+                // True while the last read of the backup list failed, so Restore can say why it has nothing to restore.
+                let backupsFailed = false;
+
                 async function loadBackups() {
                     try {
                         const list = await getJson('/JellyfinMedic/Schedule/ListBackups');
+                        backupsFailed = false;
                         const select = $('md-backups');
                         select.innerHTML = '';
                         if (!list || list.length === 0) {
@@ -2578,7 +2611,12 @@
                             o.value = pick(b, 'FileName');
                             select.appendChild(o);
                         });
-                    } catch (e) { /* leave the list as it is */ }
+                    } catch (e) {
+                        // A list read earlier is kept: its backups were there a moment ago.
+                        backupsFailed = true;
+                        console.error('Jellyfin Medic: could not list schedule backups', e);
+                        showError(e, 'Couldn\'t load the schedule backups.', 'Check the Jellyfin log for Jellyfin Medic errors.');
+                    }
                 }
 
                 async function loadUntimed() {
@@ -2598,7 +2636,10 @@
                             body.appendChild(tr);
                         });
                         $('md-untimed').hidden = !rows || rows.length === 0;
-                    } catch (e) { /* leave the table as it is */ }
+                    } catch (e) {
+                        console.error('Jellyfin Medic: could not load the tasks with no time set', e);
+                        showError(e, 'Couldn\'t load the tasks with no time set.', 'Check the Jellyfin log for Jellyfin Medic errors.');
+                    }
                 }
 
                 async function loadAudit() {
@@ -2621,7 +2662,10 @@
                             tr.appendChild(td);
                             body.appendChild(tr);
                         }
-                    } catch (e) { /* leave the table as it is */ }
+                    } catch (e) {
+                        console.error('Jellyfin Medic: could not load the schedule changes', e);
+                        showError(e, 'Couldn\'t load the schedule changes.', 'Check the Jellyfin log for Jellyfin Medic errors.');
+                    }
                 }
 
                 $('md-preview').addEventListener('click', function () { showPreview(); });
@@ -2710,7 +2754,7 @@
                 async function applyPlan(planHash) {
                     if (!window.confirm('Apply the recommended schedule? Your current schedule is backed up first, so you can restore it.')) return;
                     try {
-                        const result = await postJson('/JellyfinMedic/Schedule/ApplyRecommendedSchedule', planHash ? { planHash: planHash } : undefined);
+                        const result = await postJson('/JellyfinMedic/Schedule/ApplyRecommendedSchedule', { planHash: planHash });
                         showStatus(pick(result, 'Message') || 'Schedule applied.', pick(result, 'Success') === false ? 'error' : 'info');
                         $('md-preview-box').hidden = true;
                         await Promise.all([loadCalendar(), loadBackups(), loadAudit(), loadUntimed()]);
@@ -2724,7 +2768,15 @@
                     }
                 }
 
-                $('md-apply').addEventListener('click', function () { applyPlan(); });
+                // The plan is shown first and only the preview's own Apply sends it, so nothing is applied unseen.
+                $('md-apply').addEventListener('click', async function () {
+                    await showPreview();
+                    const apply = $('md-preview-box').querySelector('button');
+                    if (apply) {
+                        apply.scrollIntoView({ block: 'center' });
+                        apply.focus({ preventScroll: true });
+                    }
+                });
 
                 $('md-backup').addEventListener('click', async function () {
                     try {
@@ -2738,7 +2790,11 @@
 
                 $('md-restore').addEventListener('click', async function () {
                     const file = $('md-backups').value;
-                    if (!file) return;
+                    if (!file) {
+                        if (backupsFailed) showStatus('The backups couldn\'t be loaded, so there is nothing to restore. Open the Schedule tab again to retry.', 'error');
+                        else showStatus('There are no backups to restore yet. One is made before every Apply.', 'info');
+                        return;
+                    }
                     if (!window.confirm('Restore the schedule from this backup? Your current schedule is backed up first.')) return;
                     try {
                         const result = await postJson('/JellyfinMedic/Schedule/RestorePreviousSchedule', { backupFileName: file });
@@ -3093,7 +3149,7 @@
                     } catch (err) {
                         console.error('Jellyfin Medic: decode test failed', err);
                         box.innerHTML = '';
-                        box.appendChild(el('p', 'so-muted', 'The test couldn\'t run. If another test is running, wait for it to finish.'));
+                        box.appendChild(el('p', 'so-muted', 'The test couldn\'t run. ' + ((await reasonOf(err)) || 'If another test is running, wait for it to finish.')));
                     } finally {
                         setTesting(false);
                     }
@@ -3172,7 +3228,7 @@
                     } catch (err) {
                         console.error('Jellyfin Medic: speed test failed', err);
                         box.innerHTML = '';
-                        box.appendChild(el('p', 'so-muted', 'The speed test couldn\'t run. If another test is running, wait for it to finish.'));
+                        box.appendChild(el('p', 'so-muted', 'The speed test couldn\'t run. ' + ((await reasonOf(err)) || 'If another test is running, wait for it to finish.')));
                     } finally {
                         setTesting(false);
                     }
@@ -3191,9 +3247,16 @@
                 async function loadHistory() {
                     try {
                         history = await getJson('/JellyfinMedic/Schedule/GetRunHistory', { errorsOnly: $('md-errors-only').checked });
-                        renderHistory();
                     } catch (err) {
                         console.error('Jellyfin Medic: could not load run history', err);
+                        showError(err, 'Couldn\'t load the run history.', 'Check the Jellyfin log for Jellyfin Medic errors.');
+                        return;
+                    }
+                    // Kept apart from the request: a page bug must not read as the history failing to load.
+                    try {
+                        renderHistory();
+                    } catch (err) {
+                        console.error('Jellyfin Medic: could not show run history', err);
                     }
                 }
 
@@ -3353,7 +3416,7 @@
                     } catch (err) {
                         console.error('Jellyfin Medic: IPTV analysis failed', err);
                         $('md-iptv').innerHTML = '';
-                        $('md-iptv').appendChild(el('p', 'md-bad-text', 'The analysis couldn\'t run. If a test is running, wait for it to finish.'));
+                        $('md-iptv').appendChild(el('p', 'md-bad-text', 'The analysis couldn\'t run. ' + ((await reasonOf(err)) || 'If a test is running, wait for it to finish.')));
                     } finally {
                         btn.disabled = false;
                     }
@@ -3383,7 +3446,7 @@
                     mode: 'How much Medic helps with task timing. "Off": you open Schedule and press Preview, then Apply, yourself — nothing changes on its own. "Suggest" (recommended): Medic watches when people actually watch and, when it spots a clearly better schedule, flags it in Checks — but it still waits for you to Apply, so you always see the plan first. Either way, Medic backs up your schedule before any change and logs what it did.',
                     avoid: 'A time window Medic will always keep free, on top of what it learns from your viewing. Use it if you know a period should never have maintenance in it — for example a daily family viewing slot — even if the data looks quiet. Leave it off to let Medic choose purely from your real viewing pattern. It can wrap past midnight (e.g. 22:00 to 02:00).',
                     inactive: 'How long an account can go unused before Medic lists it as inactive in Checks and on the Dashboard. Inactive accounts are worth disabling because their old passwords still work. This only reports them; it never disables anyone. Default 90 days.',
-                    guard: 'A safety net against the server running out of memory. If memory climbs past the ceiling while more than one heavy task (a scan, image extraction, a big sync) is running, Medic stops the extra heavy ones to keep the server up, then restarts them one at a time once memory recovers. It also watches the whole server\'s memory, other programs included (on Linux): a heavy task that starts while the server is past the ceiling waits until memory is back, or two hours at most, and work already under way is left to finish. It only ever stops heavy tasks, never light upkeep, and it records every action on the Dashboard. The real fix is spacing tasks out (the Schedule does this); the guard catches times when something unexpected stacks them anyway.',
+                    guard: 'A safety net against the server running out of memory. If memory climbs past the ceiling while more than one heavy task (a scan, image extraction, a big sync) is running, Medic stops the extra heavy ones to keep the server up, then restarts them one at a time once memory recovers. It also watches the whole server\'s memory, other programs included (on Linux): a heavy task its schedule starts while the server is past the ceiling and above its usual level, or while Jellyfin itself is past the ceiling, waits until memory settles, or two hours at most. A server that always sits above the ceiling because of other programs doesn\'t hold every task up, as waiting would only move the work later. Tasks you start yourself (the Run button, Scan All Libraries, adding a library) always run. A task that waits never starts in your avoided hours or while someone is watching, and work already under way is left to finish. It only ever stops heavy tasks, never light upkeep, and it records every action on the Dashboard. The real fix is spacing tasks out (the Schedule does this); the guard catches times when something unexpected stacks them anyway.',
                     tracks: 'Settings for the Tracks tab, which removes unwanted audio and subtitle tracks from your LOCAL files by remuxing (no re-encode, no quality loss, so the GPU isn\'t used). "Keep languages": any ISO 639 code, 2 or 3 letters, in either form (eng or en, gre or ell...), comma-separated. It always keeps forced subtitles and never removes the last audio track. "Remove untagged subtitles" clears subtitle tracks with no language tag (often a whole disc\'s worth of foreign subtitles) while keeping untagged audio, which is often the main soundtrack. With it, "Keep the first untagged subtitle" keeps one in films that have no subtitle in your languages, because the first subtitle on most discs is the film\'s own language. "Also remove a film\'s only subtitle" lets a lone untagged subtitle go too, except in films whose audio is tagged as a language you don\'t keep. "Remove all untagged tracks" also removes untagged audio, which can take out a film\'s main soundtrack, so preview first. "Files at once" and "FFmpeg threads": remuxing is disk-bound, so 1 of each is usually best; higher just thrashes the disk. By default each original is kept in a hidden .medic-originals folder next to it, which Jellyfin, Sonarr and Radarr ignore, until you delete the kept originals.',
                     ceiling: 'How full memory has to get before the guard steps in, as a percentage: of what Jellyfin is allowed to use (its container limit) for its own tasks, and of all the server\'s memory for the server check, where caches the system can free, ZFS\'s included, count as free. Lower means it acts sooner and more cautiously; higher means it waits longer. 85% suits most servers. Below about 70% it may act when there was no real danger.'
                 };
@@ -3410,14 +3473,36 @@
                 });
 
                 async function loadMedicSettings() {
-                    fillQuarters($('md-avoid-from'));
-                    fillQuarters($('md-avoid-to'));
-                    fillHours($('md-tracks-window-from'));
-                    fillHours($('md-tracks-window-to'));
+                    // Built once: rebuilding them shows 00:00 until a read fills them again, and a failed read never does.
+                    if (!$('md-avoid-from').options.length) {
+                        fillQuarters($('md-avoid-from'));
+                        fillQuarters($('md-avoid-to'));
+                        fillHours($('md-tracks-window-from'));
+                        fillHours($('md-tracks-window-to'));
+                    }
+                    let s;
                     try {
-                        fillMedicSettings(await getJson('/JellyfinMedic/MedicSettings'));
-                        $('md-tracks-save').disabled = false;
-                    } catch (e) { /* defaults stay; saving stays off so nothing is overwritten with defaults */ }
+                        s = await getJson('/JellyfinMedic/MedicSettings');
+                    } catch (e) {
+                        // The form may not match what's saved, so saving waits for a read that works.
+                        medicSettingsLoaded = false;
+                        $('md-tracks-save').disabled = true;
+                        medicReadError = 'Couldn\'t read your saved settings, so saving is off until they load. Open this tab again to retry. ' + (await reasonOf(e) || '');
+                        $('md-settings-saved').textContent = medicReadError;
+                        $('md-tracks-saved').textContent = medicReadError;
+                        return;
+                    }
+                    if (medicReadError) {
+                        medicReadError = null;
+                        $('md-settings-saved').textContent = '';
+                        $('md-tracks-saved').textContent = '';
+                    }
+                    // Edits not saved yet stay on screen over what was just read, as on every visit to this tab.
+                    const now = medicFormState();
+                    const shown = medicShown;
+                    fillMedicSettings(s);
+                    if (shown) putBackEdits(now, shown);
+                    $('md-tracks-save').disabled = false;
                 }
 
                 // The settings as the server has them, after a load or a save (which may have clamped a value).
@@ -3451,6 +3536,21 @@
                     $('md-alert-restart').checked = pick(s, 'AlertRestartNeeded') !== false;
                     medicSettingsLoaded = true;
                     tracksSaved = JSON.stringify(tracksForm());
+                    medicShown = medicFormState();
+                }
+
+                // Puts back each box that differs between state and base, after fillMedicSettings showed the server's
+                // values. Returns how many there were.
+                function putBackEdits(state, base) {
+                    const edited = Object.keys(state).filter(function (id) { return state[id] !== base[id]; });
+                    edited.forEach(function (id) {
+                        if (id === 'mode') scheduleMode = state[id];
+                        else if ($(id).type === 'checkbox') $(id).checked = state[id];
+                        else $(id).value = state[id];
+                    });
+                    showMode();
+                    syncSubtitleOptions();
+                    return edited.length;
                 }
 
                 // The two subtitle sub-options only apply when untagged subtitles are being removed.
@@ -3474,6 +3574,12 @@
                 }
 
                 let medicSettingsLoaded = false;
+
+                // Why the last settings read failed, shown when saving is off because of it.
+                let medicReadError = null;
+
+                // The form as fillMedicSettings last left it, to tell the admin's unsaved edits from what the server sent.
+                let medicShown = null;
 
                 // The track settings as last loaded or saved, to tell whether the form has changes.
                 let tracksSaved = null;
@@ -3518,7 +3624,7 @@
 
                 async function saveMedicSettings(statusEl, okMessage) {
                     if (!medicSettingsLoaded) {
-                        statusEl.textContent = 'Settings are still loading. Try again in a moment.';
+                        statusEl.textContent = medicReadError || 'Settings are still loading. Try again in a moment.';
                         return false;
                     }
                     const tracks = tracksForm();
@@ -3542,15 +3648,8 @@
                         // what the server kept.
                         const now = medicFormState();
                         fillMedicSettings(saved);
-                        const edited = Object.keys(now).filter(function (id) { return now[id] !== sent[id]; });
-                        edited.forEach(function (id) {
-                            if (id === 'mode') scheduleMode = now[id];
-                            else if ($(id).type === 'checkbox') $(id).checked = now[id];
-                            else $(id).value = now[id];
-                        });
-                        showMode();
-                        syncSubtitleOptions();
-                        statusEl.textContent = okMessage + (edited.length ? ' What you changed since isn\'t saved yet.' : '');
+                        const edited = putBackEdits(now, sent);
+                        statusEl.textContent = okMessage + (edited ? ' What you changed since isn\'t saved yet.' : '');
                         return true;
                     } catch (e) {
                         statusEl.textContent = 'Couldn\'t save. ' + (await reasonOf(e) || 'Check the Jellyfin log.');
@@ -3581,6 +3680,11 @@
                 // Scan and runs use the saved settings, so changes still on screen are saved first.
                 // False when that save fails, and then nothing should start.
                 async function saveTracksIfChanged() {
+                    // After a failed read the form may not show what's saved, and the scan or run would use something else.
+                    if (medicReadError) {
+                        showStatus(medicReadError, 'error');
+                        return false;
+                    }
                     if (!tracksChanged()) return true;
                     if (!await saveMedicSettings($('md-tracks-saved'), 'Saved your track settings first.')) {
                         showStatus('Your track settings couldn\'t be saved, so nothing was started.', 'error');
@@ -3729,7 +3833,12 @@
                     const by = pick(w, 'FreedBy') || {};
                     Object.keys(by).forEach(function (k) { line(k + ': ' + tracksSize(by[k]) + ' freed.'); });
                     if (pick(w, 'Restarts')) line('Medic restarted Jellyfin ' + pick(w, 'Restarts') + ' time' + (pick(w, 'Restarts') === 1 ? '' : 's') + '.');
-                    line('Now: ' + (pick(w, 'NeedChanging') || 0) + ' need changing, ' + (pick(w, 'CouldBeBetter') || 0) + ' could be better.');
+                    // From the report on screen, not the ledger's snapshot, which may be from checks days ago.
+                    if (report) {
+                        const c = findingCounts();
+                        line('Now: ' + (c.toFix === 0 ? 'nothing important to fix' : c.toFix + (c.toFix === 1 ? ' thing' : ' things') + ' to fix')
+                            + ', ' + c.Tip + (c.Tip === 1 ? ' tip.' : ' tips.'));
+                    }
                     if (newList.length || fixedList.length || ignoredList.length) {
                         const d = el('details');
                         d.appendChild(el('summary', null, 'What changed'));
@@ -3838,7 +3947,8 @@
                         else if (fromHere) { out.textContent = 'Nothing answered at ' + where + ' when this server tried it. That doesn\'t prove it\'s closed to the internet: many routers can\'t reach their own public address from inside, and a domain can point elsewhere on your network.'; out.className = 'so-muted so-small'; }
                         else { out.textContent = 'Nothing answered at ' + where + ' from the internet. Only people on your network or VPN can reach it there (or your ISP uses CGNAT, which blocks this test).'; out.className = 'md-ok-text so-small'; }
                     } catch (e) {
-                        out.textContent = 'Couldn\'t run the check of ' + protocol + '://' + host + ':' + port + '.';
+                        const reason = await reasonOf(e);
+                        out.textContent = 'Couldn\'t run the check of ' + protocol + '://' + host + ':' + port + '.' + (reason ? ' ' + reason : '');
                     } finally {
                         btn.disabled = false;
                     }
@@ -3976,7 +4086,8 @@
                 }
 
                 async function loadDirectory() {
-                    if (directory) { renderDirectory(); return; }
+                    // A list the server couldn't fetch isn't kept: the server tries again after 2 minutes, so the next visit asks.
+                    if (directory && !pick(directory, 'Error')) { renderDirectory(); return; }
                     $('md-directory').innerHTML = '';
                     $('md-directory').appendChild(el('p', 'so-muted', 'Loading the community plugin list…'));
                     try {
@@ -4143,10 +4254,26 @@
                     const dl = el('dl', 'so-kv');
                     function row(k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); }
                     row('Local files scanned', scanned.toLocaleString('en-GB'));
+                    const labelOnly = pick(tracksScan, 'FilesLabelOnly') || 0;
+                    const linked = pick(tracksScan, 'FilesLinked') || 0;
                     row('Files that would change', changing.toLocaleString('en-GB'));
+                    if (labelOnly) {
+                        row('Of these, freeing space', (changing - labelOnly).toLocaleString('en-GB'));
+                        row('Of these, only getting a language label', labelOnly.toLocaleString('en-GB') + ' (' + tracksSize(pick(tracksScan, 'LabelOnlyBytes') || 0) + ')');
+                    }
                     row('Audio tracks to remove', (pick(tracksScan, 'AudioToRemove') || 0).toLocaleString('en-GB'));
                     row('Subtitle tracks to remove', (pick(tracksScan, 'SubtitlesToRemove') || 0).toLocaleString('en-GB'));
+                    if (linked) row('Left alone (linked)', linked.toLocaleString('en-GB'));
                     $('md-tracks-summary').appendChild(dl);
+
+                    // A label is written by copying the whole film, so these cost a full copy and, while originals are kept, a full-size original each.
+                    if (labelOnly) {
+                        $('md-tracks-summary').appendChild(el('p', 'so-muted so-small', labelOnly.toLocaleString('en-GB') + ' file' + (labelOnly === 1 ? ' only gets' : 's only get') + ' a language label. Medic writes a label by copying the whole file, so ' + (labelOnly === 1 ? 'it frees' : 'they free') + ' no space'
+                            + ($('md-tracks-inplace-in').checked ? '.' : ', and each original stays in .medic-originals at full size (' + tracksSize(pick(tracksScan, 'LabelOnlyBytes') || 0) + ' in all) until you delete the kept originals.')));
+                    }
+                    if (linked) {
+                        $('md-tracks-summary').appendChild(el('p', 'so-muted so-small', linked.toLocaleString('en-GB') + (linked === 1 ? ' file is' : ' files are') + ' left alone and not listed: each has more than one hard link (a torrent client is probably seeding it) or is a symbolic link, so cleaning it would use more space, not less. Runs skip them too.'));
+                    }
 
                     if (pick(tracksScan, 'Stale')) {
                         $('md-tracks-summary').appendChild(el('p', 'so-muted so-small', 'Files have changed since this scan. Scan again to see where things stand now.'));
@@ -4337,6 +4464,7 @@
                     if (pick(f, 'RemovingSubtitles')) bits.push('remove ' + pick(f, 'RemovingSubtitles') + ' subtitle' + (pick(f, 'RemovingSubtitles') === 1 ? '' : 's'));
                     if (pick(f, 'TagsToWrite')) bits.push('set ' + pick(f, 'TagsToWrite') + ' language' + (pick(f, 'TagsToWrite') === 1 ? '' : 's'));
                     if (pick(f, 'SavingBytes')) bits.push('frees about ' + tracksSize(pick(f, 'SavingBytes')));
+                    if (pick(f, 'LabelOnly')) bits.push('labels only: the whole file is copied and nothing is freed');
                     if (pick(f, 'SizeBytes')) bits.push('file ' + tracksSize(pick(f, 'SizeBytes')));
                     d.appendChild(el('summary', null, (pick(f, 'Title') || (pick(f, 'Path') || '').split(/[\\/]/).pop()) + ' — ' + bits.join(' · ')));
                     const tbl = el('table', 'so-table');
@@ -4369,7 +4497,7 @@
                     const scope = $('md-bulk-scope').value;
                     const count = scope === 'page' ? $('md-untag-body').querySelectorAll('tr').length : ($('md-untag-count').textContent || '').replace(/[^0-9]/g, '');
                     const lang = $('md-bulk-lang').options[$('md-bulk-lang').selectedIndex].text;
-                    if (!window.confirm('Set up to ' + count + ' tracks to ' + lang + '? Medic skips the ones the ticked options leave out. Nothing changes in your files until you strip tracks.')) return;
+                    if (!window.confirm('Set up to ' + count + ' tracks to ' + lang + '? Medic skips the ones the ticked options leave out. Nothing changes in your files until you strip tracks, and then each film that only gets a label is copied in full and frees no space.')) return;
                     $('md-bulk-go').disabled = true;
                     try {
                         const r = await postJson('/JellyfinMedic/Tracks/SetLanguageBulk', {
@@ -4836,6 +4964,8 @@
                             renderDashboard();
                             renderRecs();
                             if (settings) renderSettings();
+                            // The report has just taken today's snapshot, which is what the week compares.
+                            loadWeekly();
                         } catch (err) {
                             console.error('Jellyfin Medic: showing the report failed', err);
                             showStatus('The checks ran, but the page couldn\'t show their results. The browser console has the details.', 'error');

@@ -117,6 +117,46 @@ public sealed class QbitSignInPauseTests : IDisposable
         Assert.Equal(1, _qbit.SignIns);
     }
 
+    [Theory]
+    [InlineData(404)]
+    [InlineData(500)]
+    [InlineData(502)]
+    public async Task An_answer_that_isnt_about_the_password_is_said_and_doesnt_count_as_a_refusal(int status)
+    {
+        // A proxy path missing from the address, the proxy itself failing, or qBittorrent failing: the password may be right.
+        _store.SetQbitPassword("secret");
+        _qbit.SignInStatus = status;
+
+        var first = await _filter.StateAsync(CancellationToken.None);
+        var second = await _filter.StateAsync(CancellationToken.None);
+
+        Assert.False(first.Refused);
+        Assert.False(first.Reachable);
+        Assert.Contains(status.ToString(System.Globalization.CultureInfo.InvariantCulture), first.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("password", first.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(second.Refused);
+        Assert.Equal(2, _qbit.SignIns);
+
+        // Once the address answers properly, a plain reload signs in: nothing was paused or stopped.
+        _qbit.SignInStatus = null;
+        var fixedState = await _filter.StateAsync(CancellationToken.None);
+        Assert.True(fixedState.Reachable);
+        Assert.Equal(3, _qbit.SignIns);
+    }
+
+    [Fact]
+    public async Task A_401_from_qbittorrent_5_2_is_a_refused_password()
+    {
+        _qbit.SignInStatus = 401;
+
+        var state = await _filter.StateAsync(CancellationToken.None);
+        await _filter.StateAsync(CancellationToken.None);
+
+        Assert.True(state.Refused);
+        Assert.Contains("user name and password", state.Message, StringComparison.Ordinal);
+        Assert.Equal(1, _qbit.SignIns);
+    }
+
     /// <summary>
     /// A pretend qBittorrent Web UI on a local port, answering sign-ins the way qBittorrent 5.1 does
     /// ("Ok." or "Fails.", 403 while banned) and its preferences once signed in.
@@ -140,6 +180,9 @@ public sealed class QbitSignInPauseTests : IDisposable
         public string Password { get; set; } = "secret";
 
         public bool Banned { get; set; }
+
+        /// <summary>When set, every sign-in gets this status and no text, as a proxy or a failing server answers.</summary>
+        public int? SignInStatus { get; set; }
 
         public int SignIns => Volatile.Read(ref _signIns);
 
@@ -194,7 +237,11 @@ public sealed class QbitSignInPauseTests : IDisposable
                 case "/api/v2/auth/login":
                     Interlocked.Increment(ref _signIns);
                     var form = System.Web.HttpUtility.ParseQueryString(body);
-                    if (Banned)
+                    if (SignInStatus is { } status)
+                    {
+                        response.StatusCode = status;
+                    }
+                    else if (Banned)
                     {
                         response.StatusCode = 403;
                         await WriteAsync(response, "Your IP address has been banned after too many failed authentication attempts.").ConfigureAwait(false);

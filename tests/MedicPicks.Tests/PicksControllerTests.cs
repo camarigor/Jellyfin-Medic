@@ -2,10 +2,19 @@ using System.Net;
 using System.Reflection;
 using System.Security.Claims;
 using System.Text.Json;
+using Jellyfin.Data;
+using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.MedicPicks;
 using Jellyfin.Plugin.MedicPicks.Api;
 using Jellyfin.Plugin.MedicPicks.Configuration;
 using Jellyfin.Plugin.MedicPicks.Picks;
+using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
+using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Globalization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -30,6 +39,10 @@ public sealed class PicksControllerTests : IDisposable
     private readonly Plugin _plugin;
     private readonly SeerrCalls _seerrCalls = new();
     private readonly PicksController _controller;
+    private readonly PlaylistRefreshTests.FakeLibrary _library;
+    private readonly User _user;
+    private readonly IRecordingsManager? _recordingsBefore = Video.RecordingsManager;
+    private readonly ILibraryManager? _itemsLibraryBefore = BaseItem.LibraryManager;
 
     public PicksControllerTests()
     {
@@ -38,8 +51,18 @@ public sealed class PicksControllerTests : IDisposable
         _plugin = new Plugin(paths, new DefaultSettingsSerializer());
         var seerr = new SeerrClient(new OneClient(new HttpClient(_seerrCalls)), _store, NullLogger<SeerrClient>.Instance);
 
-        // Only the store, Seerr, the logger and the language lookup are used by the routes tested here.
-        _controller = new PicksController(_store, null!, null!, DispatchProxy.Create<ILocalizationManager, NoLanguages>(), null!, seerr, null!, NullLogger<PicksController>.Instance)
+        // The visibility check asks whether a film is a recording in progress and which libraries hold a title.
+        Video.RecordingsManager = DispatchProxy.Create<IRecordingsManager, PlaylistRefreshTests.NoRecordings>();
+        var library = DispatchProxy.Create<ILibraryManager, PlaylistRefreshTests.FakeLibrary>();
+        _library = (PlaylistRefreshTests.FakeLibrary)(object)library;
+        BaseItem.LibraryManager = library;
+        var users = DispatchProxy.Create<IUserManager, PlaylistRefreshTests.FakeUsers>();
+        _user = new User("viewer", "a", "b") { Id = _userId };
+        ((PlaylistRefreshTests.FakeUsers)(object)users).User = _user;
+        var engine = new PicksEngine(library, users, null!, null!, DispatchProxy.Create<ILocalizationManager, NoLanguages>(), null!, _store, NullLogger<PicksEngine>.Instance);
+
+        // Only the store, the engine, Seerr, the logger and the language lookup are used by the routes tested here.
+        _controller = new PicksController(_store, null!, null!, DispatchProxy.Create<ILocalizationManager, NoLanguages>(), engine, seerr, null!, NullLogger<PicksController>.Instance)
         {
             ControllerContext = new ControllerContext
             {
@@ -95,6 +118,40 @@ public sealed class PicksControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Saved_library_picks_the_person_can_no_longer_see_are_not_served()
+    {
+        Save(new PluginConfiguration());
+        var allowed = new Movie { Id = Guid.NewGuid(), Name = "Heat" };
+        var blocked = new Movie { Id = Guid.NewGuid(), Name = "Alien", Tags = new[] { "horror" } };
+        var blockedSeries = new Series { Id = Guid.NewGuid(), Name = "Hannibal", Tags = new[] { "horror" } };
+        var gone = Guid.NewGuid();
+        foreach (var item in new BaseItem[] { allowed, blocked, blockedSeries })
+        {
+            _library.Items[item.Id] = item;
+        }
+
+        _store.Save(_userId, new UserPicks
+        {
+            GeneratedUtc = DateTime.UtcNow,
+            InLibrary =
+            {
+                new LibraryPick { ItemId = allowed.Id, Kind = "Movie", Name = "Heat" },
+                new LibraryPick { ItemId = blocked.Id, Kind = "Movie", Name = "Alien" },
+                new LibraryPick { ItemId = gone, Kind = "Movie", Name = "Removed since" }
+            },
+            Linked = { new LibraryPick { ItemId = blockedSeries.Id, Kind = "Series", Name = "Hannibal" } }
+        });
+
+        // The picks were built before the admin blocked the tag; the next build may be a day away.
+        _user.SetPreference(PreferenceKind.BlockedTags, new[] { "horror" });
+        var me = await MyPicks();
+
+        var served = me.GetProperty("inLibrary").EnumerateArray().Select(p => p.GetProperty("itemId").GetGuid());
+        Assert.Equal(new[] { allowed.Id }, served);
+        Assert.Equal(0, me.GetProperty("linked").GetArrayLength());
+    }
+
+    [Fact]
     public async Task Direct_requests_do_not_send_the_Seerr_address()
     {
         // The address the server uses (inside Docker, say) is no use to people when the page makes the request itself.
@@ -142,7 +199,12 @@ public sealed class PicksControllerTests : IDisposable
         Assert.True(_seerrCalls.Count > 0);
     }
 
-    public void Dispose() => Directory.Delete(_root, recursive: true);
+    public void Dispose()
+    {
+        Video.RecordingsManager = _recordingsBefore;
+        BaseItem.LibraryManager = _itemsLibraryBefore;
+        Directory.Delete(_root, recursive: true);
+    }
 
     private void Save(PluginConfiguration config) => _plugin.UpdateConfiguration(config);
 

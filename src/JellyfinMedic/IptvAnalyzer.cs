@@ -124,10 +124,14 @@ public static class IptvAnalyzer
         return report;
     }
 
-    public static List<Finding> Findings()
+    public static List<Finding> Findings() => Findings(Last, DateTime.UtcNow);
+
+    internal static List<Finding> Findings(IptvReport? report, DateTime nowUtc)
     {
         var findings = new List<Finding>();
-        if (Last is not { } report)
+
+        // The page keeps showing an old run with its date, but Checks would repeat its counts as if they were current.
+        if (report is null || nowUtc - report.GeneratedUtc > TimeSpan.FromDays(1))
         {
             return findings;
         }

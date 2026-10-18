@@ -134,6 +134,39 @@ public class HostLoadTests
     }
 
     [Fact]
+    public void Memory_that_stays_high_all_week_leaves_cpu_and_disk_to_decide()
+    {
+        // Other services keep memory between 85 and 89% all week; the drives are busy 02:00 to 05:00.
+        var summary = new HostLoadSummary
+        {
+            AverageCpu = Enumerable.Repeat<double?>(15, 168).ToList(),
+            AverageDisk = Enumerable.Range(0, 168).Select(i => (double?)(i % 24 is >= 2 and < 5 ? 40 : 5)).ToList(),
+            AverageMemory = Enumerable.Range(0, 168).Select(i => (double?)(85 + (i % 5))).ToList()
+        };
+
+        var busy = HostLoadAnalyzer.Busyness(summary);
+
+        Assert.Equal(0.4, busy[3]!.Value, 3);
+        Assert.True(busy.Where((_, i) => i % 24 is < 2 or >= 5).All(b => b < 0.4), "memory a point or two above its usual level outweighed the busy drives");
+    }
+
+    [Fact]
+    public void Memory_well_above_its_usual_level_still_counts()
+    {
+        var summary = new HostLoadSummary
+        {
+            AverageCpu = Enumerable.Repeat<double?>(10, 168).ToList(),
+            AverageDisk = Enumerable.Repeat<double?>(null, 168).ToList(),
+            AverageMemory = Enumerable.Repeat<double?>(87, 167).Append(100).ToList()
+        };
+
+        var busy = HostLoadAnalyzer.Busyness(summary);
+
+        Assert.Equal(0.1, busy[0]!.Value, 3);
+        Assert.Equal(1, busy[167]!.Value, 3);
+    }
+
+    [Fact]
     public void Tasks_move_away_from_hours_when_the_server_is_busy()
     {
         var task = new FakeTaskWorker("Clean Transcode Directory", "DeleteTranscodeFiles", 1, Daily(12, 0));
@@ -159,6 +192,28 @@ public class HostLoadTests
         Assert.True(busy.FromServerLoad);
         Assert.NotInRange(after.StartMinutes, 0, 7 * 60);
         Assert.Contains("server", after.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Steady_high_memory_does_not_pull_tasks_into_hours_when_the_drives_are_busy()
+    {
+        var task = new FakeTaskWorker("Clean Transcode Directory", "DeleteTranscodeFiles", 1, Daily(12, 0));
+
+        // Downloads keep the drives busy 02:00 to 05:00 while memory dips to 85%; from 05:00 the drives are
+        // quiet and memory sits at 89%. Memory is 87% the rest of the week.
+        var server = new HostLoadSummary
+        {
+            HoursCollected = 24 * 7,
+            Ready = true,
+            AverageCpu = Enumerable.Repeat<double?>(10, 168).ToList(),
+            AverageDisk = Enumerable.Range(0, 168).Select(i => (double?)(i % 24 is >= 2 and < 5 ? 50 : 5)).ToList(),
+            AverageMemory = Enumerable.Range(0, 168).Select(i => (double?)((i % 24) switch { >= 2 and < 5 => 85, >= 5 and < 8 => 89, _ => 87 })).ToList()
+        };
+        var busy = BusyProfile.Create(new UsageSummary(), null, server);
+        var plan = SchedulePlanner.Build(new[] { task }, new Dictionary<string, ReliabilityRecord>(), new Dictionary<string, ManagedRun>(), busy).Single();
+
+        Assert.True(busy.ServerAt(DayOfWeek.Monday, 3 * 60) > busy.ServerAt(DayOfWeek.Monday, 6 * 60));
+        Assert.InRange(plan.StartMinutes, 5 * 60, (7 * 60) - 1);
     }
 
     [Fact]

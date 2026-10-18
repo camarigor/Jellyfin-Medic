@@ -89,8 +89,26 @@ public sealed class TranscodingChecksTests
         Assert.Contains("Tone mapping is off", Titles(encoding, isLinux: true, Gpu("amd")));
     }
 
-    private static List<string> Titles(EncodingOptions encoding, bool isLinux, HardwareInfo? hw = null) =>
-        DiagnosticsEngine.AccelerationChecks(hw ?? new HardwareInfo(), encoding, new ServerConfiguration(), isLinux, isContainer: false)
+    [Theory]
+    [InlineData(HardwareAccelerationType.vaapi, "intel", true)]
+    [InlineData(HardwareAccelerationType.qsv, "intel", true)]
+    [InlineData(HardwareAccelerationType.vaapi, "amd", false)]
+    [InlineData(HardwareAccelerationType.nvenc, "nvidia", false)]
+    public void The_trickplay_encoding_tip_only_shows_where_Jellyfin_has_a_GPU_JPEG_encoder(HardwareAccelerationType method, string gpu, bool tipExpected)
+    {
+        // Jellyfin 12.2 picks mjpeg_vaapi only on Intel's iHD driver and has no NVENC or AMF JPEG encoder,
+        // so on AMD and NVIDIA the switch leaves the thumbnails on the CPU.
+        var server = new ServerConfiguration();
+        server.TrickplayOptions.EnableHwAcceleration = true;
+        server.TrickplayOptions.EnableHwEncoding = false;
+
+        var titles = Titles(new EncodingOptions { HardwareAccelerationType = method }, isLinux: true, Gpu(gpu), server);
+
+        Assert.Equal(tipExpected, titles.Contains("Trickplay images are encoded on the CPU"));
+    }
+
+    private static List<string> Titles(EncodingOptions encoding, bool isLinux, HardwareInfo? hw = null, ServerConfiguration? server = null) =>
+        DiagnosticsEngine.AccelerationChecks(hw ?? new HardwareInfo(), encoding, server ?? new ServerConfiguration(), isLinux, isContainer: false)
             .Select(f => f.Title)
             .ToList();
 

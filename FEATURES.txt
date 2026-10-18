@@ -43,19 +43,23 @@ Tests, Plugins, Plugin directory, Settings, and Contact.
 A single screen of 15 tiles:
 
   - Health: how many things need fixing, by severity.
-  - Right now: live CPU, memory (as a percentage) and who is watching;
-    running tasks with roughly how long each has left; and what Jellyfin
-    plus the FFmpeg processes it starts are using (CPU, memory, disk and,
-    for NVIDIA and AMD, GPU), with this week's spells of heavy use and what
-    was running at the time (tasks, transcodes, trickplay and so on).
+  - Right now: live CPU, Jellyfin's memory, the whole server's memory
+    beside LoadGuard's ceiling, and who is watching; running tasks with
+    roughly how long each has left; and what Jellyfin plus the FFmpeg
+    processes it starts are using (CPU, memory, disk and GPU: on AMD and
+    Intel the GPU work of Jellyfin's own FFmpeg, video engine included; on
+    NVIDIA the whole card, which raises no alert), with this week's spells
+    of heavy use and what was running at the time (tasks, transcodes,
+    trickplay and so on).
   - Disks: free space on every library drive and Jellyfin's own folders,
     and any library drive that is missing.
   - This week: issues fixed and issues that appeared in the last 7 days, how
     much disk space Medic freed (track cleanup, clean-ups, duplicates), and
     how often Medic restarted Jellyfin.
   - Top issues: the most serious findings from Checks.
-  - Load, last 10 minutes: CPU, memory and disk over the last 10 minutes,
-    with the tasks LoadGuard is holding back.
+  - Load, last 10 minutes: CPU, memory, disk and GPU over the last 10
+    minutes, and the whole server's memory against LoadGuard's ceiling, with
+    the tasks LoadGuard is holding back.
   - Today, planned and actual: today's tasks as scheduled, beside what really
     ran, failed, was stopped or cancelled, or didn't run.
   - Busy hours and tasks: when people usually watch, and which tasks run in
@@ -127,10 +131,16 @@ A single screen of 15 tiles:
       * Off: you run Preview and Apply yourself.
       * Suggest (default): Medic flags a clearly better schedule in Checks
         and waits for you to Apply.
-  - Memory load guard (on by default, ceiling 85%): if memory climbs past the
-    ceiling while more than one heavy task is running, Medic stops the extra
-    heavy tasks (keeping the one that started first), then restarts them one
-    at a time once memory recovers.
+  - Memory load guard (on by default, ceiling 85%): if Jellyfin's memory
+    climbs past the ceiling while more than one heavy task is running, Medic
+    stops the extra heavy tasks (keeping the one that started first). A
+    heavy task its schedule starts while the server's memory is past the
+    ceiling is held back only when memory has risen above its usual level
+    (the middle of the last two hours) or Jellyfin itself is past the
+    ceiling, so a server whose memory always sits high isn't held back every
+    night. Held tasks start again one at a time once memory settles, or after
+    two hours at most, but never in your avoided hours or while someone is
+    watching. A task you start by hand always runs.
   - Scheduled task "Restart Jellyfin for waiting updates" (no time set to
     begin with: add one under Scheduled Tasks): restarts Jellyfin when plugin
     updates are waiting, but only when nobody is watching, no track cleanup or

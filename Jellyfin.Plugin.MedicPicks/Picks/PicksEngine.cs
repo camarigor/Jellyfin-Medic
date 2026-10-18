@@ -906,6 +906,18 @@ public class PicksEngine
         return false;
     }
 
+    /// <summary>
+    /// Whether a saved library pick is one the person can still see. Picks are kept until the next build, and an admin
+    /// may have set a parental limit or taken a library away since; IsVisibleStandalone also checks the folders above
+    /// the title, as the Play link of a request does. A title gone from the library fails too. The user is looked up
+    /// once for all the picks, not once per title.
+    /// </summary>
+    public Func<LibraryPick, bool> StillVisibleTo(Guid userId)
+    {
+        var user = _userManager.GetUserById(userId);
+        return pick => user is not null && _libraryManager.GetItemById(pick.ItemId) is { } item && item.IsVisibleStandalone(user);
+    }
+
     /// <summary>Movies play as themselves; a series is represented by its first regular episode.</summary>
     private Guid? GetPlayableId(Func<InternalItemsQuery> userQuery, LibraryPick pick)
     {
@@ -1035,7 +1047,7 @@ public class PicksEngine
             }
 
             Func<InternalItemsQuery> userQuery = () => new InternalItemsQuery(user);
-            var items = picks.InLibrary.Select(p => GetPlayableId(userQuery, p)).OfType<Guid>().ToList();
+            var items = picks.InLibrary.Where(StillVisibleTo(userId)).Select(p => GetPlayableId(userQuery, p)).OfType<Guid>().ToList();
             Guid? before = picks.PlaylistId;
             await ReplacePlaylistAsync(userId, picks, items, config.PlaylistName, true).ConfigureAwait(false);
             if (picks.PlaylistId != before)

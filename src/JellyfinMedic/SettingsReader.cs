@@ -45,6 +45,15 @@ public static class SettingsReader
     private static readonly Regex WebhookPath =
         new(@"(?i)((?:discord(?:app)?\.com/api/webhooks|hooks\.slack\.com/services|/api/webhook|/webhooks?)/)[^\s?""'<]+", RegexOptions.Compiled);
 
+    // Xtream style stream addresses carry the account in the path: http://host:8080/live/USER/PASS/123.ts.
+    // Only right after a web address's host, so a library folder such as /data/series/Andor/S01/ stays readable.
+    private static readonly Regex XtreamPath =
+        new(@"(?i)(://[^/\s]+/(?:live|movie|series|timeshift)/)[^/\s]+/[^/\s]+/", RegexOptions.Compiled);
+
+    // The last part can't be an image or script extension: themes name retina images like banner@2x.png.
+    private static readonly Regex Email =
+        new(@"(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?!(?:png|jpe?g|gif|svg|webp|avif|ico|css|js)\b)[A-Za-z]{2,}\b", RegexOptions.Compiled);
+
     /// <summary>Follows a dotted path such as "TrickplayOptions.EnableHwAcceleration".</summary>
     public static bool TryGet(object? root, string path, out object? value)
     {
@@ -286,7 +295,7 @@ public static class SettingsReader
             return "Off";
         }
 
-        if (IsSecretName(name))
+        if (IsSecretSetting(name, text))
         {
             return "•••• (hidden)";
         }
@@ -303,8 +312,17 @@ public static class SettingsReader
     }
 
     /// <summary>
-    /// Hides credentials inside values: in URLs (e.g. an IPTV playlist link with ?username=...&amp;password=...),
-    /// after an auth scheme (Bearer, Basic, Digest) and JSON Web Tokens.
+    /// A secret name, or an account kept under a name ending in "user" (QbitUser, SmtpUser). A whole number there is
+    /// a count such as MaxStreamsPerUser, which support needs to see.
+    /// </summary>
+    public static bool IsSecretSetting(string name, string value) =>
+        IsSecretName(name)
+        || (LeafName(name).EndsWith("user", StringComparison.OrdinalIgnoreCase)
+            && !long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _));
+
+    /// <summary>
+    /// Hides credentials inside values: in URLs (e.g. an IPTV playlist link with ?username=...&amp;password=...,
+    /// or an Xtream stream address), after an auth scheme (Bearer, Basic, Digest), JSON Web Tokens and e-mail addresses.
     /// </summary>
     public static string MaskSecrets(string text)
     {
@@ -313,7 +331,11 @@ public static class SettingsReader
         masked = QuerySecrets.Replace(masked, "$1••••");
         masked = BotToken.Replace(masked, "bot••••");
         masked = WebhookPath.Replace(masked, "$1••••");
-        return UrlUserInfo.Replace(masked, "://••••:••••@");
+        masked = XtreamPath.Replace(masked, "$1••••/••••/");
+
+        // After the user:pass@ form, whose password and host would otherwise read as an address.
+        masked = UrlUserInfo.Replace(masked, "://••••:••••@");
+        return Email.Replace(masked, "••••");
     }
 
     /// <summary>"TunerHosts[0].Url" becomes "Url".</summary>

@@ -1,5 +1,7 @@
+using System.Reflection;
 using JellyfinMedic.Api;
 using JellyfinMedic.Services;
+using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -28,7 +30,7 @@ public sealed class LoadGuardHeldTasksTests : IDisposable
     [Fact]
     public async Task A_held_task_that_starts_on_its_own_is_taken_off_the_list()
     {
-        using var guard = new LoadGuard(_tasks, _paths, NullLogger<LoadGuard>.Instance);
+        using var guard = new LoadGuard(_tasks, NobodyWatching.Create(), _paths, NullLogger<LoadGuard>.Instance);
         await guard.StartAsync(CancellationToken.None);
         guard.Defer(_scan);
         guard.Defer(_trickplay);
@@ -43,7 +45,7 @@ public sealed class LoadGuardHeldTasksTests : IDisposable
     [Fact]
     public async Task A_task_stopped_after_it_started_stays_held()
     {
-        using var guard = new LoadGuard(_tasks, _paths, NullLogger<LoadGuard>.Instance);
+        using var guard = new LoadGuard(_tasks, NobodyWatching.Create(), _paths, NullLogger<LoadGuard>.Instance);
         await guard.StartAsync(CancellationToken.None);
         _tasks.Complete(_scan, TaskCompletionStatus.Cancelled);
         guard.Defer(_scan);
@@ -57,7 +59,7 @@ public sealed class LoadGuardHeldTasksTests : IDisposable
     [Fact]
     public void Switching_LoadGuard_off_records_each_task_it_lets_go()
     {
-        using var guard = new LoadGuard(_tasks, _paths, NullLogger<LoadGuard>.Instance);
+        using var guard = new LoadGuard(_tasks, NobodyWatching.Create(), _paths, NullLogger<LoadGuard>.Instance);
         guard.Defer(_scan);
         guard.Defer(_trickplay);
 
@@ -86,7 +88,7 @@ public sealed class LoadGuardHeldTasksTests : IDisposable
     public void A_task_held_for_a_day_is_let_go_instead_of_started()
     {
         var log = new ListLogger<LoadGuard>();
-        using var guard = new LoadGuard(_tasks, _paths, log);
+        using var guard = new LoadGuard(_tasks, NobodyWatching.Create(), _paths, log);
         guard.Defer(_scan);
         var now = DateTime.UtcNow;
 
@@ -110,7 +112,7 @@ public sealed class LoadGuardHeldTasksTests : IDisposable
         });
 
         var log = new ListLogger<LoadGuard>();
-        using var guard = new LoadGuard(_tasks, _paths, log);
+        using var guard = new LoadGuard(_tasks, NobodyWatching.Create(), _paths, log);
         await guard.StartAsync(CancellationToken.None);
         await guard.StopAsync(CancellationToken.None);
 
@@ -161,6 +163,15 @@ public sealed class SafeRestartLatchTests
     {
         public object? GetService(Type serviceType) => service;
     }
+}
+
+/// <summary>A session manager with nobody on it, which is all LoadGuard asks of one.</summary>
+internal class NobodyWatching : DispatchProxy
+{
+    public static ISessionManager Create() => Create<ISessionManager, NobodyWatching>();
+
+    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
+        targetMethod?.Name == "get_" + nameof(ISessionManager.Sessions) ? Array.Empty<SessionInfo>() : throw new NotSupportedException(targetMethod?.Name);
 }
 
 /// <summary>Keeps every message, so a test can check what was said.</summary>

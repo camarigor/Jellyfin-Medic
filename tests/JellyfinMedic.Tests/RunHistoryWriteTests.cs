@@ -17,6 +17,18 @@ public sealed class RunHistoryWriteTests : IDisposable
 
     private void UnblockWrites() => Directory.Delete(HistoryPath + ".tmp");
 
+    private List<string> Written() => ScheduleStorage.ReadList<RunRecord>(HistoryPath).Select(r => r.TaskId).ToList();
+
+    // Polls instead of sleeping a fixed time: on a loaded host the delayed write can be seconds late.
+    private static async Task Until(Func<bool> condition)
+    {
+        var limit = DateTime.UtcNow + TimeSpan.FromSeconds(60);
+        while (!condition() && DateTime.UtcNow < limit)
+        {
+            await Task.Delay(50);
+        }
+    }
+
     [Fact]
     public void Runs_whose_write_failed_are_kept_and_written_by_the_next_flush()
     {
@@ -42,18 +54,17 @@ public sealed class RunHistoryWriteTests : IDisposable
     {
         BlockWrites();
         ScheduleStorage.AppendRun(_paths, Run("scan", 0));
-        await Task.Delay(TimeSpan.FromSeconds(6)); // its delayed write fails
+        await Until(() => ScheduleStorage.RunWriteFailing(_paths)); // its delayed write fails
+        Assert.True(ScheduleStorage.RunWriteFailing(_paths), "The delayed write never came.");
         UnblockWrites();
 
         ScheduleStorage.AppendRun(_paths, Run("trickplay", 5));
 
         // No flush by hand: the write this run schedules, 5 s later, has to come and take the failed one along.
-        for (int i = 0; i < 150 && !File.Exists(HistoryPath); i++)
-        {
-            await Task.Delay(100);
-        }
+        string[] expected = { "scan", "trickplay" };
+        await Until(() => Written().SequenceEqual(expected));
 
-        Assert.Equal(new[] { "scan", "trickplay" }, ScheduleStorage.ReadList<RunRecord>(HistoryPath).Select(r => r.TaskId));
+        Assert.Equal(expected, Written());
     }
 
     [Fact]

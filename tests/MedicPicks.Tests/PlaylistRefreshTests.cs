@@ -1,11 +1,15 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Plugin.MedicPicks;
 using Jellyfin.Plugin.MedicPicks.Configuration;
 using Jellyfin.Plugin.MedicPicks.Picks;
+using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Playlists;
@@ -27,6 +31,8 @@ public sealed class PlaylistRefreshTests : IDisposable
     private readonly FakeLibrary _library;
     private readonly FakePlaylists _playlists;
     private readonly IUserManager _users;
+    private readonly IRecordingsManager? _recordingsBefore = Video.RecordingsManager;
+    private readonly ILibraryManager? _itemsLibraryBefore = BaseItem.LibraryManager;
 
     public PlaylistRefreshTests()
     {
@@ -35,9 +41,17 @@ public sealed class PlaylistRefreshTests : IDisposable
         var plugin = new Plugin(paths, new DefaultSettingsSerializer());
         plugin.UpdateConfiguration(new PluginConfiguration { EnableLibraryPicks = true, CreatePlaylists = true, MinimumWatchedTitles = 3 });
 
+        // The visibility check asks whether a film is a recording in progress and which libraries hold a title.
+        Video.RecordingsManager = DispatchProxy.Create<IRecordingsManager, NoRecordings>();
+
         var library = DispatchProxy.Create<ILibraryManager, FakeLibrary>();
         _library = (FakeLibrary)(object)library;
+        BaseItem.LibraryManager = library;
         _library.Items[_oldPlaylist] = new Playlist { Id = _oldPlaylist, OwnerUserId = _userId };
+        foreach (var id in new[] { _first, _second, _third })
+        {
+            _library.Items[id] = new Movie { Id = id };
+        }
 
         var playlists = DispatchProxy.Create<IPlaylistManager, FakePlaylists>();
         _playlists = (FakePlaylists)(object)playlists;
@@ -58,7 +72,12 @@ public sealed class PlaylistRefreshTests : IDisposable
         });
     }
 
-    public void Dispose() => Directory.Delete(_root, true);
+    public void Dispose()
+    {
+        Video.RecordingsManager = _recordingsBefore;
+        BaseItem.LibraryManager = _itemsLibraryBefore;
+        Directory.Delete(_root, true);
+    }
 
     [Fact]
     public async Task A_refresh_waiting_behind_a_build_puts_in_that_builds_picks_and_makes_no_second_playlist()
@@ -121,6 +140,20 @@ public sealed class PlaylistRefreshTests : IDisposable
         Assert.Equal(new[] { _third }, _playlists.Updated.Last().Ids);
     }
 
+    [Fact]
+    public async Task A_title_the_person_can_no_longer_see_stays_out_of_the_playlist()
+    {
+        var engine = Engine(TimeSpan.Zero);
+
+        // A tag blocked on the account after the last build, the way an admin sets a parental limit.
+        _library.Items[_second] = new Movie { Id = _second, Tags = new[] { "horror" } };
+        ((FakeUsers)(object)_users).User!.SetPreference(PreferenceKind.BlockedTags, new[] { "horror" });
+        Hide(_first);
+        await engine.RefreshPlaylistAsync(_userId);
+
+        Assert.Equal(new[] { _third }, Assert.Single(_playlists.Updated).Ids);
+    }
+
     private PicksEngine Engine(TimeSpan delay) => new(
         (ILibraryManager)(object)_library,
         _users,
@@ -160,6 +193,8 @@ public sealed class PlaylistRefreshTests : IDisposable
                     return new List<BaseItem>();
                 case "GetItemById" when args!.Length == 1 && args[0] is Guid id:
                     return Items.TryGetValue(id, out var item) ? item : null;
+                case "GetCollectionFolders":
+                    return new List<Folder>();
                 case "DeleteItem":
                     Items.TryRemove(((BaseItem)args![0]!).Id, out _);
                     OnDelete?.Invoke();
@@ -197,6 +232,12 @@ public sealed class PlaylistRefreshTests : IDisposable
                     throw new NotSupportedException(targetMethod.Name);
             }
         }
+    }
+
+    // No recording is in progress.
+    public class NoRecordings : DispatchProxy
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => null;
     }
 
     public class FakeUsers : DispatchProxy
