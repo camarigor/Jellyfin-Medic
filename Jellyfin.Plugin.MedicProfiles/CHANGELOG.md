@@ -3,7 +3,7 @@
 All notable changes to Medic Profiles are recorded here. The newest version is at the top.
 Jellyfin Medic and Medic Picks have their own changelogs.
 
-## Unreleased
+## [1.1.7] - 2026-10-17
 
 ### Fixed
 - **Sonarr's advice comes from episodes, Radarr's from films.** Every playback tip was based on films and episodes counted together, so five 4K films shrunk for a 1080p TV told you to untick 2160p in Sonarr too, and a Remux film collection told Sonarr to avoid DTS. Each app's advice, its evidence line and the "HEVC plays fine here" tip now count only that app's own kind of file.
