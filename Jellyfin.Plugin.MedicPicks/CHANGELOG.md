@@ -3,7 +3,7 @@
 All notable changes to Medic Picks are recorded here. The newest version is at the top.
 Jellyfin Medic has its own changelog in the main CHANGELOG.md.
 
-## Unreleased
+## [1.2.8] - 2026-10-17
 
 ### Fixed
 - **Library picks follow parental controls and library access set since the last build.** Picks are saved when they're built, nightly or when the person changes their choices, so a maximum rating, a blocked tag or a library taken away from an account in the evening didn't reach that person's "On your server" and Linked picks until the next night: the picks page still showed those titles with their posters, and hiding a title put them back in the picks playlist. Saved picks are now checked against the account's current access each time the page loads and each time the playlist is refreshed, and titles the person can't see, or that have left the library, are left out.
